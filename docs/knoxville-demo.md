@@ -2,6 +2,13 @@
 
 Use an empty, isolated Catalyst Works database with the latest migrations. Run `pnpm --filter @workspace/api-server build` and then `pnpm --filter @workspace/api-server seed:demo` with `DEMO_MODE=true` and `ALLOW_DEMO_SEED=true`. Keep Outlook and QuickBooks credentials unset for this walkthrough. The seed refuses to run in a workspace that already contains business records or an integration connection.
 
+## Host the demo on DigitalOcean
+
+1. Publish `codex/knoxville-supplier-preview` to `My-Catalyst-Innovations/knox-flooring-operations` and verify the branch commit and Linux build. [The demo app spec](../.do/knoxville-demo.yaml) uses the public Git clone URL and provisions its own PostgreSQL database in a separate App Platform app.
+2. Before creating the demo app, set `OWNER_EMAIL`, `OWNER_NAME`, and an encrypted `OWNER_INITIAL_PASSWORD` of at least 12 characters as runtime variables in the deployment configuration. Leave Outlook, QuickBooks, and email provider credentials unset. The service starts by applying migrations and requires a password for sign-in.
+3. Once the deployed commit and `/api/healthz` are verified, open the new app’s web service console. Run `DEMO_MODE=true ALLOW_DEMO_SEED=true pnpm --filter @workspace/api-server seed:demo` once. Keep `ALLOW_DEMO_SEED` out of the runtime configuration.
+4. Sign in and verify the three workflows below with the seeded warehouse, supplier, and job records.
+
 ## Check stock and receive a transfer
 
 1. In **Inventory**, search for `KNOX-SLATE-48`. The Office warehouse starts with 20 boxes on hand, 8 reserved, and 12 available. The Remote warehouse has 24 boxes on hand and available. Six more boxes are in transit to the Office warehouse.

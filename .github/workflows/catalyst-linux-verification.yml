@@ -2,7 +2,7 @@ name: Catalyst Works Linux verification
 
 on:
   push:
-    branches: [codex/catalyst-works]
+    branches: [codex/catalyst-works, codex/knoxville-supplier-preview]
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.ref == 'refs/heads/codex/catalyst-works'
+    if: github.ref == 'refs/heads/codex/catalyst-works' || github.ref == 'refs/heads/codex/knoxville-supplier-preview'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:

@@ -1,0 +1,44 @@
+name: knoxville-flooring-demo
+region: nyc
+
+alerts:
+  - rule: DEPLOYMENT_FAILED
+
+services:
+  - name: web
+    git:
+      repo_clone_url: https://github.com/My-Catalyst-Innovations/knox-flooring-operations.git
+      branch: codex/knoxville-supplier-preview
+    dockerfile_path: Dockerfile
+    source_dir: /
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    health_check:
+      http_path: /api/healthz
+      initial_delay_seconds: 30
+    envs:
+      - key: NODE_ENV
+        value: production
+        scope: RUN_TIME
+      - key: APP_BASE_URL
+        value: ${APP_URL}
+        scope: RUN_TIME
+      - key: DATABASE_URL
+        value: ${knox-demo-db.DATABASE_URL}
+        scope: RUN_TIME
+      - key: DEMO_MODE
+        value: 'true'
+        scope: RUN_TIME
+      - key: DEMO_ACCESS_ENABLED
+        value: 'false'
+        scope: RUN_TIME
+      - key: BACKGROUND_WORKERS_ENABLED
+        value: 'false'
+        scope: RUN_TIME
+
+databases:
+  - name: knox-demo-db
+    engine: PG
+    version: '17'
+    production: false
