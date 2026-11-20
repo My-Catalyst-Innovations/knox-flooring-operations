@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Mail } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { communicationStatus } from "@/lib/communication-status";
 import type { Communication } from "@/lib/types";
 
 interface EmailComposeDialogProps {
@@ -45,6 +46,8 @@ export function EmailComposeDialog({
   const [subject, setSubject] = useState(defaultSubject);
   const [body, setBody] = useState(defaultBody);
   const [sending, setSending] = useState(false);
+  const pending = useRef(false);
+  const formId = useId();
 
   useEffect(() => {
     if (open) {
@@ -57,6 +60,7 @@ export function EmailComposeDialog({
   }, [open]);
 
   const handleSend = async () => {
+    if (pending.current) return;
     if (!to.trim()) {
       toast({ title: "Recipient email is required", variant: "destructive" });
       return;
@@ -68,10 +72,11 @@ export function EmailComposeDialog({
       });
       return;
     }
+    pending.current = true;
     setSending(true);
     try {
-      await onSend({ to: to.trim(), subject: subject.trim(), body, customerName });
-      toast({ title: "Email sent" });
+      const result = await onSend({ to: to.trim(), subject: subject.trim(), body, customerName });
+      toast({ title: communicationStatus(result) });
       onOpenChange(false);
     } catch (err) {
       toast({
@@ -80,12 +85,13 @@ export function EmailComposeDialog({
         variant: "destructive",
       });
     } finally {
+      pending.current = false;
       setSending(false);
     }
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => { if (!pending.current) onOpenChange(next); }}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -95,34 +101,40 @@ export function EmailComposeDialog({
             {customerName ? `Send an email to ${customerName}.` : "Send an email."}
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4">
+        <form id={formId} className="space-y-4" onSubmit={(event) => { event.preventDefault(); void handleSend(); }}>
           <div className="space-y-2">
-            <Label>To</Label>
+            <Label htmlFor={`${formId}-to`}>To</Label>
             <Input
+              id={`${formId}-to`}
               type="email"
+              required
               value={to}
               onChange={(e) => setTo(e.target.value)}
               placeholder="customer@example.com"
             />
           </div>
           <div className="space-y-2">
-            <Label>Subject</Label>
+            <Label htmlFor={`${formId}-subject`}>Subject</Label>
             <Input
+              id={`${formId}-subject`}
+              required
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
               placeholder="Your flooring estimate"
             />
           </div>
           <div className="space-y-2">
-            <Label>Message</Label>
+            <Label htmlFor={`${formId}-body`}>Message</Label>
             <Textarea
+              id={`${formId}-body`}
+              required
               value={body}
               onChange={(e) => setBody(e.target.value)}
               rows={8}
               placeholder="Write your message…"
             />
           </div>
-        </div>
+        </form>
         <DialogFooter>
           <Button
             variant="outline"
@@ -131,7 +143,7 @@ export function EmailComposeDialog({
           >
             Cancel
           </Button>
-          <Button onClick={handleSend} disabled={sending}>
+          <Button type="submit" form={formId} disabled={sending}>
             {sending ? "Sending…" : "Send Email"}
           </Button>
         </DialogFooter>

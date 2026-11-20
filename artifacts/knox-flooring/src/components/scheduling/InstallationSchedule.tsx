@@ -1,5 +1,5 @@
 import { useUnsavedForm } from "@/hooks/use-unsaved-changes";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 import { useStore } from "@/hooks/use-store";
 import { useUrlState, useQueryControls } from "@/hooks/use-url-state";
@@ -8,6 +8,7 @@ import {
   operation,
   useRefreshOperations,
   quantity,
+  jobsNeedingInstallation,
   type Crew,
   type Booking,
 } from "@/lib/operations";
@@ -25,11 +26,13 @@ import {
   Plus,
   ChevronLeft,
   ChevronRight,
+  GripVertical,
   Users,
 } from "lucide-react";
 
 const selectStyle = "h-11 w-full rounded-lg border bg-background px-3 text-sm";
 const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const jobDragType = "application/x-catalyst-installation-job";
 const localDate = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const localTime = (iso: string) => {
@@ -73,6 +76,8 @@ export function InstallationSchedule({
   );
   const { params, update: updateQuery } = useQueryControls();
   const bookingId = params.get("booking");
+  const requestedJobId =
+    !bookingId && params.get("create") === "1" ? params.get("jobId") : null;
   const [crewOpen, setCrewOpen] = useState(false);
   const [editingCrew, setEditingCrew] = useState<Crew | null>(null);
   const [crewForm, setCrewForm] = useState(blankCrew);
@@ -87,18 +92,58 @@ export function InstallationSchedule({
     notes: "",
     status: "Confirmed",
   });
+  const readiness = useOperation<{
+    blockers: { code: string; message: string }[];
+    warnings: { code: string; message: string }[];
+  }>(
+    `/jobs/${encodeURIComponent(bookingForm.jobId)}/readiness?targetStage=Scheduled`,
+    bookingOpen && bookingForm.jobId ? ["owner", "operations"] : [],
+  );
+  const materialWarnings = [...(readiness.data?.blockers ?? []), ...(readiness.data?.warnings ?? [])]
+    .filter((item) => item.code.startsWith("material"));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [draggedJobId, setDraggedJobId] = useState<string | null>(null);
   const crewChanges = useUnsavedForm(crewOpen, crewForm);
   const bookingChanges = useUnsavedForm(bookingOpen, bookingForm);
-  const openedBookingId = useRef<string | null>(null);
+  const openedBookingRequest = useRef<string | null>(null);
   const requestedDate = /^\d{4}-\d{2}-\d{2}$/.test(date)
     ? new Date(`${date}T12:00:00`)
     : new Date();
   const cursor = Number.isFinite(requestedDate.getTime())
     ? requestedDate
     : new Date();
+  const bookingDate = localDate(cursor);
+  const requestedJob = requestedJobId
+    ? jobs.find((job) => job.id === requestedJobId)
+    : undefined;
+  const bookingContextReady =
+    crews.allowed &&
+    bookings.allowed &&
+    !crews.isLoading &&
+    !crews.isError &&
+    !!bookings.data &&
+    !bookings.isError &&
+    !queryState.jobs.isLoading &&
+    !queryState.jobs.error;
+  const jobsToSchedule =
+    !crewView && bookingContextReady && bookings.data
+      ? jobsNeedingInstallation(jobs, bookings.data)
+      : [];
+  const draggedJob = jobsToSchedule.find((job) => job.id === draggedJobId);
+  const requestError =
+    requestedJobId &&
+    bookingContextReady &&
+    (!requestedJob || ["Completed", "Invoiced"].includes(requestedJob.status)
+      ? "That job is unavailable for scheduling."
+      : bookings.data?.some(
+            (booking) =>
+              booking.jobId === requestedJobId &&
+              booking.status === "Confirmed",
+          )
+        ? "This job already has a confirmed crew booking. Open the booking to make changes."
+        : "");
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(cursor);
     d.setDate(d.getDate() + i);
@@ -127,60 +172,86 @@ export function InstallationSchedule({
     setError("");
     setCrewOpen(true);
   };
-  const openBooking = (b?: Booking) => {
-    if (busy || (bookingOpen && !bookingChanges.confirmDiscard())) return;
-    const next = b
-      ? {
-          ...b,
-          startAt: localTime(b.startAt),
-          endAt: localTime(b.endAt),
-          plannedLaborHours: String(b.plannedLaborHours),
-        }
-      : {
-          jobId: "",
-          crewId: crewFilter === "all" ? "" : crewFilter,
-          startAt: `${localDate(cursor)}T08:00`,
-          endAt: `${localDate(cursor)}T09:00`,
-          plannedLaborHours: "",
-          notes: "",
-          status: "Confirmed",
-        };
-    bookingChanges.reset(next);
-    setEditingBooking(b ?? null);
-    setBookingForm(next);
-    setError("");
-    setBookingOpen(true);
-  };
+  const openBooking = useCallback(
+    (b?: Booking, jobId = "", day = bookingDate) => {
+      if (busy || (bookingOpen && !bookingChanges.confirmDiscard()))
+        return false;
+      const next = b
+        ? {
+            ...b,
+            startAt: localTime(b.startAt),
+            endAt: localTime(b.endAt),
+            plannedLaborHours: String(b.plannedLaborHours),
+          }
+        : {
+            jobId,
+            crewId: crewFilter === "all" ? "" : crewFilter,
+            startAt: `${day}T08:00`,
+            endAt: `${day}T09:00`,
+            plannedLaborHours: "",
+            notes: "",
+            status: "Confirmed",
+          };
+      bookingChanges.reset(next);
+      setEditingBooking(b ?? null);
+      setBookingForm(next);
+      setError("");
+      setBookingOpen(true);
+      return true;
+    },
+    [
+      bookingChanges.confirmDiscard,
+      bookingChanges.reset,
+      bookingDate,
+      bookingOpen,
+      busy,
+      crewFilter,
+    ],
+  );
   useEffect(() => {
-    if (!bookingId) {
-      openedBookingId.current = null;
+    const request = bookingId
+      ? `booking:${bookingId}`
+      : requestedJobId
+        ? `job:${requestedJobId}`
+        : null;
+    if (!request) {
+      openedBookingRequest.current = null;
       return;
     }
-    const booking = bookings.data?.find((b) => b.id === bookingId);
-    if (!booking || busy || openedBookingId.current === bookingId) return;
-    if (bookingOpen && !bookingChanges.confirmDiscard()) {
-      updateQuery({ booking: editingBooking?.id ?? null });
+    if (
+      !bookings.allowed ||
+      !crews.allowed ||
+      busy ||
+      crewOpen ||
+      openedBookingRequest.current === request
+    )
+      return;
+    const booking = bookingId
+      ? bookings.data?.find((b) => b.id === bookingId)
+      : undefined;
+    if (bookingId ? !booking : !bookingContextReady || requestError) return;
+    if (!openBooking(booking, requestedJobId ?? "")) {
+      updateQuery({
+        booking: editingBooking?.id ?? null,
+        create: null,
+        jobId: null,
+      });
       return;
     }
-    openedBookingId.current = bookingId;
-    const next = {
-      ...booking,
-      startAt: localTime(booking.startAt),
-      endAt: localTime(booking.endAt),
-      plannedLaborHours: String(booking.plannedLaborHours),
-    };
-    bookingChanges.reset(next);
-    setEditingBooking(booking);
-    setBookingForm(next);
-    setError("");
-    setBookingOpen(true);
+    openedBookingRequest.current = request;
   }, [
     bookingId,
+    requestedJobId,
+    bookings.allowed,
     bookings.data,
+    crews.allowed,
     busy,
-    bookingOpen,
+    crewOpen,
+    bookingContextReady,
+    requestError,
     editingBooking?.id,
-    bookingChanges.confirmDiscard,
+    openBooking,
+    updateQuery,
   ]);
   const save = async (kind: "crew" | "booking") => {
     if (busy) return;
@@ -239,7 +310,7 @@ export function InstallationSchedule({
         );
         bookingChanges.reset(bookingForm);
         setBookingOpen(false);
-        updateQuery({ booking: null });
+        updateQuery({ booking: null, create: null, jobId: null });
         setMessage("Installation booking saved.");
       }
       await refresh();
@@ -293,6 +364,11 @@ export function InstallationSchedule({
             {b.calendarSyncStatus === "conflict"
               ? "Calendar conflict: review this booking before rescheduling."
               : "External calendar sync pending. This booking is saved here."}
+          </p>
+        )}
+        {b.outlookSyncStatus && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            Outlook {b.outlookSyncStatus === "synced" ? "synced" : b.outlookSyncStatus === "pending" ? "sync pending" : `needs review${b.outlookSyncError ? ` · ${b.outlookSyncError}` : ""}`}
           </p>
         )}
         <Button
@@ -369,6 +445,11 @@ export function InstallationSchedule({
           <button className="underline" onClick={() => refresh()}>
             Retry
           </button>
+        </p>
+      )}
+      {requestError && (
+        <p role="alert" className="text-sm text-destructive">
+          {requestError}
         </p>
       )}
       {message && (
@@ -491,50 +572,130 @@ export function InstallationSchedule({
       ) : (
         !bookings.isError &&
         !crews.isError && (
-          <div className="space-y-4">
-            {days.map((day) => {
-              const dayBookings = visibleBookings
-                .filter(
-                  (b) =>
-                    dateInZone(
-                      b.startAt,
-                      crews.data?.find((c) => c.id === b.crewId)?.timezone ??
-                        browserZone,
-                    ) === day,
-                )
-                .sort((a, b) => a.startAt.localeCompare(b.startAt));
-              return (
-                <section
-                  key={day}
-                  className="grid gap-3 border-t pt-4 lg:grid-cols-[180px_1fr]"
-                >
-                  <div>
-                    <h2 className="font-semibold">
-                      {new Date(`${day}T12:00:00`).toLocaleDateString([], {
-                        weekday: "short",
-                        month: "short",
-                        day: "numeric",
-                      })}
-                    </h2>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {
-                        dayBookings.filter((b) => b.status === "Confirmed")
-                          .length
-                      }{" "}
-                      confirmed bookings
-                    </p>
-                  </div>
-                  <div className="grid gap-3 xl:grid-cols-2">
-                    {dayBookings.map(bookingCard)}
-                    {dayBookings.length === 0 && (
-                      <p className="py-2 text-sm text-muted-foreground">
-                        No bookings for this day.
+          <div
+            className={
+              jobsToSchedule.length
+                ? "grid items-start gap-6 xl:grid-cols-[minmax(16rem,1fr)_minmax(0,2fr)]"
+                : undefined
+            }
+          >
+            {jobsToSchedule.length > 0 && (
+              <aside
+                className="min-w-0 space-y-3 rounded-lg border bg-card p-4"
+                aria-label="Needs scheduling"
+              >
+                <h2 className="font-semibold">Needs scheduling</h2>
+                <p className="text-sm text-muted-foreground">
+                  Drag a job onto a day, or select Schedule.
+                </p>
+                <ul className="max-h-96 space-y-2 overflow-y-auto">
+                  {jobsToSchedule.map((job) => (
+                    <li
+                      key={job.id}
+                      className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border bg-background p-2"
+                      draggable={!busy}
+                      onDragStart={(event) => {
+                        event.dataTransfer.setData(jobDragType, job.id);
+                        event.dataTransfer.effectAllowed = "move";
+                        setDraggedJobId(job.id);
+                      }}
+                      onDragEnd={() => setDraggedJobId(null)}
+                    >
+                      <GripVertical
+                        className="h-4 w-4 shrink-0 cursor-grab text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <Link
+                          href={`/jobs/${job.id}`}
+                          draggable={false}
+                          className="break-words text-sm font-medium hover:underline"
+                        >
+                          {job.customerName}
+                        </Link>
+                        <p className="text-xs text-muted-foreground">
+                          {job.jobNumber} · {job.status}
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        aria-label={`Schedule ${job.jobNumber} for ${job.customerName}`}
+                        onClick={() => openBooking(undefined, job.id)}
+                      >
+                        Schedule
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </aside>
+            )}
+            <div className="min-w-0 space-y-4">
+              {days.map((day) => {
+                const dayBookings = visibleBookings
+                  .filter(
+                    (b) =>
+                      dateInZone(
+                        b.startAt,
+                        crews.data?.find((c) => c.id === b.crewId)?.timezone ??
+                          browserZone,
+                      ) === day,
+                  )
+                  .sort((a, b) => a.startAt.localeCompare(b.startAt));
+                return (
+                  <section
+                    key={day}
+                    aria-labelledby={`installation-day-${day}`}
+                    className={`grid gap-3 border-t pt-4 lg:grid-cols-[180px_1fr] ${draggedJob ? "bg-muted/40" : ""}`}
+                    onDragOver={(event) => {
+                      if (!draggedJob) return;
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                    }}
+                    onDrop={(event) => {
+                      if (
+                        !draggedJob ||
+                        event.dataTransfer.getData(jobDragType) !==
+                          draggedJob.id
+                      )
+                        return;
+                      event.preventDefault();
+                      setDraggedJobId(null);
+                      openBooking(undefined, draggedJob.id, day);
+                    }}
+                  >
+                    <div>
+                      <h2
+                        id={`installation-day-${day}`}
+                        className="font-semibold"
+                      >
+                        {new Date(`${day}T12:00:00`).toLocaleDateString([], {
+                          weekday: "short",
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </h2>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {
+                          dayBookings.filter((b) => b.status === "Confirmed")
+                            .length
+                        }{" "}
+                        confirmed bookings
                       </p>
-                    )}
-                  </div>
-                </section>
-              );
-            })}
+                    </div>
+                    <div className="grid gap-3 xl:grid-cols-2">
+                      {dayBookings.map(bookingCard)}
+                      {dayBookings.length === 0 && (
+                        <p className="py-2 text-sm text-muted-foreground">
+                          No bookings for this day.
+                        </p>
+                      )}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
           </div>
         )
       )}
@@ -692,7 +853,7 @@ export function InstallationSchedule({
         onOpenChange={(v) => {
           if (!busy && (v || bookingChanges.confirmDiscard())) {
             setBookingOpen(v);
-            if (!v) updateQuery({ booking: null });
+            if (!v) updateQuery({ booking: null, create: null, jobId: null });
           }
         }}
       >
@@ -724,6 +885,11 @@ export function InstallationSchedule({
                 ))}
               </select>
             </label>
+            {materialWarnings.length > 0 && (
+              <ul className="space-y-1 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                {materialWarnings.map((item) => <li key={item.code}>{item.message}</li>)}
+              </ul>
+            )}
             <label className="block space-y-1 text-sm">
               Crew
               <select

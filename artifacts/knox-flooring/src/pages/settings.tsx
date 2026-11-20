@@ -18,6 +18,7 @@ import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { resolveStages } from "@/lib/lead-links";
 import { WON_STAGE, LOST_STAGE, type CommissionBasis } from "@/lib/types";
 import { QuickBooksSettings } from "@/components/settings/QuickBooksSettings";
+import { OutlookSettings } from "@/components/settings/OutlookSettings";
 import { DemoSettings } from "@/components/settings/DemoSettings";
 import { useAuth } from "@/contexts/auth";
 import { OperatingSettings } from "@/components/settings/OperatingSettings";
@@ -215,6 +216,7 @@ export default function Settings() {
 
       {saveError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-900">{saveError}</p>}
       <QuickBooksSettings />
+      <OutlookSettings />
       <DemoSettings />
       <OperatingSettings />
 

@@ -3,6 +3,7 @@ import { logger } from "./lib/logger";
 import { startAutoSync } from "./lib/sync-measurements";
 import { bootstrapOwner } from "./routes/auth";
 import { startQuickBooksWorker } from "./lib/quickbooks-worker";
+import { startOutlookBookingWorker } from "./lib/outlook-calendar";
 import { assertMigrationsApplied, pool } from "@workspace/db";
 
 const rawPort = process.env["PORT"];
@@ -34,6 +35,7 @@ async function start() {
     if (process.env.BACKGROUND_WORKERS_ENABLED !== "false" && process.env.READ_ONLY_RECOVERY !== "true") {
       startAutoSync();
       startQuickBooksWorker();
+      startOutlookBookingWorker();
     } else {
       logger.info("Background integration workers are disabled");
     }

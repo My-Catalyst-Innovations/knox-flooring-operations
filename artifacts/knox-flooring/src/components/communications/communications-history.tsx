@@ -1,6 +1,7 @@
 import { Mail, MessageSquare, ArrowDownLeft, ArrowUpRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { communicationStatus } from "@/lib/communication-status";
 import type {
   Communication,
   CommunicationChannel,
@@ -100,10 +101,10 @@ export function CommunicationsHistory({
                 ) : (
                   <ArrowUpRight className="w-3 h-3" />
                 )}
-                {inbound ? "Received" : "Sent"}
+                {inbound ? "Incoming" : "Outgoing"}
               </Badge>
               <Badge variant={statusVariant(c.status)} className="text-[10px]">
-                {c.status}
+                {communicationStatus(c)}
               </Badge>
               <span className="ml-auto text-xs text-muted-foreground">
                 {formatWhen(c.createdAt)}

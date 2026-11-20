@@ -41,6 +41,7 @@ export async function deleteUnreferencedJob(tx: Transaction, jobId: string) {
     UNION ALL SELECT 'converted estimates' WHERE EXISTS (SELECT 1 FROM estimate_drafts WHERE converted_job_id = ${jobId})
     UNION ALL SELECT 'crew bookings' WHERE EXISTS (SELECT 1 FROM crew_bookings WHERE job_id = ${jobId})
     UNION ALL SELECT 'callbacks' WHERE EXISTS (SELECT 1 FROM job_callbacks WHERE job_id = ${jobId})
+    UNION ALL SELECT 'job updates' WHERE EXISTS (SELECT 1 FROM job_updates WHERE job_id = ${jobId})
     UNION ALL SELECT 'stock movements' WHERE EXISTS (SELECT 1 FROM inventory_movements WHERE job_id = ${jobId})
     UNION ALL SELECT 'stock reservations' WHERE EXISTS (SELECT 1 FROM inventory_reservations WHERE job_id = ${jobId})
     UNION ALL SELECT 'material deliveries' WHERE EXISTS (SELECT 1 FROM materials WHERE job_id = ${jobId})

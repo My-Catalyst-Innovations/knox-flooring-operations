@@ -4,7 +4,9 @@ import { AlertCircle, ArrowRight, CheckCircle2, CircleDollarSign, ExternalLink, 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import { VendorBillSandbox, type SandboxVendor } from "./VendorBillSandbox";
 
 type Status = {
   configured: boolean;
@@ -42,6 +44,9 @@ export function QuickBooksSettings() {
   const [selected, setSelected] = useState<string[]>([]);
   const [selectedDemo, setSelectedDemo] = useState<string[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [reconciledConnection, setReconciledConnection] = useState("");
+  const [vendors, setVendors] = useState<SandboxVendor[]>([]);
+  const [manualItem, setManualItem] = useState({ productId: "", itemId: "" });
   const [busy, setBusy] = useState("");
   const load = async () => {
     const [s, q] = await Promise.all([
@@ -58,8 +63,10 @@ export function QuickBooksSettings() {
       await task();
       toast({ title: success });
       await load();
+      return true;
     } catch (error) {
       toast({ title: "QuickBooks action failed", description: error instanceof Error ? error.message : String(error), variant: "destructive" });
+      return false;
     } finally {
       setBusy("");
     }
@@ -69,15 +76,20 @@ export function QuickBooksSettings() {
     window.location.assign(result.authorizationUrl);
   };
   const reconcile = async () => {
-    const result = await customFetch<{ candidates: Candidate[] }>("/api/quickbooks/reconcile", { method: "POST", responseType: "json" });
+    const result = await customFetch<{ candidates: Candidate[]; connectionId: string; lists: { vendor: SandboxVendor[] } }>("/api/quickbooks/reconcile", { method: "POST", responseType: "json" });
     setCandidates(result.candidates);
+    setReconciledConnection(result.connectionId);
+    setVendors(result.lists.vendor);
   };
   const decide = async (candidate: Candidate, decision: "link" | "ignore", quickbooksId = "") => {
-    await run(`map-${candidate.localId}`, () => customFetch(`/api/quickbooks/entity-mappings/${candidate.entityType}/${candidate.localId}`, { method: "PUT", body: JSON.stringify({ decision, quickbooksId }), responseType: "json" }), `${candidate.localName} reconciled`);
-    setCandidates((value) => value.filter((item) => item.localId !== candidate.localId || item.entityType !== candidate.entityType));
+    const saved = await run(`map-${candidate.localId}`, () => customFetch(`/api/quickbooks/entity-mappings/${candidate.entityType}/${candidate.localId}`, { method: "PUT", body: JSON.stringify({ decision, quickbooksId, connectionId: reconciledConnection }), responseType: "json" }), `${candidate.localName} reconciled`);
+    if (saved) {
+      setCandidates((value) => value.filter((item) => item.localId !== candidate.localId || item.entityType !== candidate.entityType));
+      setManualItem({ productId: "", itemId: "" });
+    }
   };
   const demoQueue = queue.filter((item) => item.payload?.demoSimulation).sort((a, b) => Number(a.payload?.flowStep ?? 0) - Number(b.payload?.flowStep ?? 0));
-  const liveQueue = queue.filter((item) => !item.payload?.demoSimulation);
+  const liveQueue = queue.filter((item) => !item.payload?.demoSimulation && item.entityType !== "vendor_bill");
   const pending = liveQueue.filter((item) => item.status === "pending_approval");
   const failures = liveQueue.filter((item) => item.status === "failed");
   const pendingDemo = demoQueue.filter((item) => item.status === "demo_pending");
@@ -108,7 +120,13 @@ export function QuickBooksSettings() {
       </CardContent>
     </Card>}
 
-    {candidates.length > 0 && <Card><CardHeader><CardTitle>Reconcile existing records</CardTitle><CardDescription>Suggested links require owner approval. Ambiguous records are never merged automatically.</CardDescription></CardHeader><CardContent className="space-y-2">{candidates.map((candidate) => <div key={`${candidate.entityType}-${candidate.localId}`} className="rounded-lg border p-3"><div className="font-medium">{candidate.localName} <span className="text-xs font-normal text-muted-foreground">({candidate.entityType})</span></div><div className="mt-2 flex flex-wrap gap-2">{candidate.matches.map((match) => <Button key={match.id} size="sm" variant="outline" disabled={busy !== ""} onClick={() => void decide(candidate, "link", match.id)}>Link to {match.name} · {match.confidence}</Button>)}<Button size="sm" variant="ghost" disabled={busy !== ""} onClick={() => void decide(candidate, "ignore")}>Ignore</Button>{candidate.matches.length === 0 && <span className="self-center text-xs text-muted-foreground">No confident match—create it through the approval queue.</span>}</div></div>)}</CardContent></Card>}
+    {status?.connection.connected && status.connection.environment === "sandbox" && <VendorBillSandbox key="sandbox" mode="sandbox" vendors={vendors} />}
+    {status?.demoAvailable && !status.connection.connected && <VendorBillSandbox key="simulated" mode="simulated" vendors={[]} />}
+
+    {candidates.length > 0 && <Card><CardHeader><CardTitle>Reconcile existing records</CardTitle><CardDescription>Review suggested links and confirm the QuickBooks record for each product.</CardDescription></CardHeader><CardContent className="space-y-2">{candidates.map((candidate) => <div key={`${candidate.entityType}-${candidate.localId}`} className="rounded-lg border p-3"><div className="font-medium">{candidate.localName} <span className="text-xs font-normal text-muted-foreground">({candidate.entityType})</span></div><div className="mt-2 flex flex-wrap gap-2">{candidate.matches.map((match) => <Button key={match.id} size="sm" variant="outline" disabled={busy !== ""} onClick={() => void decide(candidate, "link", match.id)}>Link to {match.name} · {match.confidence}</Button>)}
+    {candidate.entityType === "item" && manualItem.productId !== candidate.localId && <Button size="sm" variant="ghost" disabled={busy !== ""} onClick={() => setManualItem({ productId: candidate.localId, itemId: "" })}>Link by item ID</Button>}
+    {candidate.entityType === "item" && manualItem.productId === candidate.localId && <div className="flex gap-2"><Input className="h-8 w-36" aria-label={`Item ID for ${candidate.localName}`} value={manualItem.itemId} inputMode="numeric" onChange={(event) => setManualItem({ productId: candidate.localId, itemId: event.target.value })} /><Button size="sm" variant="outline" disabled={busy !== "" || !/^\d+$/.test(manualItem.itemId)} onClick={() => void decide(candidate, "link", manualItem.itemId)}>Confirm item link</Button></div>}
+    <Button size="sm" variant="ghost" disabled={busy !== ""} onClick={() => void decide(candidate, "ignore")}>Ignore</Button>{candidate.matches.length === 0 && <span className="self-center text-xs text-muted-foreground">No suggested link</span>}</div></div>)}</CardContent></Card>}
 
     <Card><CardHeader><CardTitle>Real-company accounting approval queue</CardTitle><CardDescription>Operational edits never export automatically. These records remain parked until an owner connects and approves a real QuickBooks company.</CardDescription></CardHeader><CardContent className="space-y-3">
       {pending.length === 0 ? <p className="text-sm text-muted-foreground">No real-company records are awaiting approval.</p> : pending.map((item) => <label key={item.id} className="flex items-start gap-3 rounded-lg border p-3"><input className="mt-1" type="checkbox" checked={selected.includes(item.id)} disabled={!status?.connection.connected} onChange={(event) => setSelected((value) => event.target.checked ? [...value, item.id] : value.filter((id) => id !== item.id))} /><div className="min-w-0 flex-1"><div className="font-medium capitalize">{item.entityType} · {item.action}</div><div className="text-xs text-muted-foreground">Local record {item.localId}</div>{item.warnings?.map((warning) => <div key={warning} className="mt-1 text-xs text-amber-600">{warning}</div>)}</div></label>)}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useUrlState } from "@/hooks/use-url-state";
+import { useLeadConversion } from "@/hooks/use-lead-conversion";
 import { useUnsavedChanges } from "@/hooks/use-unsaved-changes";
 import { DataBoundary, blocksLoadedData } from "@/components/layout/DataBoundary";
 import { useStore } from "@/hooks/use-store";
@@ -62,7 +63,7 @@ import {
   type FlooringType,
 } from "@/lib/types";
 import { getFollowUpStatus } from "./leads";
-import { convertLeadToJob, markLeadLost } from "@/lib/lead-actions";
+import { markLeadLost } from "@/lib/lead-actions";
 import {
   resolveStages,
   formatLeadAddress,
@@ -139,7 +140,8 @@ function leadToForm(lead?: Lead): LeadForm {
 export default function LeadDetail() {
   const { id } = useParams();
   const [, navigate] = useLocation();
-  const { leads, jobs, updateLead, addJob, settings, queryState } = useStore();
+  const { leads, jobs, updateLead, settings, queryState } = useStore();
+  const { convertLeadToJob, pendingLeadIds } = useLeadConversion();
   const { toast } = useToast();
 
   const lead = leads.find((l) => l.id === id);
@@ -181,6 +183,7 @@ export default function LeadDetail() {
   }
 
   const fu = getFollowUpStatus(lead);
+  const converting = pendingLeadIds.has(lead.id);
   const convertedJob = lead.convertedJobId
     ? jobs.find((j) => j.id === lead.convertedJobId)
     : undefined;
@@ -189,7 +192,7 @@ export default function LeadDetail() {
 
 
   const handleSave = async () => {
-    if (!isDirty || saving) return;
+    if (!isDirty || saving || converting) return;
     setSaving(true);
     try {
       await updateLead(lead.id, {
@@ -254,17 +257,26 @@ export default function LeadDetail() {
   };
 
   const handleConvert = async () => {
-    if (!confirmDiscard()) return;
+    if (converting || saving || !confirmDiscard()) return;
     if (lead.convertedJobId) {
-      navigate(`/jobs/${lead.convertedJobId}`);
+      navigate(`/jobs/${encodeURIComponent(lead.convertedJobId)}`);
       return;
     }
-    const newJob = await convertLeadToJob(lead, { addJob, updateLead });
-    toast({
-      title: "Lead converted to job",
-      description: `Created ${newJob.jobNumber}.`,
-    });
-    navigate(`/jobs/${newJob.id}`);
+    try {
+      const job = await convertLeadToJob(lead);
+      if (!job) return;
+      toast({
+        title: "Lead converted to job",
+        description: `Job ${job.jobNumber} is linked to this lead.`,
+      });
+      navigate(`/jobs/${encodeURIComponent(job.id)}`);
+    } catch (error) {
+      toast({
+        title: "Lead conversion failed",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
   };
 
   const reviewMessage = `Hi ${lead.customerName}, thank you for choosing ${
@@ -308,10 +320,15 @@ export default function LeadDetail() {
         <div className="ml-auto flex flex-wrap gap-2">
           {!isClosed && (
             <>
-              <Button onClick={handleConvert}>
-                <Trophy className="w-4 h-4 mr-2" /> Win &amp; Convert
+              <Button onClick={handleConvert} disabled={converting || saving}>
+                <Trophy className="w-4 h-4 mr-2" />
+                {converting ? "Converting…" : "Win & Convert"}
               </Button>
-              <Button variant="outline" onClick={() => setLostOpen(true)}>
+              <Button
+                variant="outline"
+                onClick={() => setLostOpen(true)}
+                disabled={converting}
+              >
                 <XCircle className="w-4 h-4 mr-2" /> Mark Lost
               </Button>
             </>
@@ -361,7 +378,14 @@ export default function LeadDetail() {
       <div className="grid md:grid-cols-3 gap-6">
         <div className="md:col-span-2 min-w-0 space-y-6">
           <div className="flex gap-1 overflow-x-auto border-b" role="group" aria-label="Lead record sections">{[["overview", "Overview"], ["activity", "Activity"], ["project", "Project"], ["proposals", "Proposals"], ["files", "Files"]].map(([value, label]) => <Button key={value} variant={recordTab === value ? "secondary" : "ghost"} aria-pressed={recordTab === value} onClick={() => setRecordTab(value)}>{label}</Button>)}</div>
-          {isDirty && <div className="sticky top-20 z-10 flex items-center justify-between gap-3 rounded-md border bg-white p-3"><span className="text-sm">You have unsaved detail changes.</span><Button size="sm" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "Save changes"}</Button></div>}
+          {isDirty && (
+            <div className="sticky top-20 z-10 flex items-center justify-between gap-3 rounded-md border bg-white p-3">
+              <span className="text-sm">You have unsaved detail changes.</span>
+              <Button size="sm" onClick={handleSave} disabled={saving || converting}>
+                {saving ? "Saving…" : "Save changes"}
+              </Button>
+            </div>
+          )}
           {recordTab === "overview" && <Card>
             <CardHeader>
               <CardTitle>Lead Details</CardTitle>
@@ -471,7 +495,11 @@ export default function LeadDetail() {
                 </div>
                 <div className="space-y-2">
                   <Label>Stage</Label>
-                  <Select value={lead.stage} onValueChange={handleStageChange}>
+                  <Select
+                    value={lead.stage}
+                    onValueChange={handleStageChange}
+                    disabled={converting}
+                  >
                     <SelectTrigger aria-label="Stage">
                       <SelectValue />
                     </SelectTrigger>
@@ -500,7 +528,7 @@ export default function LeadDetail() {
                     Unsaved changes
                   </span>
                 )}
-                <Button onClick={handleSave} disabled={!isDirty || saving}>
+                <Button onClick={handleSave} disabled={!isDirty || saving || converting}>
                   {saving ? "Saving..." : "Save Changes"}
                 </Button>
               </div>

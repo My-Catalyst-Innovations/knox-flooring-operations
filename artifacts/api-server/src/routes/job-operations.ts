@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import {
   db,
   jobsTable,
@@ -8,8 +8,11 @@ import {
   crewsTable,
   crewBookingsTable,
   jobCallbacksTable,
+  jobMaterialsTable,
+  jobUpdatesTable,
   laborEntriesTable,
   settingsTable,
+  usersTable,
 } from "@workspace/db";
 import { requireRole } from "../middlewares/auth";
 import { domainRoute, parse, revision, id } from "../lib/domain-http";
@@ -22,6 +25,12 @@ import {
 import { convertLead } from "../lib/conversions";
 
 const router = Router();
+const jobUpdateFields = {
+  id: jobUpdatesTable.id,
+  authorName: jobUpdatesTable.authorName,
+  message: jobUpdatesTable.message,
+  createdAt: jobUpdatesTable.createdAt,
+};
 router.get(
   "/workspace-brand",
   domainRoute(async (_req, res) => {
@@ -58,6 +67,40 @@ router.get(
   }),
 );
 router.get(
+  "/jobs/:id/updates",
+  domainRoute(async (req, res) => {
+    const updates = await db.select(jobUpdateFields).from(jobUpdatesTable)
+      .where(eq(jobUpdatesTable.jobId, id(req)))
+      .orderBy(desc(jobUpdatesTable.createdAt), desc(jobUpdatesTable.id)).limit(50);
+    res.json(updates);
+  }),
+);
+router.post(
+  "/jobs/:id/updates",
+  domainRoute(async (req, res) => {
+    const jobId = id(req);
+    const authorId = req.auth!.userId;
+    const data = parse(z.object({ id: z.string().uuid(), message: z.string().trim().min(1).max(1500) }), req.body);
+    const result = await db.transaction(async (tx) => {
+      const [job] = await tx.select({ id: jobsTable.id }).from(jobsTable)
+        .where(eq(jobsTable.id, jobId)).for("key share");
+      if (!job) throw new DomainError(404, "Job not found");
+      const [author] = await tx.select({ name: usersTable.name }).from(usersTable).where(eq(usersTable.id, authorId));
+      if (!author) throw new DomainError(403, "The author could not be verified.");
+      const [created] = await tx.insert(jobUpdatesTable).values({
+        ...data, jobId, authorId, authorName: author.name, createdAt: new Date().toISOString(),
+      }).onConflictDoNothing().returning(jobUpdateFields);
+      if (created) return { status: 201, update: created };
+      const [existing] = await tx.select().from(jobUpdatesTable).where(eq(jobUpdatesTable.id, data.id));
+      if (!existing || existing.authorId !== authorId || existing.jobId !== jobId || existing.message !== data.message) {
+        throw new DomainError(409, "This update ID already belongs to a different entry.");
+      }
+      return { status: 200, update: { id: existing.id, authorName: existing.authorName, message: existing.message, createdAt: existing.createdAt } };
+    });
+    res.status(result.status).json(result.update);
+  }),
+);
+router.get(
   "/jobs/:id/entry-context",
   domainRoute(async (req, res) => {
     if (
@@ -69,7 +112,7 @@ router.get(
       )[0]
     )
       throw new DomainError(404, "Job not found");
-    const [crews, bookings, callbacks] = await Promise.all([
+    const [crews, bookings, callbacks, materials] = await Promise.all([
       db.select().from(crewsTable),
       db
         .select()
@@ -79,6 +122,8 @@ router.get(
         .select()
         .from(jobCallbacksTable)
         .where(eq(jobCallbacksTable.jobId, id(req))),
+      db.select({ id: jobMaterialsTable.id, name: jobMaterialsTable.name, quantity: jobMaterialsTable.quantity, unit: jobMaterialsTable.unit })
+        .from(jobMaterialsTable).where(eq(jobMaterialsTable.jobId, id(req))),
     ]);
     res.json({
       crews: crews
@@ -100,6 +145,7 @@ router.get(
         reason: c.reason,
         status: c.status,
       })),
+      materials,
     });
   }),
 );

@@ -7,10 +7,15 @@ import {
   operation,
   useRefreshOperations,
   quantity,
-  type StockMovement,
-  type Reservation,
-  type StockSummary,
 } from "@/lib/operations";
+import {
+  inventoryRoles,
+  warehouseName,
+  type Warehouse,
+  type WarehouseReservation,
+  type WarehouseStockMovement,
+  type WarehouseStockSummary,
+} from "@/lib/warehouse-inventory";
 import type { Product } from "@/lib/types";
 import {
   Dialog,
@@ -21,6 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { WarehouseTransfers } from "./WarehouseTransfers";
 
 const selectStyle = "h-11 w-full rounded-lg border bg-background px-3 text-sm";
 export function StockActivity({
@@ -32,17 +38,22 @@ export function StockActivity({
 }) {
   const { user } = useAuth();
   const { jobs, queryState } = useStore();
-  const summaries = useOperation<StockSummary[]>("/inventory/summary", [
-    "owner",
-    "operations",
-  ]);
-  const movements = useOperation<StockMovement[]>(
-    `/inventory/movements?productId=${encodeURIComponent(product.id)}`,
-    ["owner", "operations"],
+  const summaries = useOperation<WarehouseStockSummary[]>(
+    "/inventory/summary",
+    inventoryRoles,
   );
-  const reservations = useOperation<Reservation[]>(
+  const warehouseQuery = useOperation<Warehouse[]>(
+    "/inventory/warehouses",
+    inventoryRoles,
+  );
+  const warehouses = warehouseQuery.isError ? [] : (warehouseQuery.data ?? []);
+  const movements = useOperation<WarehouseStockMovement[]>(
+    `/inventory/movements?productId=${encodeURIComponent(product.id)}`,
+    inventoryRoles,
+  );
+  const reservations = useOperation<WarehouseReservation[]>(
     `/inventory/reservations?productId=${encodeURIComponent(product.id)}`,
-    ["owner", "operations"],
+    inventoryRoles,
   );
   const summary = summaries.isError
     ? undefined
@@ -51,10 +62,13 @@ export function StockActivity({
   const [kind, setKind] = useState("receipt");
   const [amount, setAmount] = useState("");
   const [jobId, setJobId] = useState("");
+  const [warehouseId, setWarehouseId] = useState("");
+  const [returnOfMovementId, setReturnOfMovementId] = useState("");
   const [reason, setReason] = useState("");
   const [overrideReason, setOverrideReason] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [transferBusy, setTransferBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [requestKey, setRequestKey] = useState<string>(() =>
     crypto.randomUUID(),
@@ -62,10 +76,22 @@ export function StockActivity({
   const canWrite = user?.role === "owner" || user?.role === "operations";
   const changes = useUnsavedForm(
     canWrite && product.inventoryType === "Inventory",
-    { kind, amount, jobId, reason, overrideReason },
+    {
+      kind,
+      amount,
+      jobId,
+      warehouseId,
+      returnOfMovementId,
+      reason,
+      overrideReason,
+    },
   );
+  const jobIssues =
+    movements.data?.filter(
+      (movement) => movement.kind === "consume" && movement.jobId === jobId,
+    ) ?? [];
   const close = () => {
-    if (!busy && changes.confirmDiscard()) onClose();
+    if (!busy && !transferBusy && changes.confirmDiscard()) onClose();
   };
   const change = () => {
     setRequestKey(crypto.randomUUID());
@@ -85,6 +111,8 @@ export function StockActivity({
         throw new Error("Enter a valid quantity in the product's stock unit.");
       if (kind === "reserve" && !jobId)
         throw new Error("Choose the job receiving this reservation.");
+      if (kind === "return" && jobId && !returnOfMovementId)
+        throw new Error("Choose the original stock issue for this job return.");
       if (kind !== "reserve" && !reason.trim())
         throw new Error("Explain the receipt, usage, return or adjustment.");
       await operation(
@@ -93,6 +121,9 @@ export function StockActivity({
         {
           productId: product.id,
           jobId: jobId || undefined,
+          warehouseId: warehouseId || null,
+          returnOfMovementId:
+            kind === "return" ? returnOfMovementId || undefined : undefined,
           quantity: Number(amount),
           kind,
           reason,
@@ -105,12 +136,15 @@ export function StockActivity({
         kind,
         amount: "",
         jobId,
+        warehouseId,
+        returnOfMovementId: "",
         reason: "",
         overrideReason: "",
       });
       setAmount("");
       setReason("");
       setOverrideReason("");
+      setReturnOfMovementId("");
       setRequestKey(crypto.randomUUID());
       setMessage("Stock activity recorded.");
     } catch (e) {
@@ -122,7 +156,7 @@ export function StockActivity({
     }
   };
   const updateReservation = async (
-    r: Reservation,
+    r: WarehouseReservation,
     status: "Released" | "Consumed",
   ) => {
     if (busy) return;
@@ -187,7 +221,25 @@ export function StockActivity({
             </div>
           ))}
         </div>
-        {(summaries.isError || movements.isError || reservations.isError) && (
+        {summary?.locations?.map((location) => (
+          <div
+            key={location.warehouseId ?? "unassigned"}
+            className="flex flex-wrap justify-between gap-1 border-b pb-2 text-sm"
+          >
+            <span className="font-medium">
+              {warehouseName(warehouses, location.warehouseId)}
+            </span>
+            <span className="text-muted-foreground">
+              {quantity(location.onHand)} on hand ·{" "}
+              {quantity(location.reserved)} reserved ·{" "}
+              {quantity(location.available)} available
+            </span>
+          </div>
+        ))}
+        {(summaries.isError ||
+          movements.isError ||
+          reservations.isError ||
+          warehouseQuery.isError) && (
           <p role="alert" className="text-sm text-destructive">
             Stock records could not load.{" "}
             <button className="underline" onClick={() => refresh()}>
@@ -204,7 +256,15 @@ export function StockActivity({
           </p>
         )}
         {canWrite && product.inventoryType === "Inventory" && (
-          <fieldset disabled={busy} className="space-y-3 rounded-lg border p-4">
+          <fieldset
+            disabled={
+              busy ||
+              transferBusy ||
+              warehouseQuery.isLoading ||
+              warehouseQuery.isError
+            }
+            className="space-y-3 rounded-lg border p-4"
+          >
             <h3 className="font-semibold">Record activity</h3>
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-1 text-sm">
@@ -214,6 +274,7 @@ export function StockActivity({
                   value={kind}
                   onChange={(e) => {
                     setKind(e.target.value);
+                    setReturnOfMovementId("");
                     change();
                   }}
                 >
@@ -222,6 +283,24 @@ export function StockActivity({
                   <option value="consume">Record unreserved usage</option>
                   <option value="return">Return stock</option>
                   <option value="adjustment">Adjust stock (+ / −)</option>
+                </select>
+              </label>
+              <label className="space-y-1 text-sm">
+                Warehouse
+                <select
+                  className={selectStyle}
+                  value={warehouseId}
+                  onChange={(event) => {
+                    setWarehouseId(event.target.value);
+                    change();
+                  }}
+                >
+                  <option value="">Unassigned</option>
+                  {warehouses.map((warehouse) => (
+                    <option key={warehouse.id} value={warehouse.id}>
+                      {warehouse.name}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="space-y-1 text-sm">
@@ -246,6 +325,7 @@ export function StockActivity({
                   value={jobId}
                   onChange={(e) => {
                     setJobId(e.target.value);
+                    setReturnOfMovementId("");
                     change();
                   }}
                 >
@@ -257,6 +337,32 @@ export function StockActivity({
                   ))}
                 </select>
               </label>
+              {kind === "return" && jobId && (
+                <label className="space-y-1 text-sm">
+                  Original stock issue
+                  <select
+                    className={selectStyle}
+                    value={returnOfMovementId}
+                    onChange={(event) => {
+                      setReturnOfMovementId(event.target.value);
+                      change();
+                    }}
+                  >
+                    <option value="">
+                      {jobIssues.length
+                        ? "Choose an issue"
+                        : "No stock issues recorded for this job"}
+                    </option>
+                    {jobIssues.map((issue) => (
+                      <option key={issue.id} value={issue.id}>
+                        {new Date(issue.createdAt).toLocaleDateString()} ·{" "}
+                        {quantity(-issue.quantity)} {product.unit} ·{" "}
+                        {warehouseName(warehouses, issue.warehouseId)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <label className="space-y-1 text-sm">
                 Reason
                 <Input
@@ -304,6 +410,16 @@ export function StockActivity({
             {message}
           </p>
         )}
+        {canWrite && product.inventoryType === "Inventory" && (
+          <WarehouseTransfers
+            product={product}
+            warehouses={warehouses}
+            disabled={
+              busy || warehouseQuery.isLoading || warehouseQuery.isError
+            }
+            onSavingChange={setTransferBusy}
+          />
+        )}
         <section className="space-y-2">
           <h3 className="font-semibold">Active reservations</h3>
           {reservations.isLoading && (
@@ -320,21 +436,22 @@ export function StockActivity({
               >
                 <p className="text-sm">
                   {jobs.find((j) => j.id === r.jobId)?.jobNumber ?? r.jobId} ·{" "}
-                  {quantity(r.quantity)} {product.unit}
+                  {quantity(r.quantity)} {product.unit} ·{" "}
+                  {warehouseName(warehouses, r.warehouseId)}
                 </p>
                 {canWrite && (
                   <div className="flex gap-2">
                     <Button
                       size="sm"
                       variant="outline"
-                      disabled={busy}
+                      disabled={busy || transferBusy}
                       onClick={() => updateReservation(r, "Released")}
                     >
                       Release
                     </Button>
                     <Button
                       size="sm"
-                      disabled={busy}
+                      disabled={busy || transferBusy}
                       onClick={() => updateReservation(r, "Consumed")}
                     >
                       Record used
@@ -368,7 +485,10 @@ export function StockActivity({
                 </p>
                 <p className="text-muted-foreground">{m.reason}</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {new Date(m.createdAt).toLocaleString()}
+                  {new Date(m.createdAt).toLocaleString()} ·{" "}
+                  {warehouseName(warehouses, m.warehouseId)}
+                  {m.jobId &&
+                    ` · ${jobs.find((j) => j.id === m.jobId)?.jobNumber ?? m.jobId}`}
                 </p>
               </div>
               <strong className="whitespace-nowrap tabular-nums">

@@ -22,6 +22,8 @@ export const quickbooksEntityMappingsTable = pgTable("quickbooks_entity_mappings
   entityType: text("entity_type").notNull(),
   localId: text("local_id").notNull(),
   quickbooksId: text("quickbooks_id").notNull(),
+  realmId: text("realm_id"),
+  environment: text("environment"),
   syncToken: text("sync_token").notNull().default("0"),
   fingerprint: text("fingerprint").notNull().default(""),
   status: text("status").notNull().default("linked"),

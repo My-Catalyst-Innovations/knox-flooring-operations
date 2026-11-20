@@ -9,6 +9,7 @@ import {
   jobsTable,
   tasksTable,
   jobCallbacksTable,
+  outlookBookingSyncTable,
 } from "@workspace/db";
 import { requireRole } from "../middlewares/auth";
 import { domainRoute, parse, revision, id } from "../lib/domain-http";
@@ -23,6 +24,7 @@ import {
   gcalPatchEvent,
   gcalDeleteEvent,
 } from "../lib/google-calendar";
+import { trackOutlookBooking, requestOutlookBookingSync } from "../lib/outlook-calendar";
 
 const router = Router();
 const crewInput = z.object({
@@ -183,14 +185,19 @@ router.patch(
 router.get(
   "/bookings",
   domainRoute(async (req, res) => {
-    const rows = await db.select().from(crewBookingsTable);
+    const rows = await db.select({ booking: crewBookingsTable, outlook: outlookBookingSyncTable }).from(crewBookingsTable)
+      .leftJoin(outlookBookingSyncTable, eq(outlookBookingSyncTable.bookingId, crewBookingsTable.id));
     res.json(
       rows.filter(
-        (b) =>
+        ({ booking: b }) =>
           (!req.query.from || b.endAt > String(req.query.from)) &&
           (!req.query.to || b.startAt < String(req.query.to)) &&
           (!req.query.jobId || b.jobId === req.query.jobId),
-      ),
+      ).map(({ booking, outlook }) => !outlook ? booking : {
+        ...booking,
+        outlookSyncStatus: outlook.syncedRevision === booking.revision ? "synced" : outlook.lastError ? "error" : "pending",
+        outlookSyncError: outlook.lastError,
+      }),
     );
   }),
 );
@@ -377,6 +384,7 @@ const saveBooking = (create: boolean) =>
           })
           .where(eq(crewBookingsTable.id, current.id))
           .returning();
+        await trackOutlookBooking(tx, row.id, row.status);
         return row;
       }
       const [row] = await tx
@@ -391,8 +399,10 @@ const saveBooking = (create: boolean) =>
           updatedAt: now,
         })
         .returning();
+      await trackOutlookBooking(tx, row.id, row.status);
       return row;
     });
+    if (process.env.BACKGROUND_WORKERS_ENABLED !== "false") requestOutlookBookingSync();
     await syncBookingTask(result.taskId);
     res.status(create ? 201 : 200).json(result);
   });

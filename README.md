@@ -20,6 +20,13 @@ Copy `.env.example` into your local secret manager and never commit real credent
 
 QuickBooks tokens are encrypted with AES-256-GCM. Webhooks are signature checked and deduplicated. A five-minute change-data poll recovers missed invoice and payment events.
 
+## Outlook Calendar setup
+
+1. Register a Microsoft Entra **Web** application and register the exact callback URL in `OUTLOOK_REDIRECT_URI`. Set `OUTLOOK_CLIENT_ID`, `OUTLOOK_CLIENT_SECRET`, `OUTLOOK_TENANT_ID`, and a separate random `OUTLOOK_ENCRYPTION_KEY` in the deployment environment. [Authorization flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow)
+2. Grant delegated `User.Read` and `Calendars.ReadWrite.Shared` for a work account. In Outlook, accept any shared calendar invitation and verify calendar editing is allowed. For a personal Microsoft account use `OUTLOOK_TENANT_ID=consumers` and delegated `Calendars.ReadWrite`. The connection also requests `offline_access` so Catalyst can refresh authorization. [Microsoft calendar permissions](https://learn.microsoft.com/en-us/graph/outlook-create-event-in-shared-delegated-calendar)
+3. Apply database migrations, enable background workers, then connect from **Settings → Outlook Calendar** as the workspace owner and choose a writable calendar. Book one installation on a dedicated test calendar, reschedule it, and cancel it. The Outlook event follows the Catalyst booking and contains the job number and crew. Changes belong in Catalyst Works.
+4. Use **Publish existing upcoming bookings** when that calendar is ready for the rollout. New bookings use the selected calendar. Previously linked bookings stay in their original calendar. Settings shows sync failures and retries.
+
 ## Verification
 
 ```sh

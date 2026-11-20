@@ -46,6 +46,7 @@ import { RoomsScopeEditor } from "@/components/jobs/RoomsScopeEditor";
 import { MaterialsNeeded } from "@/components/jobs/MaterialsNeeded";
 import { MeasurementsPanel } from "@/components/measurements/measurements-panel";
 import { JobActuals } from "@/components/jobs/JobActuals";
+import { JobUpdates } from "@/components/jobs/JobUpdates";
 import { STAGE_ORDER } from "@/lib/stages";
 import {
   computeCosting,
@@ -160,7 +161,8 @@ export default function JobDetail() {
           </h1>
           <p className="text-muted-foreground mt-1">{job.customerName}</p>
         </div>
-        <div className="ml-auto flex gap-2">
+        <div className="ml-auto flex flex-wrap gap-2">
+          <Button variant="outline" asChild><Link href={`/jobs/${encodeURIComponent(job.id)}/work-order`}>Work order</Link></Button>
           <Button variant="outline" onClick={copyShareLink}>
             {copied ? (
               <Check className="w-4 h-4 mr-2" />
@@ -172,6 +174,7 @@ export default function JobDetail() {
         </div>
       </div>
 
+      <JobUpdates key={job.id} jobId={job.id} />
       <JobReadiness key={job.id} job={job} />
       <Card className="border-primary/30 bg-primary/5">
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-4 space-y-0">

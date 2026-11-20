@@ -19,7 +19,13 @@ import {
   useOperation,
   useRefreshOperations,
   currency,
+  quantity,
 } from "@/lib/operations";
+import {
+  inventoryRoles,
+  type Warehouse,
+  type WarehouseStockSummary,
+} from "@/lib/warehouse-inventory";
 import type { JobEntryContext } from "@workspace/api-client-react";
 import { formatStageDate } from "@/lib/stages";
 import type { Job, Product, LaborEntry, MaterialUsage } from "@/lib/types";
@@ -34,6 +40,7 @@ const blankLabor = () => ({
 });
 const blankUsage = () => ({
   productId: "",
+  warehouseId: "",
   material: "",
   quantity: "",
   cost: "",
@@ -69,6 +76,14 @@ export function JobActuals({
     "operations",
     "sales",
   ]);
+  const warehouseQuery = useOperation<Warehouse[]>(
+    "/inventory/warehouses",
+    inventoryRoles,
+  );
+  const stockQuery = useOperation<WarehouseStockSummary[]>(
+    "/inventory/summary",
+    inventoryRoles,
+  );
   const entries = laborQuery.data ?? [];
   const usage = usageQuery.data ?? [];
   const products = productsQuery.data ?? [];
@@ -88,6 +103,11 @@ export function JobActuals({
   const consumptionKey = useRef({ payload: "", key: "" });
   const selectedProduct = products.find((p) => p.id === material.productId);
   const usesStock = selectedProduct?.inventoryType === "Inventory";
+  const locations = stockQuery.isError
+    ? undefined
+    : stockQuery.data?.find(
+        (summary) => summary.productId === selectedProduct?.id,
+      )?.locations;
   const totalHours = entries.reduce((sum, entry) => sum + entry.hours, 0);
   const totalCost = usage.reduce((sum, entry) => sum + entry.cost, 0);
   const callbackName = (id?: string | null) =>
@@ -167,8 +187,14 @@ export function JobActuals({
             throw new Error(
               "An owner or operations teammate must consume stocked products.",
             );
+          if (warehouseQuery.isLoading || warehouseQuery.isError) {
+            throw new Error(
+              "Warehouse locations could not load. Try again before recording stock.",
+            );
+          }
           const data = {
             productId: material.productId,
+            warehouseId: material.warehouseId || null,
             jobId: job.id,
             callbackId: material.callbackId || undefined,
             kind: "consume",
@@ -530,6 +556,7 @@ export function JobActuals({
                       setMaterial({
                         ...material,
                         productId: e.target.value,
+                        warehouseId: "",
                         material: product?.name ?? "",
                         cost: product
                           ? String(
@@ -556,6 +583,34 @@ export function JobActuals({
                       Catalog unavailable. Retry before selecting stock.
                     </p>
                   )}
+                </div>
+              )}
+              {usesStock && canUseStock && (
+                <div className="space-y-2">
+                  <Label htmlFor="usage-warehouse">Issue from warehouse</Label>
+                  <select
+                    id="usage-warehouse"
+                    className={selectClass}
+                    disabled={
+                      warehouseQuery.isLoading || warehouseQuery.isError
+                    }
+                    value={material.warehouseId}
+                    onChange={(event) =>
+                      setMaterial({
+                        ...material,
+                        warehouseId: event.target.value,
+                      })
+                    }
+                  >
+                    <option value="">Unassigned</option>
+                    {warehouseQuery.data?.map((warehouse) => (
+                      <option key={warehouse.id} value={warehouse.id}>
+                        {warehouse.name}
+                        {locations &&
+                          ` · ${quantity(locations.find((location) => location.warehouseId === warehouse.id)?.available ?? 0)} available`}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               )}
               {!selectedProduct && (

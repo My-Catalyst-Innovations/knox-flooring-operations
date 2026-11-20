@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { MessageSquare } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { communicationStatus } from "@/lib/communication-status";
 import type { Communication } from "@/lib/types";
 
 interface SmsComposeDialogProps {
@@ -43,6 +44,8 @@ export function SmsComposeDialog({
   const [to, setTo] = useState(toNumber);
   const [body, setBody] = useState(defaultBody);
   const [sending, setSending] = useState(false);
+  const pending = useRef(false);
+  const formId = useId();
 
   useEffect(() => {
     if (open) {
@@ -54,6 +57,7 @@ export function SmsComposeDialog({
   }, [open]);
 
   const handleSend = async () => {
+    if (pending.current) return;
     if (!to.trim()) {
       toast({ title: "Recipient number is required", variant: "destructive" });
       return;
@@ -62,10 +66,11 @@ export function SmsComposeDialog({
       toast({ title: "Message is required", variant: "destructive" });
       return;
     }
+    pending.current = true;
     setSending(true);
     try {
-      await onSend({ to: to.trim(), body, customerName });
-      toast({ title: "Text message sent" });
+      const result = await onSend({ to: to.trim(), body, customerName });
+      toast({ title: communicationStatus(result) });
       onOpenChange(false);
     } catch (err) {
       toast({
@@ -74,12 +79,13 @@ export function SmsComposeDialog({
         variant: "destructive",
       });
     } finally {
+      pending.current = false;
       setSending(false);
     }
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => { if (!pending.current) onOpenChange(next); }}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -91,19 +97,23 @@ export function SmsComposeDialog({
               : "Send a text message."}
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4">
+        <form id={formId} className="space-y-4" onSubmit={(event) => { event.preventDefault(); void handleSend(); }}>
           <div className="space-y-2">
-            <Label>To</Label>
+            <Label htmlFor={`${formId}-to`}>To</Label>
             <Input
+              id={`${formId}-to`}
               type="tel"
+              required
               value={to}
               onChange={(e) => setTo(e.target.value)}
               placeholder="+1 865 555 0123"
             />
           </div>
           <div className="space-y-2">
-            <Label>Message</Label>
+            <Label htmlFor={`${formId}-body`}>Message</Label>
             <Textarea
+              id={`${formId}-body`}
+              required
               value={body}
               onChange={(e) => setBody(e.target.value.slice(0, MAX_SMS))}
               rows={5}
@@ -113,7 +123,7 @@ export function SmsComposeDialog({
               {body.length}/{MAX_SMS}
             </p>
           </div>
-        </div>
+        </form>
         <DialogFooter>
           <Button
             variant="outline"
@@ -122,7 +132,7 @@ export function SmsComposeDialog({
           >
             Cancel
           </Button>
-          <Button onClick={handleSend} disabled={sending}>
+          <Button type="submit" form={formId} disabled={sending}>
             {sending ? "Sending…" : "Send Text"}
           </Button>
         </DialogFooter>

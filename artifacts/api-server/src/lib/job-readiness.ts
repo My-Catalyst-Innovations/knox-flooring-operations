@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   jobsTable,
   settingsTable,
   crewBookingsTable,
   materialsTable,
+  jobMaterialsTable,
+  productsTable,
+  inventoryReservationsTable,
+  inventoryMovementsTable,
   auditEventsTable,
   type JobInsert,
 } from "@workspace/db";
@@ -25,6 +29,37 @@ export const JOB_STAGES = [
   "Completed",
   "Invoiced",
 ];
+
+async function stockReadinessMessages(tx: Transaction, jobId: string) {
+  const requirements = await tx.select().from(jobMaterialsTable).where(eq(jobMaterialsTable.jobId, jobId));
+  const productIds = [...new Set(requirements.flatMap((item) => item.productId ? [item.productId] : []))];
+  if (!productIds.length) return [];
+  const [products, reservations, movements] = await Promise.all([
+    tx.select().from(productsTable).where(inArray(productsTable.id, productIds)),
+    tx.select().from(inventoryReservationsTable).where(and(
+      inArray(inventoryReservationsTable.productId, productIds), eq(inventoryReservationsTable.status, "Active"),
+    )),
+    tx.select().from(inventoryMovementsTable).where(and(
+      inArray(inventoryMovementsTable.productId, productIds), eq(inventoryMovementsTable.jobId, jobId),
+      inArray(inventoryMovementsTable.kind, ["consume", "return"]),
+    )),
+  ]);
+  return products.filter((product) => product.inventoryType === "Inventory").flatMap((product) => {
+    const lines = requirements.filter((item) => item.productId === product.id);
+    if (lines.some((item) => item.unit.trim().toLowerCase() !== product.unit.trim().toLowerCase())) {
+      return [{ code: `material_unit_${product.id}`, message: `${product.name}: confirm the job and warehouse units before comparing stock.`, href: `/jobs/${jobId}` }];
+    }
+    const required = lines.reduce((sum, item) => sum + item.quantity, 0);
+    const reservedForOtherJobs = reservations.filter((item) => item.productId === product.id && item.jobId !== jobId)
+      .reduce((sum, item) => sum + item.quantity, 0);
+    const issuedToJob = movements.filter((item) => item.productId === product.id)
+      .reduce((sum, item) => sum - item.quantity, 0);
+    const usable = Math.max(0, product.quantityOnHand - reservedForOtherJobs) + Math.max(0, issuedToJob);
+    if (required - usable <= 0.000001) return [];
+    const format = (amount: number) => amount.toLocaleString("en-US", { maximumFractionDigits: 3 });
+    return [{ code: `material_shortage_${product.id}`, message: `${product.name}: ${format(usable)} of ${format(required)} ${product.unit} available or issued to this job.`, href: `/jobs/${jobId}` }];
+  });
+}
 export async function jobReadiness(
   tx: Transaction,
   jobId: string,
@@ -69,6 +104,7 @@ export async function jobReadiness(
         message: "Material receipt and condition have not been confirmed.",
         href: "/materials",
       });
+    (policy?.requireReceivedMaterials ? blockers : warnings).push(...await stockReadinessMessages(tx, jobId));
   }
   if (["Completed", "Invoiced"].includes(targetStage)) {
     const required = policy?.requiredCompletionChecks ?? [];

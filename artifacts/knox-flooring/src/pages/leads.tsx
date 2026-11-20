@@ -1,6 +1,7 @@
 import { DataBoundary } from "@/components/layout/DataBoundary";
 import { useUnsavedForm } from "@/hooks/use-unsaved-changes";
 import { useCreateContext } from "@/hooks/use-create-context";
+import { useLeadConversion } from "@/hooks/use-lead-conversion";
 import { useEffect, useRef, useState } from "react";
 import { useUrlState, useQueryControls } from "@/hooks/use-url-state";
 import { FilterSummary } from "@/components/layout/FilterSummary";
@@ -44,7 +45,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import { convertLeadToJob, markLeadLost } from "@/lib/lead-actions";
+import { markLeadLost } from "@/lib/lead-actions";
 import { resolveStages } from "@/lib/lead-links";
 import {
   WON_STAGE,
@@ -181,7 +182,8 @@ function byStageOrder(a: Lead, b: Lead): number {
 }
 
 export default function Leads() {
-  const { queryState, leads, settings, addLead, updateLead, addJob } = useStore();
+  const { queryState, leads, settings, addLead, updateLead } = useStore();
+  const { convertLeadToJob, pendingLeadIds } = useLeadConversion();
   const { toast } = useToast();
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [form, setForm] = useState<FormState>(emptyForm);
@@ -257,7 +259,7 @@ export default function Leads() {
     setDragId(null);
     if (!id) return;
     const lead = leads.find((l) => l.id === id);
-    if (!lead) return;
+    if (!lead || pendingLeadIds.has(lead.id)) return;
 
     const crossStage = lead.stage !== stage;
 
@@ -268,11 +270,21 @@ export default function Leads() {
     }
 
     if (crossStage && stage === WON_STAGE) {
-      const newJob = await convertLeadToJob(lead, { addJob, updateLead });
-      toast({
-        title: "Lead won & converted to job",
-        description: `Created ${newJob.jobNumber}.`,
-      });
+      try {
+        const job = await convertLeadToJob(lead);
+        if (job) {
+          toast({
+            title: "Lead won & converted to job",
+            description: `Job ${job.jobNumber} is linked to this lead.`,
+          });
+        }
+      } catch (error) {
+        toast({
+          title: "Lead conversion failed",
+          description: error instanceof Error ? error.message : "Please try again.",
+          variant: "destructive",
+        });
+      }
       return;
     }
 
@@ -439,6 +451,8 @@ export default function Leads() {
             return (
               <div
                 key={stage}
+                role="group"
+                aria-label={`${stage} stage`}
                 className={cn(
                   "w-72 shrink-0 rounded-lg border border-t-4 bg-muted/30 flex flex-col",
                   stageAccent(stage, stageIndex),
@@ -476,7 +490,7 @@ export default function Leads() {
                       return (
                         <div
                           key={lead.id}
-                          draggable
+                          draggable={!pendingLeadIds.has(lead.id)}
                           onDragStart={() => setDragId(lead.id)}
                           onDragEnd={() => {
                             setDragId(null);
@@ -518,6 +532,14 @@ export default function Leads() {
                                   {lead.source}
                                 </Badge>
                               </div>
+                              {pendingLeadIds.has(lead.id) && (
+                                <p
+                                  role="status"
+                                  className="mt-1 text-xs text-muted-foreground"
+                                >
+                                  Converting…
+                                </p>
+                              )}
                               {(fu === "overdue" || fu === "today") && (
                                 <div
                                   className={cn(

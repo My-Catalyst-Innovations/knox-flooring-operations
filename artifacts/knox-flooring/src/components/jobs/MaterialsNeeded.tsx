@@ -19,8 +19,13 @@ import {
   useRefreshOperations,
   quantity,
   type StockSummary,
-  type Reservation,
 } from "@/lib/operations";
+import {
+  inventoryRoles,
+  warehouseName,
+  type Warehouse,
+  type WarehouseReservation,
+} from "@/lib/warehouse-inventory";
 import type { JobMaterial, Product } from "@/lib/types";
 import type { JobEntryContext } from "@workspace/api-client-react";
 
@@ -43,7 +48,12 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
     "owner",
     "operations",
   ]);
-  const reservationsQuery = useOperation<Reservation[]>(
+  const warehouseQuery = useOperation<Warehouse[]>(
+    "/inventory/warehouses",
+    inventoryRoles,
+  );
+  const warehouses = warehouseQuery.data ?? [];
+  const reservationsQuery = useOperation<WarehouseReservation[]>(
     "/inventory/reservations",
     ["owner", "operations"],
   );
@@ -61,7 +71,8 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
   const [error, setError] = useState("");
   const [reserve, setReserve] = useState<JobMaterial | null>(null);
   const [reserveQuantity, setReserveQuantity] = useState("");
-  const [consume, setConsume] = useState<Reservation | null>(null);
+  const [reserveWarehouseId, setReserveWarehouseId] = useState("");
+  const [consume, setConsume] = useState<WarehouseReservation | null>(null);
   const [callbackId, setCallbackId] = useState("");
   const requestKey = useRef({ payload: "", key: "" });
   const run = async (action: () => Promise<unknown>, message: string) => {
@@ -118,9 +129,15 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
     event.preventDefault();
     if (!reserve?.productId) return;
     void run(async () => {
+      if (warehouseQuery.isLoading || warehouseQuery.isError) {
+        throw new Error(
+          "Warehouse locations could not load. Try again before reserving stock.",
+        );
+      }
       const data = {
         productId: reserve.productId,
         jobId,
+        warehouseId: reserveWarehouseId || null,
         quantity: Number(reserveQuantity),
       };
       const payload = JSON.stringify(data);
@@ -131,6 +148,7 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
         idempotencyKey: requestKey.current.key,
       });
       requestKey.current = { payload: "", key: "" };
+      setReserveWarehouseId("");
       setReserve(null);
     }, "Stock reserved for this job");
   };
@@ -289,7 +307,8 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
                       {quantity(reservation.quantity)}{" "}
                       {products.find((p) => p.id === reservation.productId)
                         ?.unit ?? "units"}{" "}
-                      · {reservation.status}
+                      · {warehouseName(warehouses, reservation.warehouseId)} ·{" "}
+                      {reservation.status}
                     </p>
                   </div>
                   {reservation.status === "Active" && (
@@ -437,7 +456,10 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
       <Dialog
         open={!!reserve}
         onOpenChange={(v) => {
-          if (!v && !busy) setReserve(null);
+          if (!v && !busy) {
+            setReserve(null);
+            setReserveWarehouseId("");
+          }
         }}
       >
         <DialogContent>
@@ -454,6 +476,21 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
               Reserving sets stock aside for this job without recording
               consumption.
             </p>
+            <Label htmlFor="reserve-warehouse">Reserve at warehouse</Label>
+            <select
+              id="reserve-warehouse"
+              className={selectClass}
+              disabled={warehouseQuery.isLoading || warehouseQuery.isError}
+              value={reserveWarehouseId}
+              onChange={(event) => setReserveWarehouseId(event.target.value)}
+            >
+              <option value="">Unassigned</option>
+              {warehouses.map((warehouse) => (
+                <option key={warehouse.id} value={warehouse.id}>
+                  {warehouse.name}
+                </option>
+              ))}
+            </select>
             <Label htmlFor="reserve-quantity">Quantity ({reserve?.unit})</Label>
             <Input
               id="reserve-quantity"

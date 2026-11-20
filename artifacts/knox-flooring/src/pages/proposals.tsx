@@ -1,7 +1,7 @@
 import { DataBoundary } from "@/components/layout/DataBoundary";
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
-import { useStore } from "@/hooks/use-store";
+import { useCommunications, useStore } from "@/hooks/use-store";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +52,7 @@ import { Proposal, ProposalStatus, DepositType, ProposalLineItem } from "@/lib/t
 import { useUrlState, useQueryControls } from "@/hooks/use-url-state";
 import { FilterSummary } from "@/components/layout/FilterSummary";
 import { CompanyBrand } from "@/components/layout/Brand";
+import { CommunicationsHistory, EmailComposeDialog } from "@/components/communications";
 
 const STATUS_FLOW: ProposalStatus[] = ["Draft", "Sent", "Viewed", "Accepted"];
 
@@ -98,6 +99,7 @@ export default function Proposals() {
   const {
     queryState,
     proposals,
+    jobs,
     products,
     salespeople,
     updateProposalStatus,
@@ -116,10 +118,13 @@ export default function Proposals() {
   const query = useQueryControls();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [converting, setConverting] = useState(false);
+  const [quoteEmailOpen, setQuoteEmailOpen] = useState(false);
   const [addProductId, setAddProductId] = useState("");
   const [addQty, setAddQty] = useState(1);
 
   const selected = proposals.find((p) => p.id === selectedId) ?? null;
+  const quoteMessages = useCommunications(selected ? { customerKey: `quote:${selected.id}` } : {});
+  const selectedJob = selected && jobs.find((job) => job.id === (selected.convertedJobId ?? selected.jobId));
   const activeProducts = products.filter((p) => p.active);
   const filtered = proposals.filter((proposal) => (status === "All" || proposal.status === status) && [proposal.customerName, proposal.projectLocation, proposal.flooringType].some((value) => value.toLowerCase().includes(search.trim().toLowerCase())));
 
@@ -136,12 +141,12 @@ export default function Proposals() {
     }
   };
 
-  const sendQuote = async (p: Proposal) => {
+  const enableQuoteLink = async (p: Proposal) => {
     try {
     await updateProposalStatus(p.id, "Sent");
     toast({
-      title: "Proposal marked as sent",
-      description: "Copy the customer link to share it.",
+      title: "Customer link is ready",
+      description: "Open the quote to email or copy the link.",
     });
     } catch (error) { toast({ title: "Status was not saved", description: error instanceof Error ? error.message : "Please try again.", variant: "destructive" }); }
   };
@@ -286,7 +291,7 @@ export default function Proposals() {
                   <Eye className="w-4 h-4 mr-2" /> Open proposal
                 </Button>
                 {proposal.status === "Draft" && (
-                  <Button variant="outline" size="icon" title="Mark as Sent" onClick={() => sendQuote(proposal)}>
+                  <Button variant="outline" size="icon" title="Enable customer link" aria-label="Enable customer link" onClick={() => enableQuoteLink(proposal)}>
                     <Send className="w-4 h-4" />
                   </Button>
                 )}
@@ -656,8 +661,13 @@ export default function Proposals() {
               {/* Actions */}
               <div className="flex flex-wrap gap-2 pt-2">
                 {selected.status === "Draft" && (
-                  <Button className="flex-1 min-w-[160px]" onClick={() => sendQuote(selected)}>
-                    <Send className="w-4 h-4 mr-2" /> Mark as Sent
+                  <Button className="flex-1 min-w-[160px]" onClick={() => enableQuoteLink(selected)}>
+                    <Send className="w-4 h-4 mr-2" /> Enable customer link
+                  </Button>
+                )}
+                {["Sent", "Viewed"].includes(selected.status) && selected.shareToken && (
+                  <Button className="flex-1 min-w-[160px]" onClick={() => setQuoteEmailOpen(true)}>
+                    <Send className="w-4 h-4 mr-2" /> Email quote link
                   </Button>
                 )}
                 {selected.status !== "Draft" && selected.shareToken && (
@@ -676,7 +686,7 @@ export default function Proposals() {
                     disabled={converting}
                   >
                     <ArrowRightCircle className="w-4 h-4 mr-2" />
-                    Convert to Job + Invoice
+                    {selected.jobId ? "Create invoice for linked job" : "Convert to Job + Invoice"}
                   </Button>
                 )}
                 {selected.convertedJobId && (
@@ -694,10 +704,28 @@ export default function Proposals() {
                   <Download className="w-4 h-4 mr-2" /> Print / PDF
                 </Button>
               </div>
+              {quoteMessages.communications.length > 0 && (
+                <section className="space-y-2 pt-4">
+                  <h3 className="font-semibold">Quote messages</h3>
+                  <CommunicationsHistory communications={quoteMessages.communications} />
+                </section>
+              )}
             </>
           )}
         </DialogContent>
       </Dialog>
+
+      {selected && selected.shareToken && (
+        <EmailComposeDialog
+          open={quoteEmailOpen}
+          onOpenChange={setQuoteEmailOpen}
+          toAddress={selectedJob?.email ?? ""}
+          customerName={selected.customerName}
+          defaultSubject={`Your flooring quote${settings.companyName ? ` from ${settings.companyName}` : ""}`}
+          defaultBody={`Hi ${selected.customerName},\n\nYou can review and respond to your flooring quote at the link below.\n\n${quoteLink(selected.shareToken)}\n\nPlease reply if you have questions.`}
+          onSend={quoteMessages.sendEmail}
+        />
+      )}
 
       {/* Conversion confirmation */}
       <Dialog open={confirmOpen} onOpenChange={(o) => !converting && setConfirmOpen(o)}>
@@ -705,8 +733,7 @@ export default function Proposals() {
           <DialogHeader>
             <DialogTitle>Convert quote to job</DialogTitle>
             <DialogDescription>
-              Review what will be created. This stands up a new job ready to schedule, a draft invoice,
-              and links them back to this quote.
+              {selected?.jobId ? "Create a draft invoice from this quote and keep the linked job." : "Create a job and draft invoice from this accepted quote."}
             </DialogDescription>
           </DialogHeader>
           {selected && (

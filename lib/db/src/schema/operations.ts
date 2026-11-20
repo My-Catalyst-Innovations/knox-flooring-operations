@@ -7,8 +7,12 @@ import {
   jsonb,
   uniqueIndex,
   index,
+  check,
+  foreignKey,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { jobsTable } from "./jobs";
+import { productsTable } from "./products";
 
 const timestamps = {
   createdAt: text("created_at").notNull(),
@@ -87,12 +91,42 @@ export const jobCallbacksTable = pgTable("job_callbacks", {
   resolvedAt: text("resolved_at"),
   ...timestamps,
 }, (table) => [index("job_callbacks_job_id_idx").on(table.jobId)]);
+export const warehousesTable = pgTable("warehouses", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  ...timestamps,
+}, (table) => [uniqueIndex("warehouses_name_unique").on(sql`lower(${table.name})`)]);
+
+export const inventoryTransfersTable = pgTable("inventory_transfers", {
+  id: text("id").primaryKey(),
+  productId: text("product_id").notNull().references(() => productsTable.id, { onDelete: "restrict" }),
+  sourceWarehouseId: text("source_warehouse_id").references(() => warehousesTable.id, { onDelete: "restrict" }),
+  destinationWarehouseId: text("destination_warehouse_id").notNull().references(() => warehousesTable.id, { onDelete: "restrict" }),
+  quantity: real("quantity").notNull(),
+  reason: text("reason").notNull(),
+  status: text("status").$type<"In transit" | "Received">().notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  dispatchedBy: text("dispatched_by").notNull(),
+  receivedBy: text("received_by"),
+  receivedAt: text("received_at"),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("inventory_transfers_idempotency_unique").on(table.idempotencyKey),
+  index("inventory_transfers_product_idx").on(table.productId),
+  check("inventory_transfers_positive_quantity", sql`${table.quantity} > 0 AND ${table.quantity} < 'Infinity'::real`),
+  check("inventory_transfers_distinct_warehouses", sql`${table.sourceWarehouseId} IS DISTINCT FROM ${table.destinationWarehouseId}`),
+  check("inventory_transfers_valid_status", sql`${table.status} IN ('In transit', 'Received')`),
+]);
+
 export const inventoryMovementsTable = pgTable(
   "inventory_movements",
   {
     id: text("id").primaryKey(),
     productId: text("product_id").notNull(),
     jobId: text("job_id").references(() => jobsTable.id, { onDelete: "restrict" }),
+    warehouseId: text("warehouse_id").references(() => warehousesTable.id, { onDelete: "restrict" }),
+    transferId: text("transfer_id").references(() => inventoryTransfersTable.id, { onDelete: "restrict" }),
+    returnOfMovementId: text("return_of_movement_id"),
     quantity: real("quantity").notNull(),
     kind: text("kind").notNull(),
     reason: text("reason").notNull(),
@@ -104,6 +138,13 @@ export const inventoryMovementsTable = pgTable(
     uniqueIndex("inventory_movements_idempotency_unique").on(t.idempotencyKey),
     index("inventory_movements_product_idx").on(t.productId),
     index("inventory_movements_job_id_idx").on(t.jobId),
+    index("inventory_movements_product_warehouse_idx").on(t.productId, t.warehouseId),
+    index("inventory_movements_return_of_idx").on(t.returnOfMovementId),
+    foreignKey({
+      columns: [t.returnOfMovementId],
+      foreignColumns: [t.id],
+      name: "inventory_movements_return_of_fk",
+    }).onDelete("restrict"),
   ],
 );
 export const inventoryReservationsTable = pgTable(
@@ -112,6 +153,7 @@ export const inventoryReservationsTable = pgTable(
     id: text("id").primaryKey(),
     productId: text("product_id").notNull(),
     jobId: text("job_id").notNull().references(() => jobsTable.id, { onDelete: "restrict" }),
+    warehouseId: text("warehouse_id").references(() => warehousesTable.id, { onDelete: "restrict" }),
     quantity: real("quantity").notNull(),
     status: text("status").notNull().default("Active"),
     idempotencyKey: text("idempotency_key").notNull(),
@@ -123,6 +165,7 @@ export const inventoryReservationsTable = pgTable(
       t.idempotencyKey,
     ),
     index("inventory_reservations_job_id_idx").on(t.jobId),
+    index("inventory_reservations_product_warehouse_idx").on(t.productId, t.warehouseId),
   ],
 );
 export const estimateDraftsTable = pgTable("estimate_drafts", {

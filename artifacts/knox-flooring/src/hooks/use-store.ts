@@ -696,7 +696,8 @@ export function useGoogleCalendar() {
 
 type CommunicationsFilter =
   | { leadId: string; customerKey?: undefined }
-  | { customerKey: string; leadId?: undefined };
+  | { customerKey: string; leadId?: undefined }
+  | { leadId?: undefined; customerKey?: undefined };
 
 export function useCommunications(filter: CommunicationsFilter) {
   const queryClient = useQueryClient();

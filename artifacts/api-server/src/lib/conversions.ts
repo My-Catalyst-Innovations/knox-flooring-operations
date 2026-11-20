@@ -241,7 +241,7 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
           .from(invoicesTable)
           .where(eq(invoicesTable.id, proposal.convertedInvoiceId))
       : [];
-    if (!job || !invoice)
+    if (!job || !invoice || invoice.jobId !== job.id)
       throw new DomainError(
         409,
         "This quote has an incomplete historical conversion. Resolve its existing links before retrying.",
@@ -258,7 +258,15 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
       "Only accepted quotes can be converted to a job.",
     );
   const now = new Date().toISOString();
-  const customerId = await ensureCustomer(tx, proposal);
+  const [linkedJob] = proposal.jobId
+    ? await tx.select().from(jobsTable).where(eq(jobsTable.id, proposal.jobId)).for("update")
+    : [];
+  if (proposal.jobId && !linkedJob) throw new DomainError(409, "The quote's linked job is missing.");
+  if (linkedJob && (
+    (linkedJob.customerId && proposal.customerId && linkedJob.customerId !== proposal.customerId) ||
+    (linkedJob.siteId && proposal.siteId && linkedJob.siteId !== proposal.siteId)
+  )) throw new DomainError(409, "The quote and linked job reference different customers or job sites.");
+  const customerId = linkedJob?.customerId ?? await ensureCustomer(tx, proposal);
   const snapshot =
     proposal.estimateSnapshot as unknown as EstimateSnapshot | null;
   const extra: Partial<JobInsert> = {
@@ -276,7 +284,33 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
     estRevenue: proposal.estimatedPrice,
   };
   let job: JobRow;
-  if (snapshot) job = await insertSnapshotJob(tx, snapshot, extra);
+  let materialsCreated = 0;
+  if (linkedJob) {
+    job = linkedJob;
+    if (["New Lead", "Estimate Scheduled", "Estimate Completed", "Proposal Sent"].includes(linkedJob.status)) {
+      [job] = await tx.update(jobsTable).set({
+        status: "Approved",
+        soldAt: linkedJob.soldAt ?? proposal.acceptedAt,
+        eventDateSource: linkedJob.soldAt ? linkedJob.eventDateSource : proposal.acceptedAt ? "accepted_quote" : null,
+        stageHistory: proposal.acceptedAt
+          ? [...linkedJob.stageHistory, { stage: "Approved", at: proposal.acceptedAt }]
+          : linkedJob.stageHistory,
+        revision: linkedJob.revision + 1,
+        updatedAt: now,
+      }).where(eq(jobsTable.id, linkedJob.id)).returning();
+    }
+    const [existingRequirement] = await tx.select({ id: jobMaterialsTable.id }).from(jobMaterialsTable)
+      .where(eq(jobMaterialsTable.jobId, job.id)).limit(1);
+    if (!existingRequirement && proposal.lineItems.length) {
+      await tx.insert(jobMaterialsTable).values(proposal.lineItems.map((line) => ({
+        id: randomUUID(), jobId: job.id, productId: line.productId, name: line.name, quantity: line.quantity, unit: line.unit, createdAt: now,
+      })));
+      materialsCreated = proposal.lineItems.length;
+    }
+  } else if (snapshot) {
+    job = await insertSnapshotJob(tx, snapshot, extra);
+    materialsCreated = snapshot.lines.length;
+  }
   else {
     [job] = await tx
       .insert(jobsTable)
@@ -314,8 +348,11 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
       );
     await queueReview(tx, "customer", job.id, job);
     await queueReview(tx, "project", job.id, job);
+    materialsCreated = proposal.lineItems.length;
   }
-  await tx.insert(materialsTable).values({
+  const [existingDelivery] = await tx.select({ id: materialsTable.id }).from(materialsTable)
+    .where(eq(materialsTable.jobId, job.id)).limit(1);
+  if (!existingDelivery) await tx.insert(materialsTable).values({
     id: randomUUID(),
     jobId: job.id,
     jobNumber: job.jobNumber,
@@ -335,7 +372,7 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
       id: randomUUID(),
       invoiceNumber: await nextDocumentNumber(tx, "invoice"),
       jobId: job.id,
-      customerId: job.customerId,
+      customerId,
       jobNumber: job.jobNumber,
       customerName: proposal.customerName,
       lineItems: [
@@ -382,6 +419,6 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
   return {
     job,
     invoice,
-    materialsCreated: snapshot?.lines.length ?? proposal.lineItems.length,
+    materialsCreated,
   };
 }
