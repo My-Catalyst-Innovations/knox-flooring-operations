@@ -80,6 +80,7 @@ beforeEach(() => {
   fetch.mockReset();
   vi.stubGlobal("fetch", fetch);
   vi.stubEnv("DEMO_MODE", "false");
+  vi.stubEnv("DEMO_ACCESS_ENABLED", "false");
   vi.stubEnv("COMMS_DELIVERY_MODE", "live");
   vi.stubEnv("RESEND_API_KEY", "fake");
   vi.stubEnv("RESEND_FROM_EMAIL", "sender@example.com");

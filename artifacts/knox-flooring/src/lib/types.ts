@@ -127,6 +127,7 @@ export interface Job {
   actualRevenue: number;
   actualLaborCost: number;
   actualMaterialCost: number;
+  trackedMaterialCost?: number;
   actualAddOnCost: number;
   notes: string;
   priorityLevel: PriorityLevel;

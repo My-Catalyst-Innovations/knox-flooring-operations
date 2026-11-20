@@ -57,8 +57,10 @@ export function JobCostingDialog({ open, onOpenChange, job }: Props) {
     setActualAddOnCost(job.actualAddOnCost || 0);
   }, [open, job.id]);
 
-  const actualCost = actualLaborCost + actualMaterialCost + actualAddOnCost;
+  const materialTotal = actualMaterialCost || job.trackedMaterialCost || 0;
+  const actualCost = actualLaborCost + materialTotal + actualAddOnCost;
   const actualProfit = actualRevenue - actualCost;
+  const showProfit = actualRevenue > 0 || job.trackedMaterialCost === undefined;
   const actualMargin =
     actualRevenue > 0 ? (actualProfit / actualRevenue) * 100 : 0;
 
@@ -100,7 +102,7 @@ export function JobCostingDialog({ open, onOpenChange, job }: Props) {
   const prefillFromEstimate = () => {
     setActualRevenue(job.estRevenue || 0);
     setActualLaborCost(job.laborEstimate || 0);
-    setActualMaterialCost(job.materialEstimate || 0);
+    if (job.trackedMaterialCost === undefined) setActualMaterialCost(job.materialEstimate || 0);
     setActualAddOnCost(0);
   };
 
@@ -133,7 +135,9 @@ export function JobCostingDialog({ open, onOpenChange, job }: Props) {
               label="Actual Materials"
               value={actualMaterialCost}
               onChange={setActualMaterialCost}
-              hint={`Est: ${fmtMoney(job.materialEstimate || 0)}`}
+              hint={job.trackedMaterialCost === undefined
+                ? `Estimated: ${fmtMoney(job.materialEstimate || 0)}`
+                : `Material log: ${fmtMoney(job.trackedMaterialCost)}. Enter zero to use the log total.`}
             />
           </div>
           <NumberField
@@ -156,12 +160,14 @@ export function JobCostingDialog({ open, onOpenChange, job }: Props) {
                   (actualProfit >= 0 ? "text-primary" : "text-destructive")
                 }
               >
-                {fmtMoney(actualProfit)}
+                {showProfit ? fmtMoney(actualProfit) : "—"}
               </div>
             </div>
             <div>
               <div className="text-xs text-muted-foreground">Margin</div>
-              <div className="font-semibold">{actualMargin.toFixed(1)}%</div>
+              <div className="font-semibold">
+                {showProfit ? `${actualMargin.toFixed(1)}%` : "—"}
+              </div>
             </div>
           </div>
 

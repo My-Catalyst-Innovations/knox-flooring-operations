@@ -365,6 +365,7 @@ export default function JobDetail() {
                         actual: fmtMoney(costing.actualRevenue),
                         variance: costing.revenueVariance,
                         better: true,
+                        showActual: costing.hasActualProfit,
                       },
                       {
                         label: "Cost",
@@ -372,6 +373,7 @@ export default function JobDetail() {
                         actual: fmtMoney(costing.actualCost),
                         variance: costing.costVariance,
                         better: false,
+                        showActual: costing.hasActuals,
                       },
                       {
                         label: "Gross profit",
@@ -382,6 +384,7 @@ export default function JobDetail() {
                         actual: fmtMoney(costing.actualGrossProfit),
                         variance: costing.profitVariance,
                         better: true,
+                        showActual: costing.hasActualProfit,
                       },
                       {
                         label: "Margin",
@@ -393,6 +396,7 @@ export default function JobDetail() {
                         variance:
                           costing.actualMarginPct - costing.estMarginPct,
                         better: true,
+                        showActual: costing.hasActualProfit,
                         suffix: "pts",
                       },
                     ].map((row) => (
@@ -408,12 +412,12 @@ export default function JobDetail() {
                           </div>
                           <div className="flex flex-wrap justify-between gap-2">
                             <dt className="text-muted-foreground">Actual</dt>
-                            <dd>{costing.hasActuals ? row.actual : "—"}</dd>
+                            <dd>{row.showActual ? row.actual : "—"}</dd>
                           </div>
                           <div className="flex flex-wrap justify-between gap-2">
                             <dt className="text-muted-foreground">Variance</dt>
                             <dd>
-                              {costing.hasActuals ? (
+                              {row.showActual ? (
                                 <VarianceTag
                                   value={row.variance}
                                   higherIsBetter={row.better}
@@ -450,7 +454,7 @@ export default function JobDetail() {
                           est={costing.estRevenue}
                           actual={costing.actualRevenue}
                           variance={costing.revenueVariance}
-                          hasActuals={costing.hasActuals}
+                          hasActuals={costing.hasActualProfit}
                           higherIsBetter
                         />
                         <CostRow
@@ -469,12 +473,12 @@ export default function JobDetail() {
                               : fmtMoney(costing.estGrossProfit)}
                           </td>
                           <td className="px-4 py-2.5 text-right">
-                            {costing.hasActuals
+                            {costing.hasActualProfit
                               ? fmtMoney(costing.actualGrossProfit)
                               : "—"}
                           </td>
                           <td className="px-4 py-2.5 text-right">
-                            {costing.hasActuals ? (
+                            {costing.hasActualProfit ? (
                               <VarianceTag
                                 value={costing.profitVariance}
                                 higherIsBetter
@@ -494,12 +498,12 @@ export default function JobDetail() {
                               : `${costing.estMarginPct.toFixed(1)}%`}
                           </td>
                           <td className="px-4 py-2.5 text-right">
-                            {costing.hasActuals
+                            {costing.hasActualProfit
                               ? `${costing.actualMarginPct.toFixed(1)}%`
                               : "—"}
                           </td>
                           <td className="px-4 py-2.5 text-right">
-                            {costing.hasActuals ? (
+                            {costing.hasActualProfit ? (
                               <VarianceTag
                                 value={
                                   costing.actualMarginPct - costing.estMarginPct
@@ -515,6 +519,11 @@ export default function JobDetail() {
                       </tbody>
                     </table>
                   </div>
+                  {costing.hasActuals && !costing.hasActualProfit && (
+                    <p className="text-xs text-muted-foreground">
+                      Record actual revenue to calculate gross profit and margin.
+                    </p>
+                  )}
                   {!costing.hasActuals && (
                     <p className="text-xs text-muted-foreground">
                       No actuals recorded yet — figures above reflect the

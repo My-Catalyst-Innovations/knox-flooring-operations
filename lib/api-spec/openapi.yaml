@@ -3320,6 +3320,9 @@ components:
           type: number
         actualMaterialCost:
           type: number
+        trackedMaterialCost:
+          type: number
+          description: Net cost of material usage and returns recorded on this job. Present when material entries exist.
         actualAddOnCost:
           type: number
         notes:

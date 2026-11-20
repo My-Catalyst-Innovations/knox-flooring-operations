@@ -511,6 +511,8 @@ export interface Job {
   actualRevenue?: number;
   actualLaborCost?: number;
   actualMaterialCost?: number;
+  /** Net cost of material usage and returns recorded on this job. Present when material entries exist. */
+  trackedMaterialCost?: number;
   actualAddOnCost?: number;
   notes: string;
   priorityLevel: PriorityLevel;

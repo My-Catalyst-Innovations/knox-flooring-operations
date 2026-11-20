@@ -37,10 +37,14 @@ export function smsNumber(value: string) {
   return /^\+[1-9]\d{7,14}$/.test(number) ? number : null;
 }
 
+export function isDemoDeliveryEnvironment(env = process.env) {
+  return env.DEMO_MODE !== "false" || env.DEMO_ACCESS_ENABLED === "true";
+}
+
 export function communicationMode(
   env = process.env,
 ): "capture" | "allowlist" | "live" {
-  if (env.DEMO_MODE !== "false") return "capture";
+  if (isDemoDeliveryEnvironment(env)) return "capture";
   const mode = env.COMMS_DELIVERY_MODE;
   if (!mode || mode === "allowlist") return "allowlist";
   return mode === "live" ? "live" : "capture";

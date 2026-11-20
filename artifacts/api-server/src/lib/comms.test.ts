@@ -59,6 +59,21 @@ describe("outbound delivery controls", () => {
     ).toBe(true);
   });
 
+  it.each(["allowlist", "live"])(
+    "blocks %s delivery when password-free demo access is enabled",
+    (mode) => {
+      const env = {
+        DEMO_MODE: "false",
+        DEMO_ACCESS_ENABLED: "true",
+        COMMS_DELIVERY_MODE: mode,
+        COMMS_ALLOWLIST: "to@example.com,+18655550123",
+      };
+      expect(communicationMode(env)).toBe("capture");
+      expect(canSendCommunication("email", "to@example.com", env)).toBe(false);
+      expect(canSendCommunication("sms", "+18655550123", env)).toBe(false);
+    },
+  );
+
   it("validates individual recipients and sender settings", () => {
     expect(emailAddress(" Staff+floor@Example.com ")).toBe(
       "staff+floor@example.com",

@@ -8,6 +8,7 @@ export interface JobCosting {
   estMarginPct: number;
   /** Whether any actual cost/revenue has been recorded */
   hasActuals: boolean;
+  hasActualProfit: boolean;
   /** Actual figures */
   actualRevenue: number;
   actualLaborCost: number;
@@ -34,7 +35,7 @@ export function computeCosting(job: Job): JobCosting {
 
   const actualRevenue = job.actualRevenue || 0;
   const actualLaborCost = job.actualLaborCost || 0;
-  const actualMaterialCost = job.actualMaterialCost || 0;
+  const actualMaterialCost = job.actualMaterialCost || job.trackedMaterialCost || 0;
   const actualAddOnCost = job.actualAddOnCost || 0;
   const actualCost = actualLaborCost + actualMaterialCost + actualAddOnCost;
   const actualGrossProfit = actualRevenue - actualCost;
@@ -45,10 +46,13 @@ export function computeCosting(job: Job): JobCosting {
     actualRevenue > 0 ||
     actualLaborCost > 0 ||
     actualMaterialCost > 0 ||
+    job.trackedMaterialCost !== undefined ||
     actualAddOnCost > 0;
 
   const effectiveRevenue = actualRevenue > 0 ? actualRevenue : estRevenue;
-  const effectiveGrossProfit = hasActuals ? actualGrossProfit : estGrossProfit;
+  const hasActualProfit =
+    hasActuals && (actualRevenue > 0 || job.trackedMaterialCost === undefined);
+  const effectiveGrossProfit = hasActualProfit ? actualGrossProfit : estGrossProfit;
   const effectiveMarginPct =
     effectiveRevenue > 0 ? (effectiveGrossProfit / effectiveRevenue) * 100 : 0;
 
@@ -58,6 +62,7 @@ export function computeCosting(job: Job): JobCosting {
     estGrossProfit,
     estMarginPct,
     hasActuals,
+    hasActualProfit,
     actualRevenue,
     actualLaborCost,
     actualMaterialCost,

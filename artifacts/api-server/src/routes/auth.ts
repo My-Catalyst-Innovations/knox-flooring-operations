@@ -4,7 +4,7 @@ import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import { db, passwordResetTokensTable, sessionsTable, usersTable } from "@workspace/db";
 import { audit, createSession, hashPassword, hashToken, newToken, normalizeEmail, SESSION_COOKIE, SESSION_TTL_MS, verifyPassword } from "../lib/auth";
 import { requireAuth } from "../middlewares/auth";
-import { availableCommunicationProviders, CommsError, emailAddress, passwordResetLink, sendPasswordResetEmail } from "../lib/comms";
+import { availableCommunicationProviders, CommsError, emailAddress, isDemoDeliveryEnvironment, passwordResetLink, sendPasswordResetEmail } from "../lib/comms";
 import staffRouter from "./staff";
 
 const router: IRouter = Router();
@@ -119,7 +119,7 @@ function allowResetRequest(ip: string, now: number) {
 async function requestPasswordReset(email: string, ip: string) {
   const base = process.env.APP_BASE_URL;
   const now = new Date();
-  if (process.env.DEMO_MODE !== "false" || process.env.PASSWORD_RESET_EMAIL_ENABLED !== "true" ||
+  if (isDemoDeliveryEnvironment() || process.env.PASSWORD_RESET_EMAIL_ENABLED !== "true" ||
     !availableCommunicationProviders().email || !passwordResetLink(base, "") || !allowResetRequest(ip, now.getTime())) return;
   const reset = await db.transaction(async (tx) => {
     const [user] = await tx.select({ id: usersTable.id }).from(usersTable)

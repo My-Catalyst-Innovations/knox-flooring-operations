@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { randomBytes, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
-import { db, jobsTable, type JobInsert, type StageEvent } from "@workspace/db";
+import { eq, getTableColumns, sql } from "drizzle-orm";
+import { db, jobsTable, materialUsageTable, type JobInsert, type StageEvent } from "@workspace/db";
 import {
   ListJobsResponse,
   CreateJobBody,
@@ -23,6 +23,19 @@ import { deleteUnreferencedJob } from "../lib/job-deletion";
 
 const router: IRouter = Router();
 
+function selectJobsWithMaterialCost() {
+  const usageCost = db.select({
+    total: sql<number | null>`round(sum(${materialUsageTable.cost}::numeric), 2)::double precision`.as("total"),
+  })
+    .from(materialUsageTable)
+    .where(eq(materialUsageTable.jobId, jobsTable.id))
+    .as("usage_cost");
+  return db.select({
+    ...getTableColumns(jobsTable),
+    trackedMaterialCost: usageCost.total,
+  }).from(jobsTable).leftJoinLateral(usageCost, sql`true`);
+}
+
 function nextJobNumber(existing: string[]): string {
   const nums = existing
     .map((n) => parseInt(n.replace(/\D/g, ""), 10))
@@ -36,7 +49,7 @@ function generateShareToken(): string {
 }
 
 router.get("/jobs", async (_req, res): Promise<void> => {
-  const jobs = await db.select().from(jobsTable);
+  const jobs = await selectJobsWithMaterialCost();
   res.json(ListJobsResponse.parse(jobs.map(stripNulls)));
 });
 
@@ -97,9 +110,7 @@ router.get("/jobs/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  const [job] = await db
-    .select()
-    .from(jobsTable)
+  const [job] = await selectJobsWithMaterialCost()
     .where(eq(jobsTable.id, params.data.id));
 
   if (!job) {

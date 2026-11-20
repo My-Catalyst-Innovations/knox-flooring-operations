@@ -48,6 +48,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.stubGlobal("fetch", fetch);
   vi.stubEnv("DEMO_MODE", "false");
+  vi.stubEnv("DEMO_ACCESS_ENABLED", "false");
   vi.stubEnv("PASSWORD_RESET_EMAIL_ENABLED", "true");
   vi.stubEnv("APP_BASE_URL", "https://works.example.com");
   vi.stubEnv("RESEND_API_KEY", "fake");
@@ -113,17 +114,20 @@ it("responds identically for an active account, an unknown account, and an inval
   ).not.toContain(token);
 });
 
-it("does not look up accounts or send reset links in demo mode", async () => {
-  vi.stubEnv("DEMO_MODE", "true");
-  const demo = await request(app)
-    .post("/auth/password/forgot")
-    .send({ email: "staff@example.com" })
-    .expect(202);
-  expect(demo.body).toEqual(genericMessage);
-  expect(state.lookup).not.toHaveBeenCalled();
-  expect(state.saveToken).not.toHaveBeenCalled();
-  expect(fetch).not.toHaveBeenCalled();
-});
+it.each(["DEMO_MODE", "DEMO_ACCESS_ENABLED"])(
+  "does not look up accounts or send reset links with %s enabled",
+  async (flag) => {
+    vi.stubEnv(flag, "true");
+    const demo = await request(app)
+      .post("/auth/password/forgot")
+      .send({ email: "staff@example.com" })
+      .expect(202);
+    expect(demo.body).toEqual(genericMessage);
+    expect(state.lookup).not.toHaveBeenCalled();
+    expect(state.saveToken).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  },
+);
 
 it("uses the stored request history to limit reset email bursts", async () => {
   state.lookup.mockResolvedValue([{ id: "known-user-2" }]);
