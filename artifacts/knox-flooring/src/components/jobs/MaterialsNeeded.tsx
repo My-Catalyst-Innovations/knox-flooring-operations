@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { ProductBinSelect, useWarehouseBins } from "@/components/inventory/WarehouseBinSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -53,6 +54,7 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
     inventoryRoles,
   );
   const warehouses = warehouseQuery.data ?? [];
+  const bins = useWarehouseBins();
   const reservationsQuery = useOperation<WarehouseReservation[]>(
     "/inventory/reservations",
     ["owner", "operations"],
@@ -73,6 +75,7 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
   const [reserveQuantity, setReserveQuantity] = useState("");
   const [reserveWarehouseId, setReserveWarehouseId] = useState("");
   const [consume, setConsume] = useState<WarehouseReservation | null>(null);
+  const [consumeBinId, setConsumeBinId] = useState("");
   const [callbackId, setCallbackId] = useState("");
   const requestKey = useRef({ payload: "", key: "" });
   const run = async (action: () => Promise<unknown>, message: string) => {
@@ -340,6 +343,7 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
                         onClick={() => {
                           setError("");
                           setConsume(reservation);
+                          setConsumeBinId("");
                           setCallbackId("");
                         }}
                       >
@@ -529,6 +533,8 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
             {products.find((p) => p.id === consume?.productId)?.unit ?? "units"}{" "}
             as used. Inventory and job material cost update together.
           </p>
+          {consume?.warehouseId && <ProductBinSelect label="Issue from bin" productId={consume.productId} warehouseId={consume.warehouseId} bins={bins.data ?? []} value={consumeBinId} onChange={setConsumeBinId} disabled={busy || bins.isLoading || bins.isError} />}
+          {consume?.warehouseId && bins.isError && <p role="alert" className="text-sm text-destructive">Could not load warehouse bins. <button type="button" className="underline" onClick={() => void bins.refetch()}>Retry</button></p>}
           <Label htmlFor="consume-callback">Work category</Label>
           <select
             id="consume-callback"
@@ -545,7 +551,7 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
           </select>
           <DialogFooter>
             <Button
-              disabled={busy || !consume}
+              disabled={busy || !consume || Boolean(consume.warehouseId && (bins.isLoading || bins.isError))}
               onClick={() => {
                 if (consume)
                   void run(async () => {
@@ -555,6 +561,7 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
                       {
                         revision: consume.revision,
                         status: "Consumed",
+                        ...(consume.warehouseId ? { binId: consumeBinId || null } : {}),
                         callbackId: callbackId || undefined,
                       },
                     );

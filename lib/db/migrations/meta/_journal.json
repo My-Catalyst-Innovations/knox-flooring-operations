@@ -85,6 +85,20 @@
       "when": 1795195591849,
       "tag": "0011_inventory_issue_cost",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1795202715983,
+      "tag": "0012_purchase_orders_and_bins",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1795203365618,
+      "tag": "0013_inventory_quantity_precision",
+      "breakpoints": true
     }
   ]
 }

@@ -21,6 +21,7 @@ export interface WarehouseStockSummary extends StockSummary {
 
 export interface WarehouseStockMovement extends StockMovement {
   warehouseId?: string | null;
+  binId?: string | null;
   transferId?: string | null;
   returnOfMovementId?: string | null;
 }
@@ -33,6 +34,8 @@ export interface WarehouseTransfer {
   id: string;
   sourceWarehouseId: string | null;
   destinationWarehouseId: string;
+  sourceBinId?: string | null;
+  destinationBinId?: string | null;
   quantity: number;
   reason: string;
   status: "In transit" | "Received";

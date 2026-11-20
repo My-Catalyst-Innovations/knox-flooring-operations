@@ -14,7 +14,13 @@ const line = z.object({
     .refine((value) => Number(value) > 0),
   unitCost: z.string().regex(decimal),
 });
-export const vendorBillMode = z.enum(["review", "simulated", "sandbox"]);
+export const vendorBillMode = z.enum([
+  "review",
+  "simulated",
+  "sandbox",
+  "production",
+]);
+export const vendorBillFingerprint = z.string().regex(/^[a-f\d]{64}$/);
 export const vendorBillInput = z.object({
   mode: vendorBillMode,
   supplier: text(200),
@@ -32,6 +38,42 @@ export const vendorBillInput = z.object({
 });
 
 export type VendorBillInput = z.infer<typeof vendorBillInput>;
+
+type ProductionBillConnection = {
+  environment: string;
+  status: string;
+  realmId: string;
+};
+
+export function productionVendorBillsAvailable(
+  connection: ProductionBillConnection | null,
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  return (
+    env.QUICKBOOKS_PRODUCTION_VENDOR_BILLS_ENABLED === "true" &&
+    env.DEMO_MODE !== "true" &&
+    env.QUICKBOOKS_ENVIRONMENT === "production" &&
+    !!env.QUICKBOOKS_PRODUCTION_VENDOR_BILLS_REALM_ID &&
+    connection?.status === "connected" &&
+    connection.environment === "production" &&
+    connection.realmId === env.QUICKBOOKS_PRODUCTION_VENDOR_BILLS_REALM_ID
+  );
+}
+
+export function confirmProductionVendorBill(
+  confirmation: unknown,
+  fingerprint: string,
+) {
+  const supplied = z
+    .object({ confirmedFingerprint: vendorBillFingerprint })
+    .safeParse(confirmation);
+  if (!supplied.success || supplied.data.confirmedFingerprint !== fingerprint) {
+    throw new DomainError(
+      409,
+      "Review and confirm this exact bill before posting to QuickBooks Online.",
+    );
+  }
+}
 interface SupplierBillLineMapping {
   supplierSku: string;
   productName: string;
@@ -120,7 +162,7 @@ function scaled(decimal: string, places: number) {
   return BigInt((whole || "0") + fraction.padEnd(places, "0"));
 }
 
-type PreparedBill = ReturnType<typeof buildVendorBill>["quickBooksBill"];
+export type PreparedBill = ReturnType<typeof buildVendorBill>["quickBooksBill"];
 
 export function matchesPostedBill(prepared: PreparedBill, posted: unknown) {
   const parsed = z
@@ -129,6 +171,8 @@ export function matchesPostedBill(prepared: PreparedBill, posted: unknown) {
       DocNumber: z.string(),
       TxnDate: z.string(),
       VendorRef: z.object({ value: z.string() }),
+      CurrencyRef: z.object({ value: z.string() }).optional(),
+      TxnTaxDetail: z.object({ TotalTax: z.number().optional() }).optional(),
       TotalAmt: z.number(),
       Line: z.array(
         z.object({
@@ -154,33 +198,55 @@ export function matchesPostedBill(prepared: PreparedBill, posted: unknown) {
     (sum, item) => sum + Math.round(item.Amount * 100),
     0,
   );
+  const lineKey = (
+    amount: number,
+    detail: { ItemRef: { value: string }; Qty: number; UnitPrice: number },
+  ) =>
+    JSON.stringify([
+      detail.ItemRef.value,
+      detail.Qty,
+      detail.UnitPrice,
+      Math.round(amount * 100),
+    ]);
+  const expected = prepared.Line.map((line) =>
+    lineKey(line.Amount, line.ItemBasedExpenseLineDetail),
+  ).sort();
+  const received = itemLines
+    .flatMap((line) =>
+      line.Amount !== undefined && line.ItemBasedExpenseLineDetail
+        ? [lineKey(line.Amount, line.ItemBasedExpenseLineDetail)]
+        : [],
+    )
+    .sort();
   return (
     bill.DocNumber === prepared.DocNumber &&
     bill.TxnDate === prepared.TxnDate &&
     bill.VendorRef.value === prepared.VendorRef.value &&
+    (!bill.CurrencyRef || bill.CurrencyRef.value === "USD") &&
+    !bill.TxnTaxDetail?.TotalTax &&
     Math.round(bill.TotalAmt * 100) === totalCents &&
-    itemLines.length === prepared.Line.length &&
-    prepared.Line.every((expected, index) => {
-      const actual = itemLines[index];
-      const details = actual.ItemBasedExpenseLineDetail;
-      return (
-        Math.round((actual.Amount ?? NaN) * 100) ===
-          Math.round(expected.Amount * 100) &&
-        details?.ItemRef.value ===
-          expected.ItemBasedExpenseLineDetail.ItemRef.value &&
-        details.Qty === expected.ItemBasedExpenseLineDetail.Qty &&
-        details.UnitPrice === expected.ItemBasedExpenseLineDetail.UnitPrice
-      );
-    })
+    bill.Line.every((line) =>
+      ["ItemBasedExpenseLineDetail", "SubTotalLineDetail"].includes(
+        line.DetailType,
+      ),
+    ) &&
+    itemLines.length === expected.length &&
+    received.length === expected.length &&
+    expected.every((key, index) => key === received[index])
   );
 }
 
-interface SandboxBillProvider {
+interface QuickBooksBillProvider {
   request(
     path: string,
     init?: RequestInit,
   ): Promise<{
-    Vendor?: { Id: string; Active?: boolean; CurrencyRef?: { value?: string } };
+    Vendor?: {
+      Id: string;
+      DisplayName?: string;
+      Active?: boolean;
+      CurrencyRef?: { value?: string };
+    };
     Preferences?: {
       CurrencyPrefs?: {
         HomeCurrency?: { value?: string };
@@ -193,24 +259,36 @@ interface SandboxBillProvider {
   query(statement: string): Promise<{ QueryResponse?: { Bill?: unknown[] } }>;
 }
 
-export async function reconcileSandboxBill(
-  approved: PreparedBill,
-  requestId: string,
-  provider: SandboxBillProvider,
+export async function readQuickBooksVendorBillTarget(
+  vendorId: string,
+  request: QuickBooksBillProvider["request"],
 ) {
-  const vendorId = approved.VendorRef.value;
-  const { Vendor: vendor } = await provider.request(`/vendor/${vendorId}`);
+  const { Vendor: vendor } = await request(`/vendor/${vendorId}`);
   if (vendor?.Id !== vendorId || vendor.Active === false)
-    throw new Error("The approved QuickBooks sandbox vendor is unavailable.");
-  const { Preferences: preferences } = await provider.request("/preferences");
+    throw new Error("The selected QuickBooks vendor is unavailable.");
+  const { Preferences: preferences } = await request("/preferences");
   const currency = preferences?.CurrencyPrefs;
   if (
     currency?.HomeCurrency?.value !== "USD" ||
     (vendor.CurrencyRef && vendor.CurrencyRef.value !== "USD")
-  )
+  ) {
     throw new Error(
-      "This supplier bill pilot requires a QuickBooks sandbox and vendor that use USD.",
+      "Supplier bill export requires a QuickBooks company and vendor that use USD.",
     );
+  }
+  return {
+    vendorName: vendor.DisplayName?.trim() ?? "",
+    includeCurrency: currency.MultiCurrencyEnabled === true,
+  };
+}
+
+export async function reconcileQuickBooksVendorBill(
+  approved: PreparedBill,
+  requestId: string,
+  provider: QuickBooksBillProvider,
+  reviewedTarget?: Awaited<ReturnType<typeof readQuickBooksVendorBillTarget>>,
+) {
+  const vendorId = approved.VendorRef.value;
   const { QueryResponse } = await provider.query(
     `select * from Bill where DocNumber = '${approved.DocNumber}' and VendorRef = '${vendorId}'`,
   );
@@ -222,14 +300,26 @@ export async function reconcileSandboxBill(
   if (existing.length) {
     if (existing.length !== 1 || !matchesPostedBill(approved, existing[0]))
       throw new Error(
-        "A different QuickBooks sandbox bill already uses this vendor bill number. Review it in Intuit.",
+        "A different QuickBooks bill already uses this vendor bill number. Review it in Intuit.",
       );
     const existingId = postedBillId(existing[0]);
     if (!existingId)
       throw new Error(
-        "QuickBooks returned no bill ID. Check the sandbox before retrying.",
+        "QuickBooks returned no bill ID. Check the connected company before retrying.",
       );
     return { postedId: existingId, reconciledExisting: true };
+  }
+  const target = await readQuickBooksVendorBillTarget(vendorId, (path) =>
+    provider.request(path),
+  );
+  if (
+    reviewedTarget &&
+    (reviewedTarget.vendorName !== target.vendorName ||
+      reviewedTarget.includeCurrency !== target.includeCurrency)
+  ) {
+    throw new Error(
+      "The QuickBooks vendor name or currency settings changed after review. Confirm the bill manually before posting.",
+    );
   }
   for (const itemId of new Set(
     approved.Line.map((line) => line.ItemBasedExpenseLineDetail.ItemRef.value),
@@ -240,11 +330,9 @@ export async function reconcileSandboxBill(
       item.Active === false ||
       !["Inventory", "NonInventory", "Service"].includes(item.Type)
     )
-      throw new Error(
-        `QuickBooks sandbox item ${itemId} cannot receive this bill.`,
-      );
+      throw new Error(`QuickBooks item ${itemId} cannot receive this bill.`);
   }
-  const document = currency.MultiCurrencyEnabled
+  const document = target.includeCurrency
     ? { ...approved, CurrencyRef: { value: "USD" } }
     : approved;
   const { Bill: created } = await provider.request(
@@ -254,12 +342,12 @@ export async function reconcileSandboxBill(
   const postedId = postedBillId(created);
   if (!postedId)
     throw new Error(
-      "QuickBooks returned no bill ID. Check the sandbox before retrying.",
+      "QuickBooks returned no bill ID. Check the connected company before retrying.",
     );
   const { Bill: posted } = await provider.request(`/bill/${postedId}`);
   if (postedBillId(posted) !== postedId || !matchesPostedBill(approved, posted))
     throw new Error(
-      `Sandbox bill ${postedId} was posted but its details differ. Review it in Intuit.`,
+      `QuickBooks bill ${postedId} was posted but its details differ. Review it in Intuit.`,
     );
   return { postedId, reconciledExisting: false };
 }

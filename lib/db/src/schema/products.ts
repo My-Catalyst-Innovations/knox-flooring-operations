@@ -1,4 +1,4 @@
-import { pgTable, text, real, boolean, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, real, doublePrecision, boolean, integer } from "drizzle-orm/pg-core";
 
 export const productsTable = pgTable("products", {
   id: text("id").primaryKey(),
@@ -16,7 +16,7 @@ export const productsTable = pgTable("products", {
   unit: text("unit").notNull(),
   cost: real("cost").notNull().default(0),
   price: real("price").notNull().default(0),
-  quantityOnHand: real("quantity_on_hand").notNull().default(0),
+  quantityOnHand: doublePrecision("quantity_on_hand").notNull().default(0),
   inventoryType: text("inventory_type").notNull().default("Inventory"),
   active: boolean("active").notNull().default(true),
   notes: text("notes").notNull().default(""),

@@ -1,5 +1,6 @@
 import { useUnsavedForm } from "@/hooks/use-unsaved-changes";
 import { useState } from "react";
+import { Link } from "wouter";
 import { useAuth } from "@/contexts/auth";
 import { useStore } from "@/hooks/use-store";
 import {
@@ -16,6 +17,7 @@ import {
   type WarehouseStockMovement,
   type WarehouseStockSummary,
 } from "@/lib/warehouse-inventory";
+import { binName, binStockQuery, purchaseQuantity, warehouseBinsPath, type BinStock, type WarehouseBin } from "@/lib/purchasing";
 import type { Product } from "@/lib/types";
 import {
   Dialog,
@@ -27,6 +29,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { WarehouseTransfers } from "./WarehouseTransfers";
+import { WarehouseBinSelect } from "./WarehouseBinSelect";
 
 const selectStyle = "h-11 w-full rounded-lg border bg-background px-3 text-sm";
 export function StockActivity({
@@ -47,6 +50,9 @@ export function StockActivity({
     inventoryRoles,
   );
   const warehouses = warehouseQuery.isError ? [] : (warehouseQuery.data ?? []);
+  const warehouseBins = useOperation<WarehouseBin[]>(warehouseBinsPath, inventoryRoles);
+  const binStock = useOperation<BinStock[]>(binStockQuery({ productId: product.id }), inventoryRoles);
+  const bins = warehouseBins.data ?? [];
   const movements = useOperation<WarehouseStockMovement[]>(
     `/inventory/movements?productId=${encodeURIComponent(product.id)}`,
     inventoryRoles,
@@ -63,6 +69,8 @@ export function StockActivity({
   const [amount, setAmount] = useState("");
   const [jobId, setJobId] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
+  const [binId, setBinId] = useState("");
+  const [reservationBins, setReservationBins] = useState<Record<string, string>>({});
   const [returnOfMovementId, setReturnOfMovementId] = useState("");
   const [labelCode, setLabelCode] = useState("");
   const [labelCheck, setLabelCheck] = useState<{
@@ -87,6 +95,7 @@ export function StockActivity({
       amount,
       jobId,
       warehouseId,
+      binId,
       returnOfMovementId,
       labelCode,
       reason,
@@ -162,6 +171,7 @@ export function StockActivity({
           productId: product.id,
           jobId: jobId || undefined,
           warehouseId: warehouseId || null,
+          ...(warehouseId && kind !== "reserve" ? { binId: binId || null } : {}),
           returnOfMovementId:
             kind === "return" ? returnOfMovementId || undefined : undefined,
           labelCode:
@@ -179,6 +189,7 @@ export function StockActivity({
         amount: "",
         jobId,
         warehouseId,
+        binId,
         returnOfMovementId: "",
         labelCode: kind === "consume" ? "" : labelCode,
         reason: "",
@@ -211,6 +222,7 @@ export function StockActivity({
       await operation(`/inventory/reservations/${r.id}`, "PATCH", {
         revision: r.revision,
         status,
+        ...(status === "Consumed" && r.warehouseId ? { binId: reservationBins[r.id] || null } : {}),
         labelCode:
           status === "Consumed" ? labelCode.trim() || undefined : undefined,
       });
@@ -284,6 +296,18 @@ export function StockActivity({
             </span>
           </div>
         ))}
+        {product.inventoryType === "Inventory" && <section className="space-y-2 border-t pt-3" aria-label="Product bin stock">
+          <h3 className="font-semibold">Bin stock</h3>
+          {(binStock.isLoading || warehouseBins.isLoading) && <p role="status" className="text-sm text-muted-foreground">Loading bin locations…</p>}
+          {(binStock.isError || warehouseBins.isError) && <p role="alert" className="text-sm text-destructive">Bin locations could not load. <button className="underline" onClick={() => void refresh()}>Retry</button></p>}
+          {binStock.data?.length === 0 && <p className="text-sm text-muted-foreground">No balances in named warehouses.</p>}
+          {!!binStock.data?.length && <ul className="space-y-1 text-sm">
+            {binStock.data.map((row) => <li key={`${row.warehouseId}:${row.binId ?? "unbinned"}`} className="flex flex-wrap justify-between gap-1">
+              <Link className="underline-offset-4 hover:underline" href={`${warehouseBinsPath}?${new URLSearchParams({ warehouse: row.warehouseId, bin: row.binId ?? "unbinned" })}`}>{warehouseName(warehouses, row.warehouseId)} · {binName(bins, row.binId)}</Link>
+              <span className="text-muted-foreground">{purchaseQuantity(row.onHand)} {product.unit} on hand</span>
+            </li>)}
+          </ul>}
+        </section>}
         {(summaries.isError ||
           movements.isError ||
           reservations.isError ||
@@ -389,6 +413,7 @@ export function StockActivity({
                   value={warehouseId}
                   onChange={(event) => {
                     setWarehouseId(event.target.value);
+                    setBinId("");
                     change();
                   }}
                 >
@@ -400,6 +425,9 @@ export function StockActivity({
                   ))}
                 </select>
               </label>
+              {warehouseId && kind !== "reserve" && (
+                <WarehouseBinSelect warehouseId={warehouseId} bins={bins} stock={binStock.data} value={binId} onChange={(id) => { setBinId(id); change(); }} disabled={warehouseBins.isLoading || warehouseBins.isError} />
+              )}
               <label className="space-y-1 text-sm">
                 Quantity ({product.unit})
                 <Input
@@ -493,6 +521,7 @@ export function StockActivity({
               onClick={submit}
               disabled={
                 checkingLabel || (kind === "consume" && !!checkedLabel?.error)
+                || Boolean(warehouseId && kind !== "reserve" && (warehouseBins.isLoading || warehouseBins.isError))
               }
             >
               {busy ? "Recording…" : "Record activity"}
@@ -516,6 +545,9 @@ export function StockActivity({
           <WarehouseTransfers
             product={product}
             warehouses={warehouses}
+            bins={bins}
+            binStock={binStock.data}
+            binsUnavailable={warehouseBins.isLoading || warehouseBins.isError}
             disabled={
               busy || warehouseQuery.isLoading || warehouseQuery.isError
             }
@@ -540,7 +572,8 @@ export function StockActivity({
                 {warehouseName(warehouses, r.warehouseId)}
               </p>
               {canWrite && (
-                <div className="flex gap-2">
+                <div className="flex flex-wrap items-end gap-2">
+                  {r.warehouseId && <WarehouseBinSelect label={`Issue bin for ${jobs.find((job) => job.id === r.jobId)?.jobNumber ?? r.jobId}`} warehouseId={r.warehouseId} bins={bins} stock={binStock.data} value={reservationBins[r.id] ?? ""} onChange={(id) => setReservationBins((current) => ({ ...current, [r.id]: id }))} disabled={busy || transferBusy || warehouseBins.isLoading || warehouseBins.isError} />}
                   <Button
                     size="sm"
                     variant="outline"
@@ -555,6 +588,7 @@ export function StockActivity({
                       busy ||
                       transferBusy ||
                       checkingLabel ||
+                      Boolean(r.warehouseId && (warehouseBins.isLoading || warehouseBins.isError)) ||
                       !!checkedLabel?.error
                     }
                     onClick={() => updateReservation(r, "Consumed")}
@@ -592,6 +626,7 @@ export function StockActivity({
                 <p className="mt-1 text-xs text-muted-foreground">
                   {new Date(m.createdAt).toLocaleString()} ·{" "}
                   {warehouseName(warehouses, m.warehouseId)}
+                  {m.warehouseId && ` · ${binName(bins, m.binId ?? null)}`}
                   {m.jobId &&
                     ` · ${jobs.find((j) => j.id === m.jobId)?.jobNumber ?? m.jobId}`}
                 </p>

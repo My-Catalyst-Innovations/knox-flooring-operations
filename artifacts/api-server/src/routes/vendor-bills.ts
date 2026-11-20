@@ -15,9 +15,13 @@ import { DomainError } from "../lib/operations-rules";
 import { getConnection, qboQuery, qboRequest } from "../lib/quickbooks";
 import {
   buildVendorBill,
+  confirmProductionVendorBill,
+  productionVendorBillsAvailable,
+  readQuickBooksVendorBillTarget,
   reviewVendorBill,
-  reconcileSandboxBill,
+  reconcileQuickBooksVendorBill,
   vendorBillEntity,
+  vendorBillFingerprint,
   vendorBillInput,
   vendorBillMode,
   type VendorBillInput,
@@ -33,7 +37,8 @@ const normalized = (value: string) => value.trim().toLowerCase();
 type Context =
   | { mode: "review" }
   | { mode: "simulated" }
-  | { mode: "sandbox"; realmId: string; connectionId: string };
+  | { mode: "sandbox"; realmId: string; connectionId: string }
+  | { mode: "production"; realmId: string; connectionId: string };
 
 async function billContext(
   mode: VendorBillInput["mode"],
@@ -41,11 +46,27 @@ async function billContext(
 ): Promise<Context> {
   if (mode === "review") {
     if (process.env.DEMO_MODE === "true") {
-      throw new DomainError(409, "Local supplier bill reviews are available outside demo mode.");
+      throw new DomainError(
+        409,
+        "Local supplier bill reviews are available outside demo mode.",
+      );
     }
     return { mode };
   }
   const connection = await getConnection();
+  if (mode === "production") {
+    if (
+      !connection ||
+      !productionVendorBillsAvailable(connection) ||
+      (realmId !== undefined && realmId !== connection.realmId)
+    ) {
+      throw new DomainError(
+        409,
+        "QuickBooks bill posting is unavailable for this company. Verify the production connection and bill export settings.",
+      );
+    }
+    return { mode, realmId: connection.realmId, connectionId: connection.id };
+  }
   if (
     mode === "simulated" &&
     process.env.DEMO_MODE === "true" &&
@@ -111,7 +132,7 @@ async function prepare(input: VendorBillInput, context: Context) {
   );
   const itemMapping = quickbooksEntityMappingsTable;
   const itemLinks =
-    context.mode === "sandbox"
+    context.mode === "sandbox" || context.mode === "production"
       ? await db
           .select()
           .from(itemMapping)
@@ -120,7 +141,7 @@ async function prepare(input: VendorBillInput, context: Context) {
               eq(itemMapping.entityType, "item"),
               eq(itemMapping.status, "linked"),
               eq(itemMapping.realmId, context.realmId),
-              eq(itemMapping.environment, "sandbox"),
+              eq(itemMapping.environment, context.mode),
               inArray(
                 itemMapping.localId,
                 catalog.map(({ product }) => product.id),
@@ -159,30 +180,64 @@ async function prepare(input: VendorBillInput, context: Context) {
   });
   if (context.mode === "review") {
     return {
-      ...reviewVendorBill(input, reviewedMappings.map(({ line }) => line)),
+      ...reviewVendorBill(
+        input,
+        reviewedMappings.map(({ line }) => line),
+      ),
       billNumber: input.billNumber,
       billDate: input.billDate,
       mode: context.mode,
     } as const;
   }
   const mappings = reviewedMappings.map(({ productId, line }) => {
-    const itemId = context.mode === "simulated" ? `SIM-${productId}` : items.get(productId);
-    if (!itemId || (context.mode === "sandbox" && !/^\d{1,30}$/.test(itemId))) {
-      throw new DomainError(409, `Link ${line.internalSku} to an item in this sandbox through Import & reconcile.`);
+    const itemId =
+      context.mode === "simulated" ? `SIM-${productId}` : items.get(productId);
+    if (
+      !itemId ||
+      (context.mode !== "simulated" && !/^\d{1,30}$/.test(itemId))
+    ) {
+      throw new DomainError(
+        409,
+        `Link ${line.internalSku} to an item in the connected QuickBooks company through Import & reconcile.`,
+      );
     }
     return { ...line, quickBooksItemId: itemId };
   });
-  if (context.mode === "sandbox" && !input.vendorId)
+  if (context.mode !== "simulated" && !input.vendorId)
     throw new DomainError(
       400,
-      "Enter the vendor ID from this QuickBooks sandbox.",
+      "Enter the vendor ID from the connected QuickBooks company.",
     );
   const prepared = buildVendorBill(
     input,
     mappings,
     context.mode === "simulated" ? "SIM-VENDOR" : input.vendorId!,
   );
-  if (context.mode === "simulated") return { ...prepared, mode: context.mode } as const;
+  if (context.mode === "simulated")
+    return { ...prepared, mode: context.mode } as const;
+  if (context.mode === "production") {
+    try {
+      const target = await readQuickBooksVendorBillTarget(
+        input.vendorId!,
+        (path) => qboRequest(path, {}, context.connectionId),
+      );
+      if (!target.vendorName)
+        throw new Error("QuickBooks did not return a vendor name to review.");
+      return {
+        ...prepared,
+        mode: context.mode,
+        realmId: context.realmId,
+        quickBooksTarget: target,
+      } as const;
+    } catch (error) {
+      throw new DomainError(
+        409,
+        error instanceof Error
+          ? error.message
+          : "QuickBooks vendor verification failed.",
+      );
+    }
+  }
   return { ...prepared, mode: context.mode, realmId: context.realmId } as const;
 }
 
@@ -193,14 +248,41 @@ type BillPayload = Awaited<ReturnType<typeof prepare>> & {
 };
 
 router.get(
+  `${basePath}/capabilities`,
+  requireOwner,
+  domainRoute(async (_req, res) => {
+    const connection = await getConnection();
+    res.json({
+      productionEnabled: productionVendorBillsAvailable(connection),
+      companyName: connection?.companyName || null,
+      companyId: connection?.realmId || null,
+    });
+  }),
+);
+
+router.get(
   basePath,
   requireOwner,
   domainRoute(async (req, res) => {
-    const { mode } = parse(z.object({ mode: vendorBillMode.optional() }), req.query);
+    const { mode } = parse(
+      z.object({ mode: vendorBillMode.optional() }),
+      req.query,
+    );
+    const context = mode === "production" ? await billContext(mode) : null;
+    const productionRealm =
+      context?.mode === "production" ? context.realmId : null;
     const rows = await db
       .select()
       .from(queue)
-      .where(and(eq(queue.entityType, vendorBillEntity), mode ? sql`${queue.payload}->>'mode' = ${mode}` : undefined))
+      .where(
+        and(
+          eq(queue.entityType, vendorBillEntity),
+          mode ? sql`${queue.payload}->>'mode' = ${mode}` : undefined,
+          productionRealm
+            ? sql`${queue.payload}->>'realmId' = ${productionRealm}`
+            : undefined,
+        ),
+      )
       .orderBy(desc(queue.createdAt))
       .limit(20);
     res.json(rows);
@@ -223,7 +305,7 @@ router.post(
   domainRoute(async (req, res) => {
     const input = parse(
       vendorBillInput.extend({
-        fingerprint: z.string().regex(/^[a-f\d]{64}$/),
+        fingerprint: vendorBillFingerprint,
       }),
       req.body,
     );
@@ -236,7 +318,7 @@ router.post(
       );
 
     const counterparty =
-      prepared.mode === "sandbox"
+      prepared.mode === "sandbox" || prepared.mode === "production"
         ? [prepared.realmId, prepared.quickBooksBill.VendorRef.value]
         : [normalized(prepared.supplier)];
     const localId = hash([
@@ -292,37 +374,59 @@ router.post(
         and(eq(queue.id, id(req)), eq(queue.entityType, vendorBillEntity)),
       );
     if (!bill) throw new DomainError(404, "Supplier bill not found.");
-    if (bill.status === "completed" || bill.status === "demo_completed" || bill.status === "reviewed") {
+    if (
+      bill.status === "completed" ||
+      bill.status === "demo_completed" ||
+      bill.status === "reviewed"
+    ) {
       res.json(bill);
       return;
     }
     const payload = bill.payload as BillPayload;
+    if (payload.mode === "production")
+      confirmProductionVendorBill(req.body, payload.fingerprint);
     const now = new Date().toISOString();
     if (payload.mode === "review") {
       await billContext("review");
-      const [reviewed] = await db.update(queue).set({
-        status: "reviewed",
-        approvedBy: req.auth!.userId,
-        approvedAt: now,
-        completedAt: now,
-        updatedAt: now,
-      }).where(and(eq(queue.id, bill.id), eq(queue.status, "pending_approval"))).returning();
+      const [reviewed] = await db
+        .update(queue)
+        .set({
+          status: "reviewed",
+          approvedBy: req.auth!.userId,
+          approvedAt: now,
+          completedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(queue.id, bill.id), eq(queue.status, "pending_approval")))
+        .returning();
       if (reviewed) {
         res.json(reviewed);
         return;
       }
-      const [current] = await db.select().from(queue).where(eq(queue.id, bill.id));
+      const [current] = await db
+        .select()
+        .from(queue)
+        .where(eq(queue.id, bill.id));
       if (current?.status !== "reviewed") {
-        throw new DomainError(409, "Review the current supplier bill status before retrying.");
+        throw new DomainError(
+          409,
+          "Review the current supplier bill status before retrying.",
+        );
       }
       res.json(current);
       return;
     }
     const context = await billContext(
       payload.mode,
-      payload.mode === "sandbox" ? payload.realmId : undefined,
+      payload.mode === "sandbox" || payload.mode === "production"
+        ? payload.realmId
+        : undefined,
     );
-    if (context.mode === "review") throw new DomainError(409, "Review the original supplier bill mode before retrying.");
+    if (context.mode === "review")
+      throw new DomainError(
+        409,
+        "Review the original supplier bill mode before retrying.",
+      );
     const stuck =
       bill.status === "processing" &&
       !!bill.startedAt &&
@@ -362,11 +466,18 @@ router.post(
               postedId: `SIM-BILL-${bill.id.slice(0, 8)}`,
               reconciledExisting: false,
             }
-          : await reconcileSandboxBill(payload.quickBooksBill, bill.id, {
-              request: (path, init) =>
-                qboRequest(path, init, context.connectionId),
-              query: (statement) => qboQuery(statement, context.connectionId),
-            });
+          : await reconcileQuickBooksVendorBill(
+              payload.quickBooksBill,
+              bill.id,
+              {
+                request: (path, init) =>
+                  qboRequest(path, init, context.connectionId),
+                query: (statement) => qboQuery(statement, context.connectionId),
+              },
+              payload.mode === "production"
+                ? payload.quickBooksTarget
+                : undefined,
+            );
       const completedAt = new Date().toISOString();
       const [completed] = await db
         .update(queue)
@@ -388,7 +499,7 @@ router.post(
       const message =
         error instanceof Error
           ? error.message
-          : "The sandbox bill did not reconcile.";
+          : "The QuickBooks bill did not reconcile.";
       const [failed] = await db
         .update(queue)
         .set({

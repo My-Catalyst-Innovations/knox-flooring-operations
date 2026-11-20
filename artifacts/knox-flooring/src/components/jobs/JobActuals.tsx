@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { Link } from "wouter";
+import { ProductBinSelect, useWarehouseBins } from "@/components/inventory/WarehouseBinSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,6 +42,7 @@ const blankLabor = () => ({
 const blankUsage = () => ({
   productId: "",
   warehouseId: "",
+  binId: "",
   material: "",
   quantity: "",
   cost: "",
@@ -80,6 +82,7 @@ export function JobActuals({
     "/inventory/warehouses",
     inventoryRoles,
   );
+  const bins = useWarehouseBins();
   const stockQuery = useOperation<WarehouseStockSummary[]>(
     "/inventory/summary",
     inventoryRoles,
@@ -192,9 +195,12 @@ export function JobActuals({
               "Warehouse locations could not load. Try again before recording stock.",
             );
           }
+          if (material.warehouseId && (bins.isLoading || bins.isError))
+            throw new Error("Warehouse bins could not load. Try again before recording stock.");
           const data = {
             productId: material.productId,
             warehouseId: material.warehouseId || null,
+            ...(material.warehouseId ? { binId: material.binId || null } : {}),
             jobId: job.id,
             callbackId: material.callbackId || undefined,
             kind: "consume",
@@ -558,6 +564,7 @@ export function JobActuals({
                         ...material,
                         productId: e.target.value,
                         warehouseId: "",
+                        binId: "",
                         material: product?.name ?? "",
                         cost: product
                           ? String(
@@ -600,6 +607,7 @@ export function JobActuals({
                       setMaterial({
                         ...material,
                         warehouseId: event.target.value,
+                        binId: "",
                       })
                     }
                   >
@@ -614,6 +622,10 @@ export function JobActuals({
                   </select>
                 </div>
               )}
+              {usesStock && canUseStock && material.warehouseId && (
+                <ProductBinSelect label="Issue from bin" productId={material.productId} warehouseId={material.warehouseId} bins={bins.data ?? []} value={material.binId} onChange={(binId) => setMaterial({ ...material, binId })} disabled={busy || bins.isLoading || bins.isError} />
+              )}
+              {usesStock && material.warehouseId && bins.isError && <p role="alert" className="text-sm text-destructive">Could not load warehouse bins. <button type="button" className="underline" onClick={() => void bins.refetch()}>Retry</button></p>}
               {!selectedProduct && (
                 <div className="space-y-2">
                   <Label htmlFor="usage-name">Material</Label>

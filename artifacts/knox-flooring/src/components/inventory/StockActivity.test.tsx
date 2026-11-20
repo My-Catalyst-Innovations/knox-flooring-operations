@@ -43,7 +43,13 @@ vi.mock("@/lib/operations", () => ({
   useRefreshOperations: () => vi.fn().mockResolvedValue(undefined),
   useOperation: (path: string) => ({
     allowed: true,
-    data: path.startsWith("/inventory/reservations?")
+    data: path === "/inventory/warehouses"
+      ? [{ id: "north", name: "North warehouse" }]
+      : path === "/inventory/bins"
+        ? [{ id: "a1", warehouseId: "north", code: "A-01" }]
+        : path.startsWith("/inventory/bin-stock?")
+          ? [{ warehouseId: "north", productId: "oak", binId: "a1", onHand: 6 }]
+          : path.startsWith("/inventory/reservations?")
       ? [
           {
             id: "reservation-1",
@@ -148,4 +154,20 @@ it("preserves the manual reservation issue and also accepts a scanned code", asy
   expect(
     screen.queryByText("Label matches Sample oak."),
   ).not.toBeInTheDocument();
+});
+
+it("shows a SKU's bin and records a movement in the selected warehouse bin", async () => {
+  vi.mocked(operation).mockResolvedValue(undefined);
+  render(<StockActivity product={product} onClose={vi.fn()} />);
+  expect(screen.getByRole("link", { name: "North warehouse · A-01" }))
+    .toHaveAttribute("href", "/inventory/bins?warehouse=north&bin=a1");
+  fireEvent.change(screen.getByLabelText("Warehouse"), { target: { value: "north" } });
+  fireEvent.change(screen.getByLabelText("Bin"), { target: { value: "a1" } });
+  fireEvent.change(screen.getByLabelText("Quantity (box)"), { target: { value: "2" } });
+  fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Unplanned delivery" } });
+  fireEvent.click(screen.getByRole("button", { name: "Record activity" }));
+  expect(await screen.findByText("Stock activity recorded.")).toBeVisible();
+  expect(operation).toHaveBeenCalledWith("/inventory/movements", "POST", expect.objectContaining({
+    productId: "oak", warehouseId: "north", binId: "a1", quantity: 2, kind: "receipt",
+  }));
 });

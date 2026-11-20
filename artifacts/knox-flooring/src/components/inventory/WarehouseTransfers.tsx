@@ -14,17 +14,25 @@ import {
   type WarehouseTransfer,
 } from "@/lib/warehouse-inventory";
 import type { Product } from "@/lib/types";
+import { binName, type BinStock, type WarehouseBin } from "@/lib/purchasing";
+import { WarehouseBinSelect } from "./WarehouseBinSelect";
 
 const selectClass = "h-10 w-full rounded-md border bg-background px-3 text-sm";
 
 export function WarehouseTransfers({
   product,
   warehouses,
+  bins,
+  binStock,
+  binsUnavailable,
   disabled,
   onSavingChange,
 }: {
   product: Product;
   warehouses: readonly Warehouse[];
+  bins: readonly WarehouseBin[];
+  binStock?: readonly BinStock[];
+  binsUnavailable: boolean;
   disabled: boolean;
   onSavingChange(saving: boolean): void;
 }) {
@@ -35,6 +43,8 @@ export function WarehouseTransfers({
   const refresh = useRefreshOperations();
   const [source, setSource] = useState("");
   const [destination, setDestination] = useState("");
+  const [sourceBin, setSourceBin] = useState("");
+  const [destinationBins, setDestinationBins] = useState<Record<string, string>>({});
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
   const [error, setError] = useState("");
@@ -72,6 +82,7 @@ export function WarehouseTransfers({
       const data = {
         productId: product.id,
         sourceWarehouseId: source || null,
+        ...(source ? { sourceBinId: sourceBin || null } : {}),
         destinationWarehouseId: destination,
         quantity: Number(amount),
         reason: reason.trim(),
@@ -109,7 +120,7 @@ export function WarehouseTransfers({
               <select
                 className={selectClass}
                 value={source}
-                onChange={(event) => setSource(event.target.value)}
+                onChange={(event) => { setSource(event.target.value); setSourceBin(""); }}
               >
                 <option value="">Unassigned</option>
                 {warehouses.map((warehouse) => (
@@ -119,6 +130,7 @@ export function WarehouseTransfers({
                 ))}
               </select>
             </label>
+            {source && <WarehouseBinSelect label="Source bin" warehouseId={source} bins={bins} stock={binStock} value={sourceBin} onChange={setSourceBin} disabled={binsUnavailable} />}
             <label className="space-y-1 text-sm">
               To
               <select
@@ -166,6 +178,7 @@ export function WarehouseTransfers({
               disabled ||
               !destination ||
               source === destination ||
+              Boolean(source && binsUnavailable) ||
               !reason.trim()
             }
             type="submit"
@@ -204,21 +217,26 @@ export function WarehouseTransfers({
               {warehouseName(warehouses, transfer.sourceWarehouseId)} →{" "}
               {warehouseName(warehouses, transfer.destinationWarehouseId)}
             </p>
+            {(transfer.sourceBinId || transfer.destinationBinId) && <p className="text-muted-foreground">
+              {binName(bins, transfer.sourceBinId ?? null)} → {transfer.status === "Received" ? binName(bins, transfer.destinationBinId ?? null) : "In transit"}
+            </p>}
             <p>
               {quantity(transfer.quantity)} {product.unit} · {transfer.status}
             </p>
             <p className="text-muted-foreground">{transfer.reason}</p>
           </div>
-          {transfer.status === "In transit" && (
+          {transfer.status === "In transit" && <div className="flex flex-wrap items-end gap-2">
+            <WarehouseBinSelect label="Destination bin" warehouseId={transfer.destinationWarehouseId} bins={bins} value={destinationBins[transfer.id] ?? ""} onChange={(id) => setDestinationBins((current) => ({ ...current, [transfer.id]: id }))} disabled={busy || disabled || binsUnavailable} />
             <Button
               size="sm"
               variant="outline"
-              disabled={busy || disabled}
+              disabled={busy || disabled || binsUnavailable}
               onClick={() =>
                 void save(async () => {
                   await operation(
                     `/inventory/transfers/${encodeURIComponent(transfer.id)}/receive`,
                     "POST",
+                    { destinationBinId: destinationBins[transfer.id] || null },
                   );
                   return "Stock received into the destination warehouse.";
                 })
@@ -226,7 +244,7 @@ export function WarehouseTransfers({
             >
               Receive transfer
             </Button>
-          )}
+          </div>}
         </article>
       ))}
     </section>

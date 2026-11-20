@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, lte } from "drizzle-orm";
-import { db, invoicesTable, jobsTable, productsTable, proposalsTable, quickbooksConnectionsTable, quickbooksConflictsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable } from "@workspace/db";
+import { and, asc, eq, inArray, lte, or } from "drizzle-orm";
+import { db, invoicesTable, jobsTable, productsTable, proposalsTable, quickbooksConnectionsTable, quickbooksConflictsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable, type InvoiceLineCategory } from "@workspace/db";
 import { audit } from "./auth";
 import { getConnection, qboRequest } from "./quickbooks";
 import { logger } from "./logger";
-import { assertQuickBooksCompanyLink, quickBooksInvoiceLines } from "./quickbooks-invoice";
+import { assertQuickBooksCompanyLink, invoiceServiceEntity, invoiceServiceMappingKey, quickBooksInvoiceLines } from "./quickbooks-invoice";
 
 const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 async function mapping(entityType: string, localId: string) { const [row] = await db.select().from(quickbooksEntityMappingsTable).where(and(eq(quickbooksEntityMappingsTable.entityType, entityType), eq(quickbooksEntityMappingsTable.localId, localId))).limit(1); return row; }
@@ -38,16 +38,27 @@ async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
     const connection = await getConnection();
     if (connection?.status !== "connected") throw new Error("QuickBooks is not connected");
     const productIds = [...new Set(source.lineItems.flatMap(({ productId }) => productId ? [productId] : []))];
+    const serviceCategories = [...new Set(source.lineItems.flatMap(({ productId, category }) => productId ? [] : [category]))];
+    const categoriesByKey = new Map(serviceCategories.map((category) => [invoiceServiceMappingKey(connection, category), category]));
     const items = quickbooksEntityMappingsTable;
-    const links = productIds.length ? await db.select({ productId: items.localId, itemId: items.quickbooksId })
+    const links = await db.select({ entityType: items.entityType, localId: items.localId, itemId: items.quickbooksId })
       .from(items).where(and(
-        eq(items.entityType, "item"),
         eq(items.status, "linked"),
         eq(items.realmId, connection.realmId),
         eq(items.environment, connection.environment),
-        inArray(items.localId, productIds),
-      )) : [];
-    const lines = quickBooksInvoiceLines(source, new Map(links.map(({ productId, itemId }) => [productId, itemId])));
+        or(
+          and(eq(items.entityType, "item"), inArray(items.localId, productIds)),
+          and(eq(items.entityType, invoiceServiceEntity), inArray(items.localId, [...categoriesByKey.keys()])),
+        ),
+      ));
+    const itemIds = new Map<string, string>();
+    const serviceIds = new Map<InvoiceLineCategory, string>();
+    for (const link of links) {
+      if (link.entityType === "item") itemIds.set(link.localId, link.itemId);
+      const category = categoriesByKey.get(link.localId);
+      if (link.entityType === invoiceServiceEntity && category) serviceIds.set(category, link.itemId);
+    }
+    const lines = quickBooksInvoiceLines(source, itemIds, serviceIds);
     const customer = await mapping("customer", source.jobId);
     if (!customer) throw new Error("Customer mapping is required");
     assertQuickBooksCompanyLink("customer", customer, connection);

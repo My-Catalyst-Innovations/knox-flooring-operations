@@ -8,7 +8,7 @@ alerts:
 services:
   - name: web
     github:
-      repo: DVass81/knox-flooring-operations
+      repo: My-Catalyst-Innovations/knox-flooring-operations
       branch: main
       deploy_on_push: true
     dockerfile_path: Dockerfile

@@ -2,10 +2,11 @@ import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/auth";
 
-const sections: Record<"jobs" | "schedule" | "reports", { name: string; href: string; id: string; roles?: string[] }[]> = {
+const sections: Record<"jobs" | "schedule" | "reports" | "inventory", { name: string; href: string; id: string; roles?: string[] }[]> = {
   jobs: [{ name: "List", href: "/jobs", id: "nav-jobs-list" }, { name: "Board", href: "/pipeline", id: "nav-pipeline" }],
   schedule: [{ name: "Installations", href: "/calendar", id: "nav-calendar", roles: ["owner", "operations"] }, { name: "Crews", href: "/schedule", id: "nav-schedule", roles: ["owner", "operations"] }, { name: "Tasks & follow-ups", href: "/tasks", id: "nav-task-calendar" }],
   reports: [{ name: "Overview", href: "/reports", id: "nav-reports", roles: ["owner"] }, { name: "Sales performance", href: "/sales", id: "nav-sales-performance", roles: ["owner", "sales"] }, { name: "Commissions", href: "/commissions", id: "nav-commissions", roles: ["owner"] }],
+  inventory: [{ name: "Catalog", href: "/inventory", id: "nav-inventory-catalog" }, { name: "Purchase orders", href: "/inventory/purchase-orders", id: "nav-purchase-orders" }, { name: "Warehouse bins", href: "/inventory/bins", id: "nav-warehouse-bins" }],
 };
 
 export function SectionTabs({ section }: { section: keyof typeof sections }) {

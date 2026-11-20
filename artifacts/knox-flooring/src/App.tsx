@@ -24,6 +24,8 @@ import Customers from "@/pages/customers";
 import CustomerDetail from "@/pages/customer-detail";
 import Materials from "@/pages/materials";
 import Inventory from "@/pages/inventory";
+import PurchaseOrders from "@/pages/purchase-orders";
+import WarehouseBins from "@/pages/warehouse-bins";
 import Reports from "@/pages/reports";
 import Settings from "@/pages/settings";
 import PublicStatus from "@/pages/public-status";
@@ -62,6 +64,8 @@ function AdminRouter() {
         <Route path="/customers" component={Customers} />
         <Route path="/materials" component={Materials} />
         <Route path="/inventory" component={Inventory} />
+        <Route path="/inventory/purchase-orders" component={PurchaseOrders} />
+        <Route path="/inventory/bins" component={WarehouseBins} />
         <Route path="/reports" component={Reports} />
         <Route path="/settings" component={Settings} />
         <Route path="/integration-health" component={IntegrationHealth} />

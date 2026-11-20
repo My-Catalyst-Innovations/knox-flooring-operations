@@ -58,6 +58,7 @@ describe("reviewed selling-price line allocation", () => {
     expect(invoice.lineItems[0]).toMatchObject({ description: "Tile (sqft)", productId: "tile", sku: "T1" });
     expect(invoice.lineItems[1].category).toBe("Labor");
     expect(invoice.lineItems[1]).not.toHaveProperty("productId");
+    expect(invoice.lineItems[2].category).toBe("Add-on");
     expect(invoice).toMatchObject({
       subtotal: estimate.sellingPrice,
       taxableAmount: estimate.sellingPrice,

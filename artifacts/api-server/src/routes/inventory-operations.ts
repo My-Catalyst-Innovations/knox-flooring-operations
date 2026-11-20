@@ -19,6 +19,17 @@ import {
   returnCreditCents,
 } from "../lib/inventory-issue-cost";
 import { requireRole } from "../middlewares/auth";
+import {
+  assertBinWithdrawal,
+  ensureOpeningMovement,
+  lockStockProduct,
+  roundStock,
+  updateStockTotal,
+  verifyBin,
+  verifyWarehouse,
+  type StockProduct,
+  type StockTransaction as Transaction,
+} from "../lib/inventory-stock";
 import { domainRoute, parse, revision, id } from "../lib/domain-http";
 import {
   assertRevision,
@@ -30,12 +41,11 @@ import {
 const router = Router();
 router.use("/inventory", requireRole("owner", "operations"));
 
-type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
-type StockProduct = typeof productsTable.$inferSelect;
 const warehouseIdInput = z.string().min(1).nullable().optional();
+const binIdInput = z.string().min(1).max(200).nullable().optional();
 const requestKey = z.string().min(8).max(200);
 const productLabelCode = z.string().trim().min(1).max(512);
-const roundStock = (quantity: number) => Math.round(quantity * 1e6) / 1e6;
+const finiteStockRange = (quantity: number) => Number.isFinite(Math.fround(quantity));
 
 function namedBalances(tx: Transaction, productId?: string) {
   return tx
@@ -87,15 +97,6 @@ async function locationAvailability(
   return stockAvailability(roundStock(onHand), reservations);
 }
 
-async function verifyWarehouse(tx: Transaction, warehouseId: string | null) {
-  if (!warehouseId) return;
-  const [warehouse] = await tx
-    .select({ id: warehousesTable.id })
-    .from(warehousesTable)
-    .where(eq(warehousesTable.id, warehouseId));
-  if (!warehouse) throw new DomainError(404, "Warehouse not found.");
-}
-
 async function verifyProductLabel(
   reader: Pick<typeof db, "execute">,
   productId: string,
@@ -128,47 +129,6 @@ async function verifyProductLabel(
       409,
       "This label belongs to a different product. Check the stock before recording the issue.",
     );
-}
-
-async function ensureOpeningMovement(
-  tx: Transaction,
-  product: StockProduct,
-  now: string,
-) {
-  const [existing] = await tx
-    .select({ id: inventoryMovementsTable.id })
-    .from(inventoryMovementsTable)
-    .where(eq(inventoryMovementsTable.productId, product.id))
-    .limit(1);
-  if (existing) return;
-  await tx
-    .insert(inventoryMovementsTable)
-    .values({
-      id: randomUUID(),
-      productId: product.id,
-      quantity: product.quantityOnHand,
-      kind: "opening",
-      reason: "Legacy opening balance",
-      idempotencyKey: `opening:${product.id}`,
-      createdAt: now,
-    })
-    .onConflictDoNothing();
-}
-
-async function updateStockTotal(
-  tx: Transaction,
-  product: StockProduct,
-  delta: number,
-  now: string,
-) {
-  await tx
-    .update(productsTable)
-    .set({
-      quantityOnHand: roundStock(product.quantityOnHand + delta),
-      revision: product.revision + 1,
-      updatedAt: now,
-    })
-    .where(eq(productsTable.id, product.id));
 }
 
 function issueUnitCostFor(product: StockProduct) {
@@ -440,11 +400,12 @@ router.post(
         productId: z.string().min(1),
         jobId: z.string().min(1).optional(),
         warehouseId: warehouseIdInput,
+        binId: binIdInput,
         returnOfMovementId: z.string().min(1).optional(),
         callbackId: z.string().min(1).optional(),
         labelCode: productLabelCode.optional(),
         kind: z.enum(["receipt", "return", "consume", "adjustment"]),
-        quantity: z.number().finite(),
+        quantity: z.number().finite().refine(finiteStockRange),
         reason: z.string().trim().min(1).max(2000),
         idempotencyKey: requestKey,
         overrideReason: z.string().trim().min(1).optional(),
@@ -452,6 +413,7 @@ router.post(
       req.body,
     );
     const warehouseId = data.warehouseId ?? null;
+    const binId = data.binId ?? null;
     if (data.returnOfMovementId && (data.kind !== "return" || !data.jobId)) {
       throw new DomainError(
         400,
@@ -487,9 +449,7 @@ router.post(
     if (data.jobId) await validateCallback(data.jobId, data.callbackId);
     const delta = movementDelta(data.kind, data.quantity);
     const result = await db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select pg_advisory_xact_lock(hashtext(${"inventory:" + data.productId}))`,
-      );
+      await lockStockProduct(tx, data.productId);
       if (data.labelCode)
         await verifyProductLabel(tx, data.productId, data.labelCode);
       const [duplicate] = await tx
@@ -499,10 +459,11 @@ router.post(
       if (duplicate) {
         if (
           duplicate.productId !== data.productId ||
-          Math.fround(duplicate.quantity) !== Math.fround(delta) ||
+          duplicate.quantity !== delta ||
           duplicate.kind !== data.kind ||
           duplicate.jobId !== (data.jobId ?? null) ||
           duplicate.warehouseId !== warehouseId ||
+          duplicate.binId !== binId ||
           duplicate.returnOfMovementId !== (data.returnOfMovementId ?? null)
         )
           throw new DomainError(
@@ -533,6 +494,7 @@ router.post(
       if (!product || product.inventoryType !== "Inventory")
         throw new DomainError(400, "Choose a stocked inventory product.");
       await verifyWarehouse(tx, warehouseId);
+      await verifyBin(tx, warehouseId, binId);
       if (
         data.jobId &&
         !(
@@ -581,6 +543,7 @@ router.post(
           { available },
         );
       const now = new Date().toISOString();
+      if (delta < 0) await assertBinWithdrawal(tx, product.id, warehouseId, binId, -delta);
       const issuingJob = data.kind === "consume" ? data.jobId : undefined;
       const issueUnitCost = issuingJob ? issueUnitCostFor(product) : undefined;
       await ensureOpeningMovement(tx, product, now);
@@ -591,6 +554,7 @@ router.post(
           productId: product.id,
           jobId: data.jobId,
           warehouseId,
+          binId,
           returnOfMovementId: data.returnOfMovementId,
           issueUnitCost,
           quantity: delta,
@@ -644,7 +608,7 @@ router.post(
         productId: z.string().min(1),
         jobId: z.string().min(1),
         warehouseId: warehouseIdInput,
-        quantity: z.number().finite().positive(),
+        quantity: z.number().finite().positive().refine(finiteStockRange),
         idempotencyKey: requestKey,
       }),
       req.body,
@@ -664,7 +628,7 @@ router.post(
         if (
           duplicate.productId !== data.productId ||
           duplicate.jobId !== data.jobId ||
-          Math.fround(duplicate.quantity) !== Math.fround(data.quantity) ||
+          duplicate.quantity !== data.quantity ||
           duplicate.warehouseId !== warehouseId
         )
           throw new DomainError(
@@ -717,6 +681,7 @@ router.patch(
       z.object({
         revision,
         status: z.enum(["Released", "Consumed"]),
+        binId: binIdInput,
         callbackId: z.string().min(1).optional(),
         labelCode: productLabelCode.optional(),
       }),
@@ -732,15 +697,16 @@ router.patch(
         400,
         "Label verification applies to reservation issues.",
       );
+    if (data.binId && data.status !== "Consumed")
+      throw new DomainError(400, "Choose a bin only when issuing reserved stock.");
+    const binId = data.binId ?? null;
     const result = await db.transaction(async (tx) => {
       const [initial] = await tx
         .select()
         .from(inventoryReservationsTable)
         .where(eq(inventoryReservationsTable.id, id(req)));
       if (!initial) throw new DomainError(404, "Reservation not found");
-      await tx.execute(
-        sql`select pg_advisory_xact_lock(hashtext(${"inventory:" + initial.productId}))`,
-      );
+      await lockStockProduct(tx, initial.productId);
       const [current] = await tx
         .select()
         .from(inventoryReservationsTable)
@@ -773,6 +739,7 @@ router.patch(
               409,
               "This reservation already recorded a different callback cost. Review the saved usage instead of retrying with changed details.",
             );
+          if (movement?.binId !== binId) throw new DomainError(409, "This reservation was already issued from a different bin.");
         }
         return current;
       }
@@ -798,6 +765,8 @@ router.patch(
             409,
             "Reserved material is no longer on hand; reconcile stock first.",
           );
+        await verifyBin(tx, current.warehouseId, binId);
+        await assertBinWithdrawal(tx, product.id, current.warehouseId, binId, current.quantity);
         await ensureOpeningMovement(tx, product, now);
         const issueUnitCost = issueUnitCostFor(product);
         const [movement] = await tx
@@ -807,6 +776,7 @@ router.patch(
             productId: product.id,
             jobId: current.jobId,
             warehouseId: current.warehouseId,
+            binId,
             issueUnitCost,
             quantity: -current.quantity,
             kind: "consume",
@@ -882,6 +852,7 @@ async function recordTransferMovement(
     warehouseId: dispatch
       ? transfer.sourceWarehouseId
       : transfer.destinationWarehouseId,
+    binId: dispatch ? transfer.sourceBinId : transfer.destinationBinId,
     transferId: transfer.id,
     quantity: dispatch ? -transfer.quantity : transfer.quantity,
     kind,
@@ -900,10 +871,11 @@ router.post(
         productId: z.string().min(1),
         sourceWarehouseId: z.string().min(1).nullable(),
         destinationWarehouseId: z.string().min(1),
+        sourceBinId: binIdInput,
         quantity: z
           .number()
           .min(0.000001)
-          .refine((value) => Number.isFinite(Math.fround(value))),
+          .refine(finiteStockRange),
         reason: z.string().trim().min(1).max(2000),
         idempotencyKey: requestKey,
       }),
@@ -914,9 +886,7 @@ router.post(
     }
     const actor = req.auth!.userId;
     const transfer = await db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select pg_advisory_xact_lock(hashtext(${"inventory:" + data.productId}))`,
-      );
+      await lockStockProduct(tx, data.productId);
       const [prior] = await tx
         .select()
         .from(inventoryTransfersTable)
@@ -925,8 +895,9 @@ router.post(
         if (
           prior.productId !== data.productId ||
           prior.sourceWarehouseId !== data.sourceWarehouseId ||
+          prior.sourceBinId !== (data.sourceBinId ?? null) ||
           prior.destinationWarehouseId !== data.destinationWarehouseId ||
-          Math.fround(prior.quantity) !== Math.fround(data.quantity) ||
+          prior.quantity !== data.quantity ||
           prior.reason !== data.reason
         ) {
           throw new DomainError(
@@ -946,6 +917,7 @@ router.post(
       }
       await verifyWarehouse(tx, data.sourceWarehouseId);
       await verifyWarehouse(tx, data.destinationWarehouseId);
+      await verifyBin(tx, data.sourceWarehouseId, data.sourceBinId ?? null);
       const stock = await locationAvailability(
         tx,
         product,
@@ -960,6 +932,7 @@ router.post(
       }
       // Assigning a counted legacy balance changes its location without moving goods.
       const assignment = data.sourceWarehouseId === null;
+      await assertBinWithdrawal(tx, product.id, data.sourceWarehouseId, data.sourceBinId ?? null, data.quantity);
       const now = new Date().toISOString();
       await ensureOpeningMovement(tx, product, now);
       const [row] = await tx
@@ -988,6 +961,7 @@ router.post(
 router.post(
   "/inventory/transfers/:id/receive",
   domainRoute(async (req, res) => {
+    const { destinationBinId } = parse(z.object({ destinationBinId: binIdInput }), req.body ?? {});
     const actor = req.auth!.userId;
     const transfer = await db.transaction(async (tx) => {
       const [initial] = await tx
@@ -995,27 +969,33 @@ router.post(
         .from(inventoryTransfersTable)
         .where(eq(inventoryTransfersTable.id, id(req)));
       if (!initial) throw new DomainError(404, "Transfer not found.");
-      await tx.execute(
-        sql`select pg_advisory_xact_lock(hashtext(${"inventory:" + initial.productId}))`,
-      );
+      await lockStockProduct(tx, initial.productId);
       const [current] = await tx
         .select()
         .from(inventoryTransfersTable)
         .where(eq(inventoryTransfersTable.id, initial.id))
         .for("update");
-      if (current.status === "Received") return current;
+      if (current.status === "Received") {
+        if (destinationBinId !== undefined && destinationBinId !== current.destinationBinId) {
+          throw new DomainError(409, "This transfer was already received into a different bin.");
+        }
+        return current;
+      }
       const [product] = await tx
         .select()
         .from(productsTable)
         .where(eq(productsTable.id, current.productId))
         .for("update");
       const now = new Date().toISOString();
-      await recordTransferMovement(tx, current, "transfer_in", actor, now);
+      const binId = destinationBinId ?? null;
+      await verifyBin(tx, current.destinationWarehouseId, binId);
+      await recordTransferMovement(tx, { ...current, destinationBinId: binId }, "transfer_in", actor, now);
       await updateStockTotal(tx, product, current.quantity, now);
       const [row] = await tx
         .update(inventoryTransfersTable)
         .set({
           status: "Received",
+          destinationBinId: binId,
           receivedBy: actor,
           receivedAt: now,
           updatedAt: now,

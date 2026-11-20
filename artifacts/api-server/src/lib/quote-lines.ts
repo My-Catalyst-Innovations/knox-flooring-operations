@@ -44,7 +44,7 @@ export function sellingQuoteLines(
         unit: "each",
         quantity: 1,
         cost: Math.round(a.cost * 100) / 100,
-        category: "Installation",
+        category: "Add-on",
       })),
   ];
   const target = Math.round(snapshot.sellingPrice * 100);

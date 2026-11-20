@@ -14,7 +14,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const destinations = navItems.filter((item) => item.href === location || (item.href !== "/" && location.startsWith(`${item.href}/`)));
   const allowed = destinations.length === 0 || destinations.some((item) => canAccess(item, user?.role ?? "installer"));
   useEffect(() => { document.title = `${destinations[0]?.name ?? "Workspace"} · Catalyst Works`; }, [location]);
-  const section = ["/jobs", "/pipeline"].includes(location) ? "jobs" : ["/calendar", "/schedule", "/tasks"].includes(location) ? "schedule" : ["/reports", "/sales", "/commissions"].includes(location) ? "reports" : null;
+  const section = ["/jobs", "/pipeline"].includes(location) ? "jobs" : ["/calendar", "/schedule", "/tasks"].includes(location) ? "schedule" : ["/reports", "/sales", "/commissions"].includes(location) ? "reports" : location === "/inventory" || location.startsWith("/inventory/") ? "inventory" : null;
   return (
     <div className="flex min-h-screen bg-background">
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-white focus:px-4 focus:py-3">Skip to content</a>

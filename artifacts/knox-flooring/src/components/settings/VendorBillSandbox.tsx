@@ -8,9 +8,9 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { operation } from "@/lib/operations";
+import { operation, useOperation } from "@/lib/operations";
 
-type Mode = "review" | "simulated" | "sandbox";
+type Mode = "review" | "simulated" | "sandbox" | "production";
 type Line = {
   supplierSku: string;
   unit: string;
@@ -28,6 +28,7 @@ type ReviewedLine = {
   priceEffectiveOn: string;
   priceSource: string;
   priceDiffers: boolean;
+  quickBooksItemId?: string;
 };
 type Prepared = {
   fingerprint: string;
@@ -37,12 +38,18 @@ type Prepared = {
   priceDiffers: boolean;
 } & (
   | { mode: "review"; billNumber: string; billDate: string }
-  | {
-      mode: "simulated" | "sandbox";
-      quickBooksBill: { DocNumber: string; VendorRef: { value: string } };
+  | ({
+      quickBooksBill: {
+        DocNumber: string;
+        TxnDate: string;
+        VendorRef: { value: string };
+      };
       postedId?: string;
       reconciledExisting?: boolean;
-    }
+    } & (
+      | { mode: "simulated" | "sandbox" }
+      | { mode: "production"; quickBooksTarget: { vendorName: string } }
+    ))
 );
 type Bill = {
   id: string;
@@ -58,16 +65,19 @@ const titles: Record<Mode, string> = {
   review: "Supplier bills · local review",
   sandbox: "Supplier bills · QuickBooks sandbox",
   simulated: "Supplier bills · simulation",
+  production: "Supplier bills · QuickBooks Online",
 };
 const approvalLabels: Record<Mode, string> = {
   review: "Record owner review",
   sandbox: "Approve and post to sandbox",
   simulated: "Approve simulated bill",
+  production: "Approve and post to QuickBooks Online",
 };
 const approvalMessages: Record<Mode, string> = {
   review: "Supplier bill review recorded.",
   sandbox: "Supplier bill verified in the QuickBooks sandbox.",
   simulated: "Supplier bill simulated.",
+  production: "Supplier bill verified in QuickBooks Online.",
 };
 const blankLine: Line = {
   supplierSku: "",
@@ -81,10 +91,18 @@ const dollars = (cents: number) =>
   );
 
 function billNumberFor(bill: Prepared) {
-  return bill.mode === "review" ? bill.billNumber : bill.quickBooksBill.DocNumber;
+  return bill.mode === "review"
+    ? bill.billNumber
+    : bill.quickBooksBill.DocNumber;
 }
 
-function ReviewedLines({ lines }: { lines: ReviewedLine[] }) {
+function ReviewedLines({
+  lines,
+  showQuickBooksItem = false,
+}: {
+  lines: ReviewedLine[];
+  showQuickBooksItem?: boolean;
+}) {
   return (
     <ul className="divide-y text-sm">
       {lines.map((line, index) => (
@@ -93,12 +111,15 @@ function ReviewedLines({ lines }: { lines: ReviewedLine[] }) {
             {line.supplierSku} → {line.internalSku} · {line.productName}
           </span>
           <p>
-            Quantity {line.quantity} · Approved {line.expectedUnitCost} / {line.unit} · billed{" "}
-            {line.billedUnitCost} / {line.unit}
+            Quantity {line.quantity} · Approved {line.expectedUnitCost} /{" "}
+            {line.unit} · billed {line.billedUnitCost} / {line.unit}
             {line.priceDiffers && " · Price differs"}
           </p>
           <p className="text-muted-foreground">
             {line.priceEffectiveOn} · {line.priceSource}
+            {showQuickBooksItem &&
+              line.quickBooksItemId &&
+              ` · QuickBooks item ${line.quickBooksItemId}`}
           </p>
         </li>
       ))}
@@ -106,12 +127,47 @@ function ReviewedLines({ lines }: { lines: ReviewedLine[] }) {
   );
 }
 
+type BillCapabilities = {
+  productionEnabled: boolean;
+  companyName: string | null;
+  companyId: string | null;
+};
+
+export function ProductionVendorBills({
+  vendors,
+  realmId,
+}: {
+  vendors: SandboxVendor[];
+  realmId?: string;
+}) {
+  const capabilities = useOperation<BillCapabilities>(`${path}/capabilities`, [
+    "owner",
+  ]);
+  const company = capabilities.data;
+  if (
+    capabilities.isError ||
+    !company?.productionEnabled ||
+    !company.companyId ||
+    company.companyId !== realmId
+  )
+    return null;
+  return (
+    <VendorBillSandbox
+      mode="production"
+      vendors={vendors}
+      company={company.companyName || `Company ${company.companyId}`}
+    />
+  );
+}
+
 export function VendorBillSandbox({
   mode,
   vendors,
+  company,
 }: {
   mode: Mode;
   vendors: SandboxVendor[];
+  company?: string;
 }) {
   const [supplier, setSupplier] = useState("");
   const [vendorId, setVendorId] = useState("");
@@ -124,7 +180,12 @@ export function VendorBillSandbox({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [confirmation, setConfirmation] = useState<{
+    id: string;
+    fingerprint: string;
+  } | null>(null);
   const historyPath = `${path}?mode=${mode}`;
+  const usesQuickBooksVendor = mode === "sandbox" || mode === "production";
 
   useEffect(() => {
     let disposed = false;
@@ -168,7 +229,7 @@ export function VendorBillSandbox({
   const input = {
     mode,
     supplier,
-    vendorId: mode === "sandbox" ? vendorId : undefined,
+    vendorId: usesQuickBooksVendor ? vendorId : undefined,
     billNumber,
     billDate,
     billTotal,
@@ -176,7 +237,7 @@ export function VendorBillSandbox({
   };
   const canPreview =
     supplier.trim() &&
-    (mode !== "sandbox" || /^\d+$/.test(vendorId)) &&
+    (!usesQuickBooksVendor || /^\d+$/.test(vendorId)) &&
     billNumber.trim() &&
     billDate &&
     billTotal.trim() &&
@@ -190,7 +251,10 @@ export function VendorBillSandbox({
         <CardDescription>
           Review purchase lines against approved supplier SKUs and the price
           effective on the bill date.
-          {mode === "review" && " Owner reviews are recorded in Catalyst Works."}
+          {mode === "review" &&
+            " Owner reviews are recorded in Catalyst Works."}
+          {mode === "production" &&
+            ` Approved bills post to ${company || "the connected QuickBooks company"}. Enter USD merchandise lines from the supplier bill.`}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -247,18 +311,20 @@ export function VendorBillSandbox({
                 />
               </label>
             </div>
-            {mode === "sandbox" && (
+            {usesQuickBooksVendor && (
               <label className="block max-w-xs space-y-1 text-sm font-medium">
-                Sandbox vendor ID
+                {mode === "production"
+                  ? "QuickBooks vendor ID"
+                  : "Sandbox vendor ID"}
                 <Input
                   value={vendorId}
-                  list="vendor-bill-options"
+                  list={`vendor-bill-options-${mode}`}
                   inputMode="numeric"
                   onChange={(event) =>
                     edit(() => setVendorId(event.target.value))
                   }
                 />
-                <datalist id="vendor-bill-options">
+                <datalist id={`vendor-bill-options-${mode}`}>
                   {vendors.map((vendor) => (
                     <option key={vendor.Id} value={vendor.Id}>
                       {vendor.DisplayName}
@@ -341,15 +407,23 @@ export function VendorBillSandbox({
         {preview && (
           <div className="space-y-2 rounded-md border p-3">
             <p className="font-medium">
-              Bill {billNumberFor(preview)} ·{" "}
-              {dollars(preview.totalCents)}
+              Bill {billNumberFor(preview)} · {dollars(preview.totalCents)}
             </p>
             {preview.mode === "sandbox" && (
               <p className="text-sm text-muted-foreground">
                 QuickBooks vendor ID {preview.quickBooksBill.VendorRef.value}
               </p>
             )}
-            <ReviewedLines lines={preview.lines} />
+            {preview.mode === "production" && (
+              <p className="text-sm text-muted-foreground">
+                QuickBooks vendor {preview.quickBooksTarget.vendorName} · ID{" "}
+                {preview.quickBooksBill.VendorRef.value}
+              </p>
+            )}
+            <ReviewedLines
+              lines={preview.lines}
+              showQuickBooksItem={preview.mode === "production"}
+            />
             <Button
               disabled={busy}
               onClick={() =>
@@ -377,88 +451,138 @@ export function VendorBillSandbox({
         )}
         {visibleBills.length > 0 && (
           <ul className="space-y-2">
-            {visibleBills.map((bill) => (
-              <li className="rounded-md border p-3" key={bill.id}>
-                <p className="font-medium">
-                  {bill.payload.supplier} ·{" "}
-                  {billNumberFor(bill.payload)} ·{" "}
-                  {dollars(bill.payload.totalCents)}
-                </p>
-                {bill.payload.priceDiffers && (
-                  <p className="text-sm text-amber-700">
-                    Billed price differs from the approved purchase price.
+            {visibleBills.map((bill) => {
+              const reviewing =
+                bill.status === "pending_approval" ||
+                (mode !== "review" &&
+                  (bill.status === "failed" ||
+                    (bill.status === "processing" &&
+                      !!bill.startedAt &&
+                      Date.parse(bill.startedAt) < Date.now() - 300_000)));
+              const confirmed =
+                confirmation?.id === bill.id &&
+                confirmation.fingerprint === bill.payload.fingerprint;
+              return (
+                <li className="rounded-md border p-3" key={bill.id}>
+                  <p className="font-medium">
+                    {bill.payload.supplier} · {billNumberFor(bill.payload)} ·{" "}
+                    {dollars(bill.payload.totalCents)}
                   </p>
-                )}
-                {bill.payload.mode === "review" && (
-                  <details className="my-1 text-sm">
-                    <summary className="cursor-pointer">Bill details</summary>
-                    <p className="mt-2 text-muted-foreground">Bill date {bill.payload.billDate}</p>
-                    <ReviewedLines lines={bill.payload.lines} />
-                  </details>
-                )}
-                {bill.status === "reviewed" && (
-                  <p className="text-sm text-muted-foreground">
-                    Reviewed in Catalyst Works
-                  </p>
-                )}
-                {bill.payload.mode !== "review" && bill.payload.postedId && (
-                  <p className="text-sm text-muted-foreground">
-                    {mode === "simulated"
-                      ? "Simulated bill"
-                      : bill.payload.reconciledExisting
-                        ? "Reconciled existing sandbox bill"
-                        : "Verified sandbox bill"}{" "}
-                    {bill.payload.postedId}
-                  </p>
-                )}
-                {bill.lastError && (
-                  <p className="text-sm text-destructive">{bill.lastError}</p>
-                )}
-                {(bill.status === "pending_approval" ||
-                  (mode !== "review" &&
-                    (bill.status === "failed" ||
-                      (bill.status === "processing" &&
-                        !!bill.startedAt &&
-                        Date.parse(bill.startedAt) < Date.now() - 300_000)))) && (
-                  <Button
-                    className="mt-2"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() =>
-                      void run(async () => {
-                        try {
-                          const completed = await operation<Bill>(
-                            `${path}/${bill.id}/approve`,
-                            "POST",
-                          );
-                          setBills((current) =>
-                            current.map((item) =>
-                              item.id === completed.id ? completed : item,
-                            ),
-                          );
-                          setMessage(approvalMessages[mode]);
-                        } catch (failure) {
-                          const rows = await operation<Bill[]>(historyPath).catch(
-                            () => undefined,
-                          );
-                          if (rows) setBills(rows);
-                          throw failure;
-                        }
-                      })
-                    }
-                  >
-                    {bill.status !== "pending_approval"
-                      ? "Retry bill"
-                      : approvalLabels[mode]}
-                  </Button>
-                )}
-                {bill.status === "processing" && (
-                  <p className="text-sm text-muted-foreground">
-                    Processing supplier bill.
-                  </p>
-                )}
-              </li>
-            ))}
+                  {bill.payload.priceDiffers && (
+                    <p className="text-sm text-amber-700">
+                      Billed price differs from the approved purchase price.
+                    </p>
+                  )}
+                  {bill.payload.mode === "review" && (
+                    <details className="my-1 text-sm">
+                      <summary className="cursor-pointer">Bill details</summary>
+                      <p className="mt-2 text-muted-foreground">
+                        Bill date {bill.payload.billDate}
+                      </p>
+                      <ReviewedLines lines={bill.payload.lines} />
+                    </details>
+                  )}
+                  {bill.payload.mode === "production" && (
+                    <div className="my-2 space-y-2 text-sm">
+                      <p>
+                        QuickBooks vendor{" "}
+                        {bill.payload.quickBooksTarget.vendorName} · ID{" "}
+                        {bill.payload.quickBooksBill.VendorRef.value} ·{" "}
+                        {bill.payload.quickBooksBill.TxnDate}
+                      </p>
+                      <ReviewedLines
+                        lines={bill.payload.lines}
+                        showQuickBooksItem
+                      />
+                      {reviewing && (
+                        <label className="flex items-start gap-2 font-medium">
+                          <input
+                            type="checkbox"
+                            className="mt-1 accent-primary"
+                            checked={confirmed}
+                            disabled={busy}
+                            onChange={(event) =>
+                              setConfirmation(
+                                event.target.checked
+                                  ? {
+                                      id: bill.id,
+                                      fingerprint: bill.payload.fingerprint,
+                                    }
+                                  : null,
+                              )
+                            }
+                          />
+                          I approve this vendor, these items, and this amount
+                          for posting to {company || "QuickBooks Online"}.
+                        </label>
+                      )}
+                    </div>
+                  )}
+                  {bill.status === "reviewed" && (
+                    <p className="text-sm text-muted-foreground">
+                      Reviewed in Catalyst Works
+                    </p>
+                  )}
+                  {bill.payload.mode !== "review" && bill.payload.postedId && (
+                    <p className="text-sm text-muted-foreground">
+                      {mode === "simulated"
+                        ? "Simulated bill"
+                        : bill.payload.reconciledExisting
+                          ? `Reconciled existing ${mode === "production" ? "QuickBooks" : "sandbox"} bill`
+                          : `Verified ${mode === "production" ? "QuickBooks" : "sandbox"} bill`}{" "}
+                      {bill.payload.postedId}
+                    </p>
+                  )}
+                  {bill.lastError && (
+                    <p className="text-sm text-destructive">{bill.lastError}</p>
+                  )}
+                  {reviewing && (
+                    <Button
+                      className="mt-2"
+                      size="sm"
+                      disabled={busy || (mode === "production" && !confirmed)}
+                      onClick={() =>
+                        void run(async () => {
+                          try {
+                            const approvePath = `${path}/${bill.id}/approve`;
+                            const completed =
+                              mode === "production"
+                                ? await operation<Bill>(approvePath, "POST", {
+                                    confirmedFingerprint:
+                                      bill.payload.fingerprint,
+                                  })
+                                : await operation<Bill>(approvePath, "POST");
+                            setBills((current) =>
+                              current.map((item) =>
+                                item.id === completed.id ? completed : item,
+                              ),
+                            );
+                            setMessage(approvalMessages[mode]);
+                          } catch (failure) {
+                            const rows = await operation<Bill[]>(
+                              historyPath,
+                            ).catch(() => undefined);
+                            if (rows) setBills(rows);
+                            throw failure;
+                          } finally {
+                            setConfirmation(null);
+                          }
+                        })
+                      }
+                    >
+                      {bill.status !== "pending_approval"
+                        ? "Retry bill"
+                        : approvalLabels[mode]}
+                    </Button>
+                  )}
+                  {bill.status === "processing" && (
+                    <p className="text-sm text-muted-foreground">
+                      Processing supplier bill.
+                    </p>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
         {error && (

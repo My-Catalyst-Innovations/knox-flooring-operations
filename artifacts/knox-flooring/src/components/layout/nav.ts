@@ -1,4 +1,4 @@
-import { LayoutDashboard, Briefcase, KanbanSquare, Calculator, FileText, CalendarDays, CalendarRange, CalendarCheck, Trophy, Wallet, Receipt, Contact, Package, Boxes, BarChart3, Settings, Activity, Send, Target, Sparkles, type LucideIcon } from "lucide-react";
+import { LayoutDashboard, Briefcase, KanbanSquare, Calculator, FileText, CalendarDays, CalendarRange, CalendarCheck, Trophy, Wallet, Receipt, Contact, Package, Boxes, BarChart3, Settings, Activity, Send, Target, Sparkles, ClipboardList, Warehouse, type LucideIcon } from "lucide-react";
 
 export interface NavItem {
   name: string;
@@ -45,6 +45,8 @@ export const viewItems: NavItem[] = [
   { name: "Schedule · Tasks & follow-ups", href: "/tasks", icon: CalendarCheck, keywords: "appointments assignee to-do google sync" },
   { name: "Reports · Sales performance", href: "/sales", icon: Trophy, keywords: "leaderboard reps", roles: ["owner", "sales"] },
   { name: "Reports · Commissions", href: "/commissions", icon: Wallet, keywords: "payouts pay", roles: ["owner"] },
+  { name: "Purchase orders", href: "/inventory/purchase-orders", icon: ClipboardList, keywords: "supplier order receiving shipments", roles: ["owner", "operations"] },
+  { name: "Warehouse bins", href: "/inventory/bins", icon: Warehouse, keywords: "stock location aisle shelf rack SKU putaway", roles: ["owner", "operations"] },
 ];
 export const navItems = [...navGroups.flatMap((group) => group.items), ...utilityItems, ...viewItems];
 export const canAccess = (item: Pick<NavItem, "roles">, role: string) => !item.roles || item.roles.includes(role);

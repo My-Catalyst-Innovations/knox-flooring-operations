@@ -16,6 +16,8 @@ Create your warehouse names under **Inventory → Warehouses**. Download the CSV
 
 Use **Preview supplier CSV** to match manufacturer part numbers and supplier SKUs to your internal SKUs. The owner approves each supplier price and its effective date. Use a physical stock count for warehouse balances and the vendor agreement for approved purchase prices.
 
+Create an order under **Inventory → Purchase orders** with the supplier, receiving warehouse, products, and unit costs. Mark the order **Ordered** after placing it with the supplier. Use **Receive shipment** to record only the items that arrived, with an optional packing slip reference and a destination bin per line. A partial receipt leaves the balance open. Create, inspect, and move bins under **Inventory → Warehouse bins**.
+
 ## QuickBooks Online setup
 
 1. Create an app in the Intuit Developer dashboard and enable the `com.intuit.quickbooks.accounting` scope.
@@ -25,6 +27,8 @@ Use **Preview supplier CSV** to match manufacturer part numbers and supplier SKU
 5. Sign in, open Settings, connect the sandbox company, then run **Import & reconcile**. No record is exported until the owner explicitly approves it.
 
 QuickBooks tokens are encrypted with AES-256-GCM. Webhooks are signature checked and deduplicated. A five-minute change-data poll recovers missed invoice and payment events.
+
+Approve the QuickBooks Service items for labor, add-ons, and non-catalog materials under **Settings → QuickBooks** before exporting invoices with those lines. Production vendor bill export starts disabled. For a verified USD company and item-only vendor bills, set `QUICKBOOKS_PRODUCTION_VENDOR_BILLS_ENABLED=true` and `QUICKBOOKS_PRODUCTION_VENDOR_BILLS_REALM_ID` to the connected production company ID. Each live bill requires owner confirmation after reviewing its matched items and totals.
 
 ## Outlook Calendar setup
 

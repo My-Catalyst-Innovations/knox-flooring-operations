@@ -1,4 +1,4 @@
-import type { InvoiceRow, quickbooksConnectionsTable, quickbooksEntityMappingsTable } from "@workspace/db";
+import type { InvoiceLineCategory, InvoiceRow, quickbooksConnectionsTable, quickbooksEntityMappingsTable } from "@workspace/db";
 import { invoiceLineAmount, invoiceSubtotal } from "@workspace/domain";
 
 type InvoiceExport = Pick<
@@ -7,6 +7,19 @@ type InvoiceExport = Pick<
 >;
 type QuickBooksCompany = Pick<typeof quickbooksConnectionsTable.$inferSelect, "realmId" | "environment">;
 type QuickBooksLink = Pick<typeof quickbooksEntityMappingsTable.$inferSelect, "realmId" | "environment" | "status">;
+export const invoiceServiceEntity = "invoice-service";
+export const invoiceServiceCategories = ["Labor", "Add-on", "Materials"] as const;
+
+export function invoiceServiceMappingKey(company: QuickBooksCompany, category: InvoiceLineCategory) {
+  return JSON.stringify([company.environment, company.realmId, category]);
+}
+
+export function isActiveQuickBooksServiceItem(
+  item: { Id?: string; Type?: string; Active?: boolean } | undefined,
+  id: string,
+) {
+  return item?.Id === id && item.Type === "Service" && item.Active === true;
+}
 
 export function assertQuickBooksCompanyLink(
   entity: "customer" | "invoice",
@@ -20,6 +33,7 @@ export function assertQuickBooksCompanyLink(
 export function quickBooksInvoiceLines(
   invoice: InvoiceExport,
   itemIds: ReadonlyMap<string, string>,
+  serviceIds: ReadonlyMap<InvoiceLineCategory, string>,
 ) {
   if (invoice.discountAmount !== 0)
     throw new Error("Automatic QuickBooks export does not support invoice discounts. Reconcile this invoice manually.");
@@ -33,11 +47,12 @@ export function quickBooksInvoiceLines(
   return invoice.lineItems.map((line) => {
     if (line.quantity <= 0 || line.unitPrice < 0)
       throw new Error(`Review the quantity and price on invoice line “${line.description}” before exporting.`);
-    if (!line.productId)
-      throw new Error(`Invoice line “${line.description}” needs an approved QuickBooks service item. Reconcile this invoice manually.`);
-    const itemId = itemIds.get(line.productId);
-    if (!itemId || !/^\d{1,30}$/.test(itemId))
-      throw new Error(`Link ${line.sku || line.description} to an item in the connected QuickBooks company through Import & reconcile.`);
+    const itemId = line.productId ? itemIds.get(line.productId) : serviceIds.get(line.category);
+    if (!itemId || !/^\d{1,30}$/.test(itemId)) {
+      if (line.productId)
+        throw new Error(`Link ${line.sku || line.description} to an item in the connected QuickBooks company through Import & reconcile.`);
+      throw new Error(`Invoice line “${line.description}” needs an approved QuickBooks service item for ${line.category}. Open QuickBooks settings and review Invoice service items.`);
+    }
 
     return {
       Amount: invoiceLineAmount(line),

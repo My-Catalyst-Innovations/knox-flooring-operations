@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { and, asc, desc, eq, inArray, like, ne } from "drizzle-orm";
 import { Router, type IRouter } from "express";
+import { z } from "zod";
 import { db, invoicesTable, jobsTable, materialsTable, productsTable, proposalsTable, quickbooksAccountingMappingsTable, quickbooksConflictsTable, quickbooksConnectionsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable } from "@workspace/db";
 import { audit } from "../lib/auth";
 import { encryptSecret, getConnection, qboQuery, qboRequest, signOAuthState, verifyOAuthState } from "../lib/quickbooks";
@@ -8,6 +9,9 @@ import { loadQuickBooksCatalogEntity, quickBooksCatalogEntities } from "../lib/q
 import { processQuickBooksQueue } from "../lib/quickbooks-worker";
 import { requireOwner } from "../middlewares/auth";
 import { vendorBillEntity } from "../lib/vendor-bill";
+import { invoiceServiceCategories, invoiceServiceEntity, invoiceServiceMappingKey, isActiveQuickBooksServiceItem } from "../lib/quickbooks-invoice";
+import { domainRoute, parse } from "../lib/domain-http";
+import { DomainError } from "../lib/operations-rules";
 
 const router: IRouter = Router();
 const configured = () => Boolean(process.env.QUICKBOOKS_CLIENT_ID && process.env.QUICKBOOKS_CLIENT_SECRET && process.env.QUICKBOOKS_REDIRECT_URI && process.env.QUICKBOOKS_ENCRYPTION_KEY);
@@ -132,9 +136,73 @@ router.post("/quickbooks/reconcile", async (req, res) => {
   await audit("quickbooks.reconciliation_loaded", { userId: req.auth!.userId, details: Object.fromEntries(Object.entries(result).map(([k, v]) => [k, v.length])) }); res.json({ lists: result, candidates, connectionId: connection.id });
 });
 
+const serviceCategorySchema = z.enum(invoiceServiceCategories);
+
+router.get("/quickbooks/invoice-service-mappings", requireOwner, domainRoute(async (_req, res) => {
+  const connection = await getConnection();
+  if (connection?.status !== "connected") throw new DomainError(409, "Connect QuickBooks before reviewing invoice service items.");
+  const mappings = quickbooksEntityMappingsTable;
+  const rows = await db.select({ localId: mappings.localId, itemId: mappings.quickbooksId })
+    .from(mappings).where(and(
+      eq(mappings.entityType, invoiceServiceEntity),
+      eq(mappings.status, "linked"),
+      eq(mappings.realmId, connection.realmId),
+      eq(mappings.environment, connection.environment),
+    ));
+  const byKey = new Map(rows.map((row) => [row.localId, row.itemId]));
+  res.json({
+    connectionId: connection.id,
+    mappings: invoiceServiceCategories.map((category) => ({
+      category,
+      itemId: byKey.get(invoiceServiceMappingKey(connection, category)) ?? null,
+    })),
+  });
+}));
+
+router.put("/quickbooks/invoice-service-mappings/:category", requireOwner, domainRoute(async (req, res) => {
+  const category = parse(serviceCategorySchema, req.params.category);
+  const { connectionId, itemId } = parse(z.object({
+    connectionId: z.string().min(1),
+    itemId: z.string().regex(/^\d{1,30}$/).nullable(),
+  }), req.body);
+  const connection = await getConnection();
+  if (connection?.status !== "connected" || connection.id !== connectionId)
+    throw new DomainError(409, "The QuickBooks connection changed. Refresh invoice service items.");
+  const item = itemId ? (await qboRequest(`/item/${itemId}`, {}, connection.id)).Item : undefined;
+  if (itemId && !isActiveQuickBooksServiceItem(item, itemId))
+    throw new DomainError(409, "Select an active Service item in the connected QuickBooks company.");
+
+  const mappings = quickbooksEntityMappingsTable;
+  const localId = invoiceServiceMappingKey(connection, category);
+  const now = new Date().toISOString();
+  const values = {
+    quickbooksId: itemId ?? "ignored",
+    realmId: connection.realmId,
+    environment: connection.environment,
+    status: itemId ? "linked" : "ignored",
+    syncToken: String(item?.SyncToken ?? "0"),
+    updatedAt: now,
+  };
+  await db.transaction(async (tx) => {
+    const [current] = await tx.select({ id: quickbooksConnectionsTable.id }).from(quickbooksConnectionsTable)
+      .where(and(eq(quickbooksConnectionsTable.id, connection.id), eq(quickbooksConnectionsTable.status, "connected"))).for("update");
+    if (!current) throw new DomainError(409, "The QuickBooks connection changed. Refresh invoice service items.");
+    await tx.insert(mappings).values({ id: randomUUID(), entityType: invoiceServiceEntity, localId, ...values, createdAt: now })
+      .onConflictDoUpdate({ target: [mappings.entityType, mappings.localId], set: values });
+  });
+  await audit("quickbooks.invoice_service_mapping_saved", {
+    userId: req.auth!.userId,
+    entityType: invoiceServiceEntity,
+    entityId: localId,
+    details: { category, itemId, realmId: connection.realmId, environment: connection.environment },
+  });
+  res.json({ category, itemId });
+}));
+
 router.get("/quickbooks/mappings", async (_req, res) => res.json({ entities: await db.select().from(quickbooksEntityMappingsTable), accounting: await db.select().from(quickbooksAccountingMappingsTable) }));
 router.put("/quickbooks/entity-mappings/:entityType/:localId", async (req, res) => {
   const entityType = String(req.params.entityType); const localId = String(req.params.localId); const decision = String(req.body?.decision ?? "link"); const quickbooksId = String(req.body?.quickbooksId ?? "");
+  if (entityType === invoiceServiceEntity) { res.status(400).json({ error: "Use Invoice service items to approve this mapping." }); return; }
   if (!quickbooksId && decision === "link") { res.status(400).json({ error: "quickbooksId is required to link a record" }); return; }
   const connectionId = typeof req.body?.connectionId === "string" ? req.body.connectionId : null;
   const connection = connectionId ? await getConnection() : null;

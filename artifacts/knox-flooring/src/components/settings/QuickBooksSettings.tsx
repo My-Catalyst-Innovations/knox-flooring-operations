@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { VendorBillSandbox, type SandboxVendor } from "./VendorBillSandbox";
+import { InvoiceServiceMappings, type QuickBooksCatalogItem, type QuickBooksCatalogItems } from "./InvoiceServiceMappings";
+import { ProductionVendorBills, VendorBillSandbox, type SandboxVendor } from "./VendorBillSandbox";
 
 type Status = {
   configured: boolean;
@@ -46,6 +47,7 @@ export function QuickBooksSettings() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [reconciledConnection, setReconciledConnection] = useState("");
   const [vendors, setVendors] = useState<SandboxVendor[]>([]);
+  const [catalog, setCatalog] = useState<QuickBooksCatalogItems>();
   const [manualItem, setManualItem] = useState({ productId: "", itemId: "" });
   const [busy, setBusy] = useState("");
   const load = async () => {
@@ -76,10 +78,11 @@ export function QuickBooksSettings() {
     window.location.assign(result.authorizationUrl);
   };
   const reconcile = async () => {
-    const result = await customFetch<{ candidates: Candidate[]; connectionId: string; lists: { vendor: SandboxVendor[] } }>("/api/quickbooks/reconcile", { method: "POST", responseType: "json" });
+    const result = await customFetch<{ candidates: Candidate[]; connectionId: string; lists: { vendor: SandboxVendor[]; item: QuickBooksCatalogItem[] } }>("/api/quickbooks/reconcile", { method: "POST", responseType: "json" });
     setCandidates(result.candidates);
     setReconciledConnection(result.connectionId);
     setVendors(result.lists.vendor);
+    setCatalog({ connectionId: result.connectionId, items: result.lists.item });
   };
   const decide = async (candidate: Candidate, decision: "link" | "ignore", quickbooksId = "") => {
     const saved = await run(`map-${candidate.localId}`, () => customFetch(`/api/quickbooks/entity-mappings/${candidate.entityType}/${candidate.localId}`, { method: "PUT", body: JSON.stringify({ decision, quickbooksId, connectionId: reconciledConnection }), responseType: "json" }), `${candidate.localName} reconciled`);
@@ -105,6 +108,8 @@ export function QuickBooksSettings() {
       </CardContent>
     </Card>
 
+    {status?.connection.connected && <InvoiceServiceMappings key={`${status.connection.environment}:${status.connection.realmId}`} catalog={catalog} />}
+
     {status?.demoAvailable && !status.connection.connected && <Card className="overflow-hidden border-violet-500/30" data-training-id="quickbooks-demo">
       <CardHeader className="bg-gradient-to-r from-violet-600/10 via-blue-500/10 to-sky-400/10"><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle className="flex items-center gap-2"><PlayCircle className="h-5 w-5 text-violet-600" />Interactive QuickBooks Demo Company</CardTitle><CardDescription className="mt-1">A safe, persistent rehearsal of the exact approval and synchronization workflow Will would use. Nothing leaves Knox Ops.</CardDescription></div><Badge className="bg-violet-600 text-white">Clearly simulated</Badge></div></CardHeader>
       <CardContent className="space-y-5 pt-5">
@@ -121,6 +126,7 @@ export function QuickBooksSettings() {
     </Card>}
 
     {status?.connection.connected && status.connection.environment === "sandbox" && <VendorBillSandbox key="sandbox" mode="sandbox" vendors={vendors} />}
+    {status?.connection.connected && status.connection.environment === "production" && <ProductionVendorBills key={status.connection.realmId} vendors={vendors} realmId={status.connection.realmId} />}
     {status && !status.demoAvailable && <VendorBillSandbox key="review" mode="review" vendors={[]} />}
     {status?.demoAvailable && !status.connection.connected && <VendorBillSandbox key="simulated" mode="simulated" vendors={[]} />}
 

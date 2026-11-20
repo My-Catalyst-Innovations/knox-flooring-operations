@@ -20,3 +20,4 @@ export * from "./demo";
 export * from "./operations";
 export * from "./outlook-calendar";
 export * from "./supplier-catalog";
+export * from "./purchase-orders";

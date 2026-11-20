@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildVendorBill,
+  confirmProductionVendorBill,
   matchesPostedBill,
-  reconcileSandboxBill,
+  productionVendorBillsAvailable,
+  reconcileQuickBooksVendorBill,
   reviewVendorBill,
   vendorBillInput,
 } from "./vendor-bill";
@@ -32,38 +34,105 @@ const mapping = [
 ];
 
 describe("supplier bill purchase reconciliation", () => {
+  it("requires explicit production enablement, a matching connected company, and an exact approval", () => {
+    const connection = {
+      environment: "production",
+      status: "connected",
+      realmId: "1111",
+    };
+    const configured = {
+      QUICKBOOKS_ENVIRONMENT: "production",
+      QUICKBOOKS_PRODUCTION_VENDOR_BILLS_ENABLED: "true",
+      QUICKBOOKS_PRODUCTION_VENDOR_BILLS_REALM_ID: "1111",
+    };
+    expect(productionVendorBillsAvailable(connection, {})).toBe(false);
+    expect(productionVendorBillsAvailable(connection, configured)).toBe(true);
+    expect(
+      productionVendorBillsAvailable(connection, {
+        ...configured,
+        DEMO_MODE: "true",
+      }),
+    ).toBe(false);
+    expect(
+      productionVendorBillsAvailable(connection, {
+        ...configured,
+        QUICKBOOKS_ENVIRONMENT: "sandbox",
+      }),
+    ).toBe(false);
+    expect(
+      productionVendorBillsAvailable(
+        { ...connection, realmId: "2222" },
+        configured,
+      ),
+    ).toBe(false);
+    expect(
+      productionVendorBillsAvailable(
+        { ...connection, environment: "sandbox" },
+        configured,
+      ),
+    ).toBe(false);
+    expect(
+      productionVendorBillsAvailable(
+        { ...connection, status: "disconnected" },
+        configured,
+      ),
+    ).toBe(false);
+    const fingerprint = "a".repeat(64);
+    expect(() =>
+      confirmProductionVendorBill(
+        { confirmedFingerprint: fingerprint },
+        fingerprint,
+      ),
+    ).not.toThrow();
+    expect(() => confirmProductionVendorBill(undefined, fingerprint)).toThrow(
+      "confirm this exact bill",
+    );
+    expect(() =>
+      confirmProductionVendorBill(
+        { confirmedFingerprint: "b".repeat(64) },
+        fingerprint,
+      ),
+    ).toThrow("confirm this exact bill");
+  });
+
   it("reviews dated purchase prices and exact totals without QuickBooks identifiers", () => {
     const reviewInput = vendorBillInput.parse({
       ...input,
       mode: "review",
       vendorId: undefined,
     });
-    const localMapping = [{
-      supplierSku: "00073",
-      productName: "Oak",
-      internalSku: "KF-0073",
-      unit: "box",
-      expectedUnitCost: "48.000000",
-      priceEffectiveOn: "2026-11-01",
-      priceSource: "Vendor agreement",
-    }];
+    const localMapping = [
+      {
+        supplierSku: "00073",
+        productName: "Oak",
+        internalSku: "KF-0073",
+        unit: "box",
+        expectedUnitCost: "48.000000",
+        priceEffectiveOn: "2026-11-01",
+        priceSource: "Vendor agreement",
+      },
+    ];
 
     expect(reviewVendorBill(reviewInput, localMapping)).toEqual({
       supplier: "Fixture Supply",
       totalCents: 49925,
       priceDiffers: true,
-      lines: [{
-        ...localMapping[0],
-        quantity: "10",
-        billedUnitCost: "49.925",
-        totalCents: 49925,
-        priceDiffers: true,
-      }],
+      lines: [
+        {
+          ...localMapping[0],
+          quantity: "10",
+          billedUnitCost: "49.925",
+          totalCents: 49925,
+          priceDiffers: true,
+        },
+      ],
     });
-    expect(() => reviewVendorBill({ ...reviewInput, billTotal: "499.24" }, localMapping))
-      .toThrow("source bill total");
-    expect(() => reviewVendorBill(reviewInput, [{ ...localMapping[0], unit: "sqft" }]))
-      .toThrow("purchase unit");
+    expect(() =>
+      reviewVendorBill({ ...reviewInput, billTotal: "499.24" }, localMapping),
+    ).toThrow("source bill total");
+    expect(() =>
+      reviewVendorBill(reviewInput, [{ ...localMapping[0], unit: "sqft" }]),
+    ).toThrow("purchase unit");
   });
 
   it("preserves the approved lot's price context and sends the exact source bill amount and item ID", () => {
@@ -110,6 +179,18 @@ describe("supplier bill purchase reconciliation", () => {
       false,
     );
     expect(
+      matchesPostedBill(prepared, { ...posted, CurrencyRef: { value: "CAD" } }),
+    ).toBe(false);
+    expect(
+      matchesPostedBill(prepared, {
+        ...posted,
+        Line: [
+          ...prepared.Line,
+          { DetailType: "AccountBasedExpenseLineDetail", Amount: 0 },
+        ],
+      }),
+    ).toBe(false);
+    expect(
       matchesPostedBill(prepared, {
         ...posted,
         Line: [
@@ -144,7 +225,7 @@ describe("supplier bill purchase reconciliation", () => {
         }),
     };
     await expect(
-      reconcileSandboxBill(prepared, "request-identifier", provider),
+      reconcileQuickBooksVendorBill(prepared, "request-identifier", provider),
     ).resolves.toEqual({ postedId: "123456", reconciledExisting: false });
     expect(provider.query).toHaveBeenCalledWith(
       "select * from Bill where DocNumber = 'F-500' and VendorRef = '0087'",
@@ -160,17 +241,15 @@ describe("supplier bill purchase reconciliation", () => {
   it("reconciles an identical existing bill and rejects a conflicting one without a second POST", async () => {
     const prepared = buildVendorBill(input, mapping, "0087").quickBooksBill;
     const returned = { ...prepared, Id: "123456", TotalAmt: 499.25 };
-    const request = vi
-      .fn()
-      .mockImplementation(async (path: string) =>
-        path.startsWith("/vendor/")
-          ? { Vendor: { Id: "0087" } }
-          : {
-              Preferences: {
-                CurrencyPrefs: { HomeCurrency: { value: "USD" } },
-              },
+    const request = vi.fn().mockImplementation(async (path: string) =>
+      path.startsWith("/vendor/")
+        ? { Vendor: { Id: "0087" } }
+        : {
+            Preferences: {
+              CurrencyPrefs: { HomeCurrency: { value: "USD" } },
             },
-      );
+          },
+    );
     const query = vi
       .fn()
       .mockResolvedValueOnce({ QueryResponse: { Bill: [returned] } })
@@ -178,16 +257,95 @@ describe("supplier bill purchase reconciliation", () => {
         QueryResponse: { Bill: [{ ...returned, TotalAmt: 480 }] },
       });
     await expect(
-      reconcileSandboxBill(prepared, "request-identifier", { request, query }),
+      reconcileQuickBooksVendorBill(prepared, "request-identifier", {
+        request,
+        query,
+      }),
     ).resolves.toEqual({ postedId: "123456", reconciledExisting: true });
     await expect(
-      reconcileSandboxBill(prepared, "request-identifier", { request, query }),
-    ).rejects.toThrow("different QuickBooks sandbox bill");
-    expect(request.mock.calls.map(([path]) => path)).toEqual([
-      "/vendor/0087",
-      "/preferences",
-      "/vendor/0087",
-      "/preferences",
+      reconcileQuickBooksVendorBill(prepared, "request-identifier", {
+        request,
+        query,
+      }),
+    ).rejects.toThrow("different QuickBooks bill");
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("blocks production posting if the reviewed vendor or currency options changed", async () => {
+    const prepared = buildVendorBill(input, mapping, "0087").quickBooksBill;
+    const query = vi.fn().mockResolvedValue({ QueryResponse: {} });
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        Vendor: { Id: "0087", DisplayName: "Fixture Supply" },
+      })
+      .mockResolvedValueOnce({
+        Preferences: {
+          CurrencyPrefs: {
+            MultiCurrencyEnabled: true,
+            HomeCurrency: { value: "USD" },
+          },
+        },
+      });
+    await expect(
+      reconcileQuickBooksVendorBill(
+        prepared,
+        "request-identifier",
+        { request, query },
+        { vendorName: "Fixture Supply", includeCurrency: false },
+      ),
+    ).rejects.toThrow("changed after review");
+    expect(request.mock.calls).toEqual([["/vendor/0087"], ["/preferences"]]);
+  });
+
+  it("reconciles after a lost create response without issuing a second write", async () => {
+    const prepared = buildVendorBill(
+      { ...input, mode: "production" },
+      mapping,
+      "0087",
+    ).quickBooksBill;
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        Vendor: { Id: "0087", DisplayName: "Fixture Supply" },
+      })
+      .mockResolvedValueOnce({
+        Preferences: { CurrencyPrefs: { HomeCurrency: { value: "USD" } } },
+      })
+      .mockResolvedValueOnce({
+        Item: { Id: mapping[0].quickBooksItemId, Type: "Inventory" },
+      })
+      .mockRejectedValueOnce(new Error("connection lost"));
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ QueryResponse: {} })
+      .mockResolvedValueOnce({
+        QueryResponse: { Bill: [{ ...prepared, Id: "520", TotalAmt: 499.25 }] },
+      });
+    const target = { vendorName: "Fixture Supply", includeCurrency: false };
+    await expect(
+      reconcileQuickBooksVendorBill(
+        prepared,
+        "request-identifier",
+        { request, query },
+        target,
+      ),
+    ).rejects.toThrow("connection lost");
+    await expect(
+      reconcileQuickBooksVendorBill(
+        prepared,
+        "request-identifier",
+        { request, query },
+        target,
+      ),
+    ).resolves.toEqual({ postedId: "520", reconciledExisting: true });
+    expect(
+      request.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toEqual([
+      [
+        "/bill?requestid=request-identifier",
+        { method: "POST", body: JSON.stringify(prepared) },
+      ],
     ]);
   });
 });
