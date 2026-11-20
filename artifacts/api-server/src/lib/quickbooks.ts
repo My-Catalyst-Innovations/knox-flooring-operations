@@ -39,6 +39,12 @@ async function refresh(connection: typeof quickbooksConnectionsTable.$inferSelec
 
 export async function getConnection() { const [row] = await db.select().from(quickbooksConnectionsTable).limit(1); return row ?? null; }
 
+export class QuickBooksRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly faultType?: string, readonly faultCode?: string) {
+    super(message);
+  }
+}
+
 export async function qboRequest(path: string, init: RequestInit = {}, expectedConnectionId?: string) {
   let connection = await getConnection();
   if (connection?.status !== "connected") throw new Error("QuickBooks is not connected");
@@ -54,7 +60,14 @@ export async function qboRequest(path: string, init: RequestInit = {}, expectedC
   let response = await send(connection);
   if (response.status === 401) response = await send(await refresh(connection));
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error((body as any)?.Fault?.Error?.[0]?.Detail ?? `QuickBooks request failed (${response.status})`);
+  if (!response.ok) {
+    const fault = (body as any)?.Fault;
+    const error = fault?.Error?.[0];
+    throw new QuickBooksRequestError(
+      error?.Detail ?? error?.Message ?? `QuickBooks request failed (${response.status})`,
+      response.status, fault?.type, error?.code === undefined ? undefined : String(error.code),
+    );
+  }
   return body as any;
 }
 

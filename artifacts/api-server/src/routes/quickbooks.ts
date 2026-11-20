@@ -1,6 +1,6 @@
-import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, like, ne } from "drizzle-orm";
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
 import { db, invoicesTable, jobsTable, materialsTable, productsTable, proposalsTable, quickbooksAccountingMappingsTable, quickbooksConflictsTable, quickbooksConnectionsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable } from "@workspace/db";
 import { audit } from "../lib/auth";
@@ -12,6 +12,8 @@ import { vendorBillEntity } from "../lib/vendor-bill";
 import { invoiceServiceCategories, invoiceServiceEntity, invoiceServiceMappingKey, isActiveQuickBooksServiceItem } from "../lib/quickbooks-invoice";
 import { domainRoute, parse } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
+import { quickBooksWebhookEntries, verifyQuickBooksWebhookSignature } from "../lib/quickbooks-webhooks";
+import { invoiceCreateRecord } from "../lib/quickbooks-invoice-create";
 
 const router: IRouter = Router();
 const configured = () => Boolean(process.env.QUICKBOOKS_CLIENT_ID && process.env.QUICKBOOKS_CLIENT_SECRET && process.env.QUICKBOOKS_REDIRECT_URI && process.env.QUICKBOOKS_ENCRYPTION_KEY);
@@ -230,6 +232,7 @@ router.put("/quickbooks/mappings/:type/:key", async (req, res) => {
 router.get("/quickbooks/queue", async (_req, res) => res.json(await db.select().from(quickbooksSyncJobsTable).orderBy(desc(quickbooksSyncJobsTable.createdAt)).limit(250)));
 router.post("/quickbooks/queue", async (req, res) => {
   const entityType = String(req.body?.entityType ?? ""); const localId = String(req.body?.localId ?? ""); const action = String(req.body?.action ?? "upsert"); if (!entityType || !localId || !["customer", "project", "estimate", "invoice", "item", "labor", "expense"].includes(entityType)) { res.status(400).json({ error: "Valid entityType and localId are required" }); return; }
+  if (req.body?.payload && Object.hasOwn(req.body.payload, invoiceCreateRecord)) { res.status(400).json({ error: "The QuickBooks invoice creation record is reserved." }); return; }
   const now = new Date().toISOString(); const version = createHash("sha256").update(JSON.stringify(req.body?.payload ?? {})).digest("hex").slice(0, 16); const [created] = await db.insert(quickbooksSyncJobsTable).values({ id: randomUUID(), idempotencyKey: `${entityType}:${localId}:${action}:${version}`, entityType, localId, action, payload: req.body?.payload ?? {}, warnings: req.body?.warnings ?? [], status: "pending_approval", nextAttemptAt: now, createdAt: now, updatedAt: now }).onConflictDoNothing().returning(); res.status(created ? 201 : 200).json(created ?? { duplicate: true });
 });
 router.post("/quickbooks/queue/approve", async (req, res) => { const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : []; if (!ids.length) { res.status(400).json({ error: "ids are required" }); return; } const now = new Date().toISOString(); const changed = await db.update(quickbooksSyncJobsTable).set({ status: "approved", approvedBy: req.auth!.userId, approvedAt: now, nextAttemptAt: now, updatedAt: now }).where(and(inArray(quickbooksSyncJobsTable.id, ids), eq(quickbooksSyncJobsTable.status, "pending_approval"), ne(quickbooksSyncJobsTable.entityType, vendorBillEntity))).returning(); await audit("quickbooks.sync_approved", { userId: req.auth!.userId, details: { ids } }); void processQuickBooksQueue(); res.json(changed); });
@@ -238,12 +241,23 @@ router.post("/quickbooks/queue/:id/retry", async (req, res) => { const now = new
 router.get("/quickbooks/conflicts", async (_req, res) => res.json(await db.select().from(quickbooksConflictsTable).orderBy(desc(quickbooksConflictsTable.createdAt))));
 router.post("/quickbooks/conflicts/:id/resolve", async (req, res) => { const resolution = String(req.body?.resolution ?? ""); if (!["keep_knox", "accept_quickbooks"].includes(resolution)) { res.status(400).json({ error: "Invalid resolution" }); return; } const now = new Date().toISOString(); const [row] = await db.update(quickbooksConflictsTable).set({ status: "resolved", resolution, resolvedBy: req.auth!.userId, resolvedAt: now }).where(eq(quickbooksConflictsTable.id, String(req.params.id))).returning(); await audit("quickbooks.conflict_resolved", { userId: req.auth!.userId, entityType: row?.entityType, entityId: row?.localId, details: { resolution } }); res.json(row); });
 
-export async function quickBooksWebhook(req: any, res: any) {
-  const verifier = process.env.QUICKBOOKS_WEBHOOK_VERIFIER; if (!verifier) { res.status(503).end(); return; }
-  const signature = String(req.get("intuit-signature") ?? ""); const expected = createHmac("sha256", verifier).update(req.rawBody ?? Buffer.from(JSON.stringify(req.body))).digest("base64");
-  if (!signature || signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) { res.status(401).end(); return; }
-  const eventKey = createHash("sha256").update(req.rawBody ?? Buffer.from(JSON.stringify(req.body))).digest("hex"); const realmId = String(req.body?.eventNotifications?.[0]?.realmId ?? "");
-  await db.insert(quickbooksWebhookEventsTable).values({ id: randomUUID(), eventKey, realmId, payload: req.body, receivedAt: new Date().toISOString() }).onConflictDoNothing(); res.status(200).end();
+export async function quickBooksWebhook(req: Request, res: Response) {
+  const verifier = process.env.QUICKBOOKS_WEBHOOK_VERIFIER;
+  if (!verifier) { res.status(503).end(); return; }
+  const signature = req.get("intuit-signature");
+  if (!signature || !req.rawBody || !verifyQuickBooksWebhookSignature(req.rawBody, signature, verifier)) {
+    res.status(401).end();
+    return;
+  }
+  const connection = await getConnection();
+  const entries = connection?.status === "connected" ? quickBooksWebhookEntries(req.body, req.rawBody, connection.realmId) : [];
+  if (entries.length) {
+    const receivedAt = new Date().toISOString();
+    await db.insert(quickbooksWebhookEventsTable)
+      .values(entries.map((entry) => ({ ...entry, id: randomUUID(), receivedAt })))
+      .onConflictDoNothing();
+  }
+  res.status(200).end();
 }
 
 export default router;

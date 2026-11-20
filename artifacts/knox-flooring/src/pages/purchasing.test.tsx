@@ -45,6 +45,14 @@ it("creates an order and retries a split partial receipt with the original idemp
     const body = init.body ? JSON.parse(init.body) : undefined;
     if (path === "/api/inventory/warehouses") return warehouses;
     if (path === "/api/inventory/bins") return bins;
+    if (path.startsWith("/api/inventory/supplier-crosswalk?asOf=")) {
+      const alias = { productId: product.id, supplier: "example supply", supplierSku: "V-008", latestPrice: { unit: "box", unitCost: "17.324125" } };
+      return [
+        alias,
+        { ...alias, supplier: "Different Supply", supplierSku: "D-008", latestPrice: { unit: "box", unitCost: "30" } },
+        { ...alias, supplierSku: "V-AREA", latestPrice: { unit: "sqft", unitCost: "1" } },
+      ];
+    }
     if (path === `${purchasePath}/po-1/receipts`) return receipt ? [receipt] : [];
     if (path === purchasePath && init.method === "GET") return order ? [order] : [];
     if (path === purchasePath && init.method === "POST") {
@@ -75,10 +83,15 @@ it("creates an order and retries a split partial receipt with the original idemp
   change("Receiving warehouse", "north");
   change("Product 1", product.id);
   change(/Quantity 1/, "10");
+  expect(await screen.findByText("Approved supplier price · V-008")).toBeVisible();
+  expect(screen.getByLabelText("Unit cost 1")).toHaveValue("17.324125");
+  change("Supplier", "Different Supply");
+  expect(screen.getByLabelText("Unit cost 1")).toHaveValue("30");
+  change("Supplier", "Example Supply");
   fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
   expect(await screen.findByRole("heading", { name: "PO-1001" })).toBeVisible();
   const create = customFetch.mock.calls.find(([path, init]) => path === purchasePath && init.method === "POST");
-  expect(JSON.parse(create?.[1].body)).toMatchObject({ warehouseId: "north", idempotencyKey: expect.any(String), lines: [{ productId: "oak", quantity: 10, unitCost: "20" }] });
+  expect(JSON.parse(create?.[1].body)).toMatchObject({ warehouseId: "north", idempotencyKey: expect.any(String), lines: [{ productId: "oak", quantity: 10, unitCost: "17.324125" }] });
 
   fireEvent.click(screen.getByRole("button", { name: "Mark ordered" }));
   fireEvent.click(await screen.findByRole("button", { name: "Receive shipment" }));

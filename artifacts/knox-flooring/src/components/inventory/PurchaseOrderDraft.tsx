@@ -5,14 +5,17 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useUnsavedForm } from "@/hooks/use-unsaved-changes";
-import { currency, operation } from "@/lib/operations";
+import { currency, operation, useOperation } from "@/lib/operations";
 import { inventorySelect, purchaseOrdersPath, useInventoryRequestKey, type PurchaseOrder } from "@/lib/purchasing";
+import { businessDate } from "@/lib/reporting";
+import type { SupplierCrosswalkAlias } from "@/lib/supplier-import";
 import type { Product } from "@/lib/types";
-import type { Warehouse } from "@/lib/warehouse-inventory";
+import { inventoryRoles, type Warehouse } from "@/lib/warehouse-inventory";
 
-type DraftLine = { key: string; productId: string; quantity: string; unitCost: string };
-const emptyLine = (key: string): DraftLine => ({ key, productId: "", quantity: "", unitCost: "" });
+type DraftLine = { key: string; productId: string; quantity: string; unitCost: string | null };
+const emptyLine = (key: string): DraftLine => ({ key, productId: "", quantity: "", unitCost: null });
 const costPattern = /^\d{1,12}(?:\.\d{1,6})?$/;
+const normalize = (value: string) => value.trim().toLowerCase();
 
 export function PurchaseOrderDraft({
   order, products, warehouses, onClose, onSaved,
@@ -24,6 +27,8 @@ export function PurchaseOrderDraft({
   onSaved(order: PurchaseOrder): void;
 }) {
   const stocked = products.filter((product) => product.active && product.inventoryType === "Inventory");
+  const [asOf] = useState(() => businessDate());
+  const supplierPrices = useOperation<SupplierCrosswalkAlias[]>(`/inventory/supplier-crosswalk?asOf=${asOf}`, inventoryRoles);
   const [form, setForm] = useState(() => ({
     supplier: order?.supplier ?? "",
     warehouseId: order?.warehouseId ?? (warehouses.length === 1 ? warehouses[0].id : ""),
@@ -42,7 +47,19 @@ export function PurchaseOrderDraft({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const changes = useUnsavedForm(true, form);
-  const total = form.lines.reduce((sum, line) => sum + Number(line.quantity) * Number(line.unitCost), 0);
+  const supplierKey = normalize(form.supplier);
+  const lines = form.lines.map((line) => {
+    const product = stocked.find((item) => item.id === line.productId);
+    const candidates = (supplierPrices.data ?? []).filter((alias) =>
+      product && alias.productId === product.id && normalize(alias.supplier) === supplierKey &&
+      alias.latestPrice && normalize(alias.latestPrice.unit) === normalize(product.unit),
+    );
+    const approved = candidates.length === 1 ? candidates[0] : undefined;
+    const defaultCost = supplierPrices.isSuccess && candidates.length === 0 && product ? String(product.cost) : "";
+    const cost = line.unitCost ?? approved?.latestPrice?.unitCost ?? defaultCost;
+    return { line, product, approved, ambiguous: candidates.length > 1, cost };
+  });
+  const total = lines.reduce((sum, { line, cost }) => sum + Number(line.quantity) * Number(cost), 0);
 
   function changeLine(key: string, update: Partial<DraftLine>) {
     setForm((current) => ({
@@ -63,7 +80,7 @@ export function PurchaseOrderDraft({
       setError("Use one order line per product.");
       return;
     }
-    if (form.lines.some((line) => !costPattern.test(line.unitCost.trim()))) {
+    if (lines.some(({ cost }) => !costPattern.test(cost.trim()))) {
       setError("Enter a unit cost with up to six decimal places for each line.");
       return;
     }
@@ -71,10 +88,10 @@ export function PurchaseOrderDraft({
       supplier: form.supplier.trim(),
       warehouseId: form.warehouseId,
       notes: form.notes.trim(),
-      lines: form.lines.map(({ productId, quantity, unitCost }) => ({
-        productId,
-        quantity: Number(quantity),
-        unitCost: unitCost.trim(),
+      lines: lines.map(({ line, cost }) => ({
+        productId: line.productId,
+        quantity: Number(line.quantity),
+        unitCost: cost.trim(),
       })),
     };
     inFlight.current = true;
@@ -121,16 +138,18 @@ export function PurchaseOrderDraft({
             </label>
             <div className="space-y-2">
               <h3 className="text-sm font-semibold">Order lines</h3>
-              {form.lines.map((line, index) => {
-                const product = stocked.find((item) => item.id === line.productId);
+              {lines.map(({ line, product, approved, ambiguous, cost }, index) => {
+                const priceDescription = line.unitCost !== null || !product ? null
+                  : approved ? `Approved supplier price · ${approved.supplierSku}`
+                  : ambiguous ? "Multiple supplier codes match. Enter the agreed unit cost."
+                  : supplierPrices.isSuccess ? "Catalog cost · confirm with supplier"
+                  : supplierPrices.isError ? "Supplier prices unavailable. Enter the agreed unit cost."
+                  : "Checking approved supplier prices…";
                 return (
                   <div key={line.key} className="grid items-end gap-2 rounded-md border p-3 md:grid-cols-[minmax(0,1fr)_7rem_8rem_auto]">
                     <label className="space-y-1 text-sm font-medium">
                       Product {index + 1}
-                      <select required className={inventorySelect} value={line.productId} onChange={(event) => {
-                        const selected = stocked.find((item) => item.id === event.target.value);
-                        changeLine(line.key, { productId: event.target.value, unitCost: selected ? String(selected.cost) : "" });
-                      }}>
+                      <select required className={inventorySelect} value={line.productId} onChange={(event) => changeLine(line.key, { productId: event.target.value, unitCost: null })}>
                         <option value="">Select product</option>
                         {line.productId && !product && <option value={line.productId} disabled>{order?.lines.find((item) => item.productId === line.productId)?.productName ?? "Unavailable product"}</option>}
                         {stocked.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}
@@ -142,11 +161,12 @@ export function PurchaseOrderDraft({
                     </label>
                     <label className="space-y-1 text-sm font-medium">
                       Unit cost {index + 1}
-                      <Input required inputMode="decimal" maxLength={19} value={line.unitCost} onChange={(event) => changeLine(line.key, { unitCost: event.target.value })} />
+                      <Input required inputMode="decimal" maxLength={19} value={cost} onChange={(event) => changeLine(line.key, { unitCost: event.target.value })} aria-describedby={priceDescription ? `price-${line.key}` : undefined} />
                     </label>
                     <Button type="button" variant="ghost" size="icon" aria-label={`Remove line ${index + 1}`} disabled={form.lines.length === 1} onClick={() => setForm((current) => ({ ...current, lines: current.lines.filter((item) => item.key !== line.key) }))}>
                       <Trash2 className="h-4 w-4" aria-hidden />
                     </Button>
+                    {priceDescription && <p id={`price-${line.key}`} className="text-xs text-muted-foreground md:col-span-4">{priceDescription}</p>}
                   </div>
                 );
               })}

@@ -56,7 +56,7 @@ export function quickBooksInvoiceLines(
 
     return {
       Amount: invoiceLineAmount(line),
-      DetailType: "SalesItemLineDetail",
+      DetailType: "SalesItemLineDetail" as const,
       Description: line.description,
       SalesItemLineDetail: {
         ItemRef: { value: itemId },

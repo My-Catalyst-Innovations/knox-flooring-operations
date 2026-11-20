@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Router, type IRouter } from "express";
-import { desc, eq, inArray, sql } from "drizzle-orm";
+import { desc, eq, inArray, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   db,
@@ -35,6 +35,7 @@ const approvalInput = z.object({
   source: requiredText,
   rows: z.array(rateInput).min(1).max(2500),
 });
+const priceFilter = z.object({ asOf: z.string().date().optional() });
 
 function publicAlias(alias: typeof supplierProductAliasesTable.$inferSelect) {
   return {
@@ -49,7 +50,8 @@ function publicAlias(alias: typeof supplierProductAliasesTable.$inferSelect) {
 router.get(
   "/inventory/supplier-crosswalk",
   requireRole("owner", "operations"),
-  domainRoute(async (_req, res) => {
+  domainRoute(async (req, res) => {
+    const { asOf } = parse(priceFilter, req.query);
     const [aliases, prices] = await Promise.all([
       db.select().from(supplierProductAliasesTable),
       db
@@ -61,6 +63,7 @@ router.get(
           source: supplierBuyPricesTable.source,
         })
         .from(supplierBuyPricesTable)
+        .where(asOf ? lte(supplierBuyPricesTable.effectiveOn, asOf) : undefined)
         .orderBy(
           supplierBuyPricesTable.aliasId,
           desc(supplierBuyPricesTable.effectiveOn),

@@ -18,11 +18,11 @@ export async function verifyPassword(hash: string, password: string): Promise<bo
   try { return await argon2.verify(hash, password); } catch { return false; }
 }
 
-export async function createSession(userId: string, ipAddress = "", userAgent = "") {
+export async function createSession(userId: string, ipAddress = "", userAgent = "", writer: Pick<typeof db, "insert"> = db) {
   const token = newToken();
   const csrfToken = newToken();
   const now = new Date();
-  await db.insert(sessionsTable).values({
+  await writer.insert(sessionsTable).values({
     id: randomUUID(), userId, tokenHash: hashToken(token), csrfToken,
     expiresAt: new Date(now.getTime() + SESSION_TTL_MS).toISOString(),
     ipAddress, userAgent: userAgent.slice(0, 500), createdAt: now.toISOString(),
@@ -38,8 +38,8 @@ export async function getSession(token?: string) {
   return row ?? null;
 }
 
-export async function audit(action: string, input: { userId?: string; entityType?: string; entityId?: string; ip?: string; details?: Record<string, unknown> } = {}) {
-  await db.insert(auditEventsTable).values({ id: randomUUID(), actorUserId: input.userId, action,
+export async function audit(action: string, input: { userId?: string; entityType?: string; entityId?: string; ip?: string; details?: Record<string, unknown> } = {}, writer: Pick<typeof db, "insert"> = db) {
+  await writer.insert(auditEventsTable).values({ id: randomUUID(), actorUserId: input.userId, action,
     entityType: input.entityType ?? "system", entityId: input.entityId, ipAddress: input.ip ?? "",
     details: input.details ?? {}, createdAt: new Date().toISOString() });
 }

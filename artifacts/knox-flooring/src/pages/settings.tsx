@@ -22,6 +22,7 @@ import { OutlookSettings } from "@/components/settings/OutlookSettings";
 import { DemoSettings } from "@/components/settings/DemoSettings";
 import { useAuth } from "@/contexts/auth";
 import { OperatingSettings } from "@/components/settings/OperatingSettings";
+import { StaffAccess } from "@/components/settings/StaffAccess";
 
 export default function Settings() {
   const { settings, updateSettings } = useStore();
@@ -215,6 +216,7 @@ export default function Settings() {
       </Card>
 
       {saveError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-900">{saveError}</p>}
+      <StaffAccess />
       <QuickBooksSettings />
       <OutlookSettings />
       <DemoSettings />

@@ -47,6 +47,7 @@ import { MaterialsNeeded } from "@/components/jobs/MaterialsNeeded";
 import { MeasurementsPanel } from "@/components/measurements/measurements-panel";
 import { JobActuals } from "@/components/jobs/JobActuals";
 import { JobUpdates } from "@/components/jobs/JobUpdates";
+import { JobInstallationAction } from "@/components/jobs/JobInstallationAction";
 import { STAGE_ORDER } from "@/lib/stages";
 import {
   computeCosting,
@@ -162,6 +163,7 @@ export default function JobDetail() {
           <p className="text-muted-foreground mt-1">{job.customerName}</p>
         </div>
         <div className="ml-auto flex flex-wrap gap-2">
+          <JobInstallationAction job={job} />
           <Button variant="outline" asChild><Link href={`/jobs/${encodeURIComponent(job.id)}/work-order`}>Work order</Link></Button>
           <Button variant="outline" onClick={copyShareLink}>
             {copied ? (
