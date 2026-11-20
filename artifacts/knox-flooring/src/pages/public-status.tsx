@@ -22,7 +22,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { StagePipeline } from "@/components/jobs/StagePipeline";
 import { StageTimeline } from "@/components/jobs/StageTimeline";
-import { photoSrc } from "@/components/jobs/StagePhotos";
+import { fileSrc } from "@/lib/file-upload";
 import {
   Loader2,
   MapPin,
@@ -259,7 +259,7 @@ function ProgressTab({ job }: { job: PublicJob }) {
                 className="rounded-md border overflow-hidden bg-muted/30"
               >
                 <img
-                  src={photoSrc(photo.objectPath)}
+                  src={fileSrc(photo.objectPath)}
                   alt={photo.caption || photo.stage}
                   className="w-full h-36 object-cover"
                   loading="lazy"
@@ -688,13 +688,13 @@ function DocumentsTab({
             {photos.map((photo) => (
               <a
                 key={photo.id}
-                href={photoSrc(photo.objectPath)}
+                href={fileSrc(photo.objectPath)}
                 target="_blank"
                 rel="noreferrer"
                 className="rounded-md border overflow-hidden bg-muted/30 block group"
               >
                 <img
-                  src={photoSrc(photo.objectPath)}
+                  src={fileSrc(photo.objectPath)}
                   alt={photo.caption || photo.stage}
                   className="w-full h-28 object-cover group-hover:opacity-90"
                   loading="lazy"

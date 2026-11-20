@@ -23,6 +23,7 @@ import {
 } from "@workspace/api-zod";
 import { stripNulls } from "../lib/strip-nulls";
 import { depositAmountFor } from "./proposals";
+import { isPortalPhoto, publishedLogoUrl } from "../lib/file-store";
 
 const router: IRouter = Router();
 
@@ -63,7 +64,7 @@ async function publicQuotePayload(proposal: ProposalRow) {
     signature: proposal.signature,
     company: {
       companyName: settings?.companyName ?? "",
-      companyLogoUrl: settings?.companyLogoUrl ?? null,
+      companyLogoUrl: publishedLogoUrl(settings?.companyLogoUrl),
       customerAccentColor: settings?.customerAccentColor ?? "#7B00F5",
       address: settings?.address ?? "",
       phone: settings?.phone ?? "",
@@ -227,13 +228,16 @@ router.get("/public/jobs/:token", async (req, res): Promise<void> => {
     estCompletionDate: job.estCompletionDate,
     status: job.status,
     stageHistory: job.stageHistory,
-    photos: photos.map(stripNulls),
+    photos: photos.filter((photo) => isPortalPhoto(photo.objectPath)).map((photo) => stripNulls({
+      ...photo,
+      objectPath: `/api/public/jobs/${encodeURIComponent(params.data.token)}/photos/${encodeURIComponent(photo.id)}`,
+    })),
     quote,
     invoices,
     balance: { invoicedTotal, paidTotal, outstanding },
     company: {
       companyName: settings?.companyName ?? "",
-      companyLogoUrl: settings?.companyLogoUrl ?? null,
+      companyLogoUrl: publishedLogoUrl(settings?.companyLogoUrl),
       customerAccentColor: settings?.customerAccentColor ?? "#7B00F5",
       address: settings?.address ?? "",
       phone: settings?.phone ?? "",

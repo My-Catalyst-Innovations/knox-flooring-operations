@@ -139,6 +139,15 @@ export class ObjectStorageService {
     }
 
     const entityId = parts.slice(1).join("/");
+    const objectFile = this.getPrivateObjectFile(entityId);
+    const [exists] = await objectFile.exists();
+    if (!exists) {
+      throw new ObjectNotFoundError();
+    }
+    return objectFile;
+  }
+
+  getPrivateObjectFile(entityId: string): File {
     let entityDir = this.getPrivateObjectDir();
     if (!entityDir.endsWith("/")) {
       entityDir = `${entityDir}/`;
@@ -146,12 +155,7 @@ export class ObjectStorageService {
     const objectEntityPath = `${entityDir}${entityId}`;
     const { bucketName, objectName } = parseObjectPath(objectEntityPath);
     const bucket = objectStorageClient.bucket(bucketName);
-    const objectFile = bucket.file(objectName);
-    const [exists] = await objectFile.exists();
-    if (!exists) {
-      throw new ObjectNotFoundError();
-    }
-    return objectFile;
+    return bucket.file(objectName);
   }
 
   normalizeObjectEntityPath(rawPath: string): string {

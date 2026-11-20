@@ -728,6 +728,7 @@ export function useCommunications(filter: CommunicationsFilter) {
     subject: string;
     body: string;
     customerName?: string;
+    idempotencyKey?: string;
   }): Promise<Communication> => {
     const created = await sendEmailMutation.mutateAsync({
       data: { ...input, ...params },
@@ -740,6 +741,7 @@ export function useCommunications(filter: CommunicationsFilter) {
     to: string;
     body: string;
     customerName?: string;
+    idempotencyKey?: string;
   }): Promise<Communication> => {
     const created = await sendSmsMutation.mutateAsync({
       data: { ...input, ...params },

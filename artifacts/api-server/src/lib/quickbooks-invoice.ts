@@ -66,3 +66,46 @@ export function quickBooksInvoiceLines(
     };
   });
 }
+
+const officeDate = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+});
+const manuallySettled = new Set(["Credited", "Refunded", "Voided"]);
+
+function invoiceCents(value: unknown) {
+  if (typeof value !== "number" || value < 0) return undefined;
+  const cents = Math.round(value * 100);
+  return Number.isSafeInteger(cents) ? cents : undefined;
+}
+
+export function quickBooksInvoicePaymentState(
+  local: Pick<InvoiceRow, "status" | "dueDate" | "paidAt" | "depositAmount" | "refundedAmount">,
+  remote: { TotalAmt?: unknown; Balance?: unknown; PrivateNote?: unknown; LinkedTxn?: unknown },
+  now: Date,
+) {
+  if (manuallySettled.has(local.status) || local.refundedAmount > 0) return;
+  const total = invoiceCents(remote.TotalAmt);
+  const balance = invoiceCents(remote.Balance);
+  if (total === undefined || balance === undefined || balance > total) return;
+
+  // QuickBooks zeros a voided invoice and prefixes its private note with Voided.
+  if (total === 0 && typeof remote.PrivateNote === "string" && /^Voided\b/i.test(remote.PrivateNote))
+    return { status: "Voided", balanceAmount: 0, paidAmount: 0, paidAt: null };
+  if (total === 0 || (Array.isArray(remote.LinkedTxn) && remote.LinkedTxn.some((entry) =>
+    entry?.TxnType === "CreditMemo" || entry?.TxnType === "RefundReceipt",
+  ))) return;
+
+  const paid = total - balance;
+  let status = local.status;
+  if (balance === 0) status = "Paid";
+  else if (paid > 0 || local.depositAmount > 0) status = "Partial";
+  else if (status === "Paid" || status === "Partial") {
+    const [month, day, year] = officeDate.formatToParts(now).filter((part) => part.type !== "literal").map((part) => part.value);
+    const today = `${year}-${month}-${day}`;
+    status = /^\d{4}-\d{2}-\d{2}$/.test(local.dueDate) && local.dueDate < today ? "Overdue" : "Sent";
+  }
+  return {
+    total: total / 100, balanceAmount: balance / 100, paidAmount: paid / 100,
+    status, paidAt: balance === 0 ? (local.paidAt ?? now.toISOString()) : null,
+  };
+}

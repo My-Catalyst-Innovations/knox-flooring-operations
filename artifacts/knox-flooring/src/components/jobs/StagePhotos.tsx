@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { useUpload } from "@workspace/object-storage-web";
+import { fileSrc, supportedImageTypes, useStoredFileUpload } from "@/lib/file-upload";
 import { useJobPhotos } from "@/hooks/use-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,10 +10,6 @@ import { ImagePlus, Trash2, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { STAGE_ORDER, formatStageDate } from "@/lib/stages";
 import type { JobStatus } from "@/lib/types";
-
-export function photoSrc(objectPath: string): string {
-  return `/api/storage${objectPath}`;
-}
 
 export function StagePhotos({
   jobId,
@@ -27,25 +23,23 @@ export function StagePhotos({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [stage, setStage] = useState<JobStatus>(currentStage);
   const [caption, setCaption] = useState("");
+  const [shareOnPortal, setShareOnPortal] = useState(false);
 
-  const { uploadFile, isUploading } = useUpload({
-    onError: (err: Error) =>
-      toast({
-        title: "Upload failed",
-        description: err.message,
-        variant: "destructive",
-      }),
-  });
+  const { uploadFile, isUploading } = useStoredFileUpload((err) => toast({
+    title: "Photo could not be saved",
+    description: err.message,
+    variant: "destructive",
+  }));
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const result = await uploadFile(file);
-    if (result) {
-      await addPhoto({ stage, objectPath: result.objectPath, caption });
+    await uploadFile(file, shareOnPortal ? "portal-photo" : "job-photo", jobId, async (objectPath) => {
+      await addPhoto({ stage, objectPath, caption });
       setCaption("");
+      setShareOnPortal(false);
       toast({ title: "Photo uploaded", description: `Added to "${stage}" stage.` });
-    }
+    });
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -95,10 +89,14 @@ export function StagePhotos({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept={supportedImageTypes}
             className="hidden"
             onChange={handleFile}
           />
+          <label className="flex items-center gap-2 text-sm sm:col-span-3">
+            <input type="checkbox" checked={shareOnPortal} onChange={(event) => setShareOnPortal(event.target.checked)} disabled={isUploading} />
+            Share this photo on the customer portal
+          </label>
         </div>
 
         {photos.length === 0 ? (
@@ -113,7 +111,7 @@ export function StagePhotos({
                 className="group relative rounded-md border overflow-hidden bg-muted/30"
               >
                 <img
-                  src={photoSrc(photo.objectPath)}
+                  src={fileSrc(photo.objectPath)}
                   alt={photo.caption || photo.stage}
                   className="w-full h-36 object-cover"
                   loading="lazy"
@@ -121,7 +119,7 @@ export function StagePhotos({
                 <button
                   type="button"
                   onClick={() => deletePhoto(photo.id)}
-                  className="absolute top-1.5 right-1.5 p-1.5 rounded-md bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive"
+                  className="absolute top-1.5 right-1.5 p-1.5 rounded-md bg-black/50 text-white transition-opacity hover:bg-destructive sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100"
                   aria-label="Delete photo"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -130,6 +128,7 @@ export function StagePhotos({
                   <Badge variant="secondary" className="text-[10px]">
                     {photo.stage}
                   </Badge>
+                  {photo.objectPath.startsWith("/objects/files/portal-photo/") && <Badge variant="outline" className="ml-1 text-[10px]">Customer portal</Badge>}
                   {photo.caption && (
                     <p className="text-xs text-muted-foreground line-clamp-2">
                       {photo.caption}

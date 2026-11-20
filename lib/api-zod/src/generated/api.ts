@@ -1294,7 +1294,7 @@ export const ListCommunicationsResponseItem = zod.object({
   "fromAddress": zod.string(),
   "subject": zod.string(),
   "body": zod.string(),
-  "status": zod.enum(['queued', 'sent', 'delivered', 'failed', 'received']),
+  "status": zod.enum(['captured', 'queued', 'sent', 'delivered', 'failed', 'unknown', 'received']),
   "providerMessageId": zod.string().nullish(),
   "errorMessage": zod.string().nullish(),
   "createdAt": zod.string()
@@ -1306,6 +1306,7 @@ export const ListCommunicationsResponse = zod.array(ListCommunicationsResponseIt
  * @summary Send an email and log it as a communication
  */
 export const SendEmailBody = zod.object({
+  "idempotencyKey": zod.string().optional().describe('Reuse for retries of one immutable message. Required for external delivery.'),
   "to": zod.string(),
   "subject": zod.string(),
   "body": zod.string(),
@@ -1314,16 +1315,51 @@ export const SendEmailBody = zod.object({
   "customerName": zod.string().optional()
 })
 
+export const SendEmailResponse = zod.object({
+  "id": zod.string(),
+  "leadId": zod.string().nullish(),
+  "customerKey": zod.string().nullish(),
+  "customerName": zod.string().optional(),
+  "channel": zod.enum(['email', 'sms']),
+  "direction": zod.enum(['outbound', 'inbound']),
+  "toAddress": zod.string(),
+  "fromAddress": zod.string(),
+  "subject": zod.string(),
+  "body": zod.string(),
+  "status": zod.enum(['captured', 'queued', 'sent', 'delivered', 'failed', 'unknown', 'received']),
+  "providerMessageId": zod.string().nullish(),
+  "errorMessage": zod.string().nullish(),
+  "createdAt": zod.string()
+})
+
 
 /**
  * @summary Send an SMS and log it as a communication
  */
 export const SendSmsBody = zod.object({
+  "idempotencyKey": zod.string().optional().describe('Reuse for retries of one immutable message. Required for external delivery.'),
   "to": zod.string(),
   "body": zod.string(),
   "leadId": zod.string().optional(),
   "customerKey": zod.string().optional(),
   "customerName": zod.string().optional()
+})
+
+export const SendSmsResponse = zod.object({
+  "id": zod.string(),
+  "leadId": zod.string().nullish(),
+  "customerKey": zod.string().nullish(),
+  "customerName": zod.string().optional(),
+  "channel": zod.enum(['email', 'sms']),
+  "direction": zod.enum(['outbound', 'inbound']),
+  "toAddress": zod.string(),
+  "fromAddress": zod.string(),
+  "subject": zod.string(),
+  "body": zod.string(),
+  "status": zod.enum(['captured', 'queued', 'sent', 'delivered', 'failed', 'unknown', 'received']),
+  "providerMessageId": zod.string().nullish(),
+  "errorMessage": zod.string().nullish(),
+  "createdAt": zod.string()
 })
 
 

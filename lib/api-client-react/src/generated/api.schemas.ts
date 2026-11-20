@@ -1321,10 +1321,12 @@ export type CommunicationStatus = typeof CommunicationStatus[keyof typeof Commun
 
 
 export const CommunicationStatus = {
+  captured: 'captured',
   queued: 'queued',
   sent: 'sent',
   delivered: 'delivered',
   failed: 'failed',
+  unknown: 'unknown',
   received: 'received',
 } as const;
 
@@ -1346,6 +1348,8 @@ export interface Communication {
 }
 
 export interface SendEmailRequest {
+  /** Reuse for retries of one immutable message. Required for external delivery. */
+  idempotencyKey?: string;
   to: string;
   subject: string;
   body: string;
@@ -1355,6 +1359,8 @@ export interface SendEmailRequest {
 }
 
 export interface SendSmsRequest {
+  /** Reuse for retries of one immutable message. Required for external delivery. */
+  idempotencyKey?: string;
   to: string;
   body: string;
   leadId?: string;

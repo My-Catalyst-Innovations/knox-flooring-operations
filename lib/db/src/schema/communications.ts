@@ -3,10 +3,12 @@ import { pgTable, text } from "drizzle-orm/pg-core";
 export type CommunicationChannel = "email" | "sms";
 export type CommunicationDirection = "outbound" | "inbound";
 export type CommunicationStatus =
+  | "captured"
   | "queued"
   | "sent"
   | "delivered"
   | "failed"
+  | "unknown"
   | "received";
 
 export const communicationsTable = pgTable("communications", {

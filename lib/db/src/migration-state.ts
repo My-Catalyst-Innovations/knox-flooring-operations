@@ -4,6 +4,7 @@ export const schemaMigrationIds = [
   "0004_booking_sync_status", "0005_callback_cost_links", "0006_job_history_guards", "0007_job_updates",
   "0008_warehouse_inventory", "0009_supplier_catalog", "0010_outlook_calendar", "0011_inventory_issue_cost",
   "0012_purchase_orders_and_bins", "0013_inventory_quantity_precision",
+  "0014_inventory_purchase_costing", "0015_purchase_receipt_damage",
 ] as const;
 
 export async function assertMigrationsApplied(client: { query: (text: string) => Promise<{ rows: Array<{ id: string }> }> }) {

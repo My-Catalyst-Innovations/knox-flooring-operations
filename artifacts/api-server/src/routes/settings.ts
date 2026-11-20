@@ -7,6 +7,8 @@ import {
   UpdateSettingsResponse,
 } from "@workspace/api-zod";
 import { z } from "zod";
+import { domainRoute } from "../lib/domain-http";
+import { assertOwnedFile, externalImageUrl, storedFilePath } from "../lib/file-store";
 
 const SETTINGS_ID = 1;
 
@@ -27,7 +29,7 @@ router.get("/settings", async (_req, res): Promise<void> => {
   res.json(GetSettingsResponse.parse(settings));
 });
 
-router.patch("/settings", async (req, res): Promise<void> => {
+router.patch("/settings", domainRoute(async (req, res) => {
   const parsed = UpdateSettingsBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -46,6 +48,11 @@ router.patch("/settings", async (req, res): Promise<void> => {
     if (!policy.success) { res.status(400).json({ error: "Enter valid completion checklist keys." }); return; }
     parsed.data.transitionPolicy = policy.data;
   }
+  const logo = parsed.data.companyLogoUrl;
+  if (logo && !externalImageUrl(logo)) {
+    const [current] = await db.select({ logo: settingsTable.companyLogoUrl }).from(settingsTable).where(eq(settingsTable.id, SETTINGS_ID));
+    if (logo !== current?.logo) await assertOwnedFile(storedFilePath(logo), ["company-logo"], req.auth!.userId, "");
+  }
   await db.insert(settingsTable).values({ id: SETTINGS_ID }).onConflictDoNothing();
 
   const [settings] = await db
@@ -60,6 +67,6 @@ router.patch("/settings", async (req, res): Promise<void> => {
   }
 
   res.json(UpdateSettingsResponse.parse(settings));
-});
+}));
 
 export default router;

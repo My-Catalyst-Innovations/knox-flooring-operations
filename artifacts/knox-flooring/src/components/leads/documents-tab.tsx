@@ -1,13 +1,9 @@
 import { useRef } from "react";
-import { useUpload } from "@workspace/object-storage-web";
+import { fileSrc, useStoredFileUpload } from "@/lib/file-upload";
 import { Button } from "@/components/ui/button";
 import { FileText, Trash2, Loader2, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { LeadDocument } from "@/lib/types";
-
-export function documentSrc(objectPath: string): string {
-  return `/api/storage${objectPath}`;
-}
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -17,39 +13,36 @@ function formatSize(bytes?: number): string {
 }
 
 interface DocumentsTabProps {
+  leadId: string;
   documents: LeadDocument[];
   onSave: (documents: LeadDocument[]) => Promise<void> | void;
 }
 
-export function DocumentsTab({ documents, onSave }: DocumentsTabProps) {
+export function DocumentsTab({ leadId, documents, onSave }: DocumentsTabProps) {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { uploadFile, isUploading } = useUpload({
-    onError: (err: Error) =>
-      toast({
-        title: "Upload failed",
-        description: err.message,
-        variant: "destructive",
-      }),
-  });
+  const { uploadFile, isUploading } = useStoredFileUpload((err) => toast({
+    title: "Document could not be saved",
+    description: err.message,
+    variant: "destructive",
+  }));
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const result = await uploadFile(file);
-    if (result) {
+    await uploadFile(file, "lead-document", leadId, async (objectPath) => {
       const doc: LeadDocument = {
         id: crypto.randomUUID(),
         name: file.name,
-        objectPath: result.objectPath,
+        objectPath,
         contentType: file.type || undefined,
         size: file.size,
         createdAt: new Date().toISOString(),
       };
       await onSave([...documents, doc]);
       toast({ title: "Document uploaded" });
-    }
+    });
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -111,7 +104,7 @@ export function DocumentsTab({ documents, onSave }: DocumentsTabProps) {
               <div className="flex items-center gap-1 shrink-0">
                 <Button variant="ghost" size="icon" asChild>
                   <a
-                    href={documentSrc(doc.objectPath)}
+                    href={fileSrc(doc.objectPath)}
                     target="_blank"
                     rel="noreferrer"
                     aria-label="Download"

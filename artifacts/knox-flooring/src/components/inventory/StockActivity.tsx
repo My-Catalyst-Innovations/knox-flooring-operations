@@ -17,7 +17,7 @@ import {
   type WarehouseStockMovement,
   type WarehouseStockSummary,
 } from "@/lib/warehouse-inventory";
-import { binName, binStockQuery, purchaseQuantity, warehouseBinsPath, type BinStock, type WarehouseBin } from "@/lib/purchasing";
+import { binName, binStockQuery, purchaseQuantity, purchaseUnitCostPattern, warehouseBinsPath, type BinStock, type WarehouseBin } from "@/lib/purchasing";
 import type { Product } from "@/lib/types";
 import {
   Dialog,
@@ -67,6 +67,7 @@ export function StockActivity({
   const refresh = useRefreshOperations();
   const [kind, setKind] = useState("receipt");
   const [amount, setAmount] = useState("");
+  const [unitCost, setUnitCost] = useState("");
   const [jobId, setJobId] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
   const [binId, setBinId] = useState("");
@@ -93,6 +94,7 @@ export function StockActivity({
     {
       kind,
       amount,
+      unitCost,
       jobId,
       warehouseId,
       binId,
@@ -164,6 +166,8 @@ export function StockActivity({
         throw new Error("Choose the original stock issue for this job return.");
       if (kind !== "reserve" && !reason.trim())
         throw new Error("Explain the receipt, usage, return or adjustment.");
+      if (kind === "receipt" && unitCost.trim() && !purchaseUnitCostPattern.test(unitCost.trim()))
+        throw new Error("Enter a nonnegative unit cost with up to six decimal places.");
       await operation(
         kind === "reserve" ? "/inventory/reservations" : "/inventory/movements",
         "POST",
@@ -177,6 +181,7 @@ export function StockActivity({
           labelCode:
             kind === "consume" ? labelCode.trim() || undefined : undefined,
           quantity: Number(amount),
+          ...(kind === "receipt" && unitCost.trim() ? { unitCost: unitCost.trim() } : {}),
           kind,
           reason,
           overrideReason: overrideReason || undefined,
@@ -187,6 +192,7 @@ export function StockActivity({
       changes.reset({
         kind,
         amount: "",
+        unitCost: "",
         jobId,
         warehouseId,
         binId,
@@ -196,6 +202,7 @@ export function StockActivity({
         overrideReason: "",
       });
       setAmount("");
+      setUnitCost("");
       setReason("");
       setOverrideReason("");
       setReturnOfMovementId("");
@@ -440,6 +447,13 @@ export function StockActivity({
                   }}
                 />
               </label>
+              {kind === "receipt" && (
+                <label className="space-y-1 text-sm">
+                  Acquisition cost per {product.unit} (optional)
+                  <Input inputMode="decimal" maxLength={19} value={unitCost} onChange={(event) => { setUnitCost(event.target.value); change(); }} />
+                  <span className="block text-xs text-muted-foreground">If blank, this stock uses the catalog cost when issued.</span>
+                </label>
+              )}
               <label className="space-y-1 text-sm">
                 Related job
                 <select
@@ -623,6 +637,8 @@ export function StockActivity({
                   {m.kind.replaceAll("_", " ")}
                 </p>
                 <p className="text-muted-foreground">{m.reason}</p>
+                {m.acquisitionUnitCost != null && <p className="text-xs text-muted-foreground">Received at ${purchaseQuantity(Number(m.acquisitionUnitCost))} per {product.unit}</p>}
+                {m.issueUnitCost != null && m.costAllocations && <p className="text-xs text-muted-foreground">Issued at ${purchaseQuantity(Number(m.issueUnitCost))} per {product.unit}{m.costAllocations.some((slice) => slice.source === "catalog") && " · includes catalog cost"}</p>}
                 <p className="mt-1 text-xs text-muted-foreground">
                   {new Date(m.createdAt).toLocaleString()} ·{" "}
                   {warehouseName(warehouses, m.warehouseId)}

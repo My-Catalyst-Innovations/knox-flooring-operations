@@ -4,7 +4,7 @@ import { db, invoicesTable, jobsTable, productsTable, proposalsTable, quickbooks
 import { audit } from "./auth";
 import { getConnection, qboQuery, qboRequest, QuickBooksRequestError } from "./quickbooks";
 import { logger } from "./logger";
-import { assertQuickBooksCompanyLink, invoiceServiceEntity, invoiceServiceMappingKey, quickBooksInvoiceLines } from "./quickbooks-invoice";
+import { assertQuickBooksCompanyLink, invoiceServiceEntity, invoiceServiceMappingKey, quickBooksInvoiceLines, quickBooksInvoicePaymentState } from "./quickbooks-invoice";
 import { quickBooksWebhookChanges } from "./quickbooks-webhooks";
 import { invoiceCreateAttempt, invoiceCreateRecord, prepareQuickBooksInvoiceCreate, QuickBooksInvoiceValidationError, reconcileQuickBooksInvoiceCreate } from "./quickbooks-invoice-create";
 import { quickBooksCdcInvoiceIds, quickBooksPaymentInvoiceIds } from "./quickbooks-cdc";
@@ -178,14 +178,20 @@ async function importInvoice(quickbooksId: string, connection: NonNullable<Await
   const { Invoice: remote } = await qboRequest(`/invoice/${quickbooksId}`, {}, connection.id);
   if (!remote) return;
   const [local] = await db.select().from(invoicesTable).where(eq(invoicesTable.id, link.localId)).limit(1); if (!local) return;
+  const importedAt = new Date();
+  const payment = quickBooksInvoicePaymentState(local, remote, importedAt);
+  if (!payment) return;
   const remoteUpdated = String(remote.MetaData?.LastUpdatedTime ?? "");
   if (link.lastSyncedAt && local.updatedAt > link.lastSyncedAt && remoteUpdated > link.lastSyncedAt) {
     const [existing] = await db.select().from(quickbooksConflictsTable).where(and(eq(quickbooksConflictsTable.entityType, "invoice"), eq(quickbooksConflictsTable.localId, local.id), eq(quickbooksConflictsTable.status, "open"))).limit(1);
     if (!existing) await db.insert(quickbooksConflictsTable).values({ id: randomUUID(), entityType: "invoice", localId: local.id, quickbooksId, localSnapshot: local as any, quickbooksSnapshot: remote, createdAt: new Date().toISOString() });
     return;
   }
-  const total = Number(remote.TotalAmt ?? local.total); const balance = Number(remote.Balance ?? total); const paid = Math.max(0, total - balance); const now = new Date().toISOString();
-  await db.update(invoicesTable).set({ total, paidAmount: paid, balanceAmount: balance, status: balance <= 0 ? "Paid" : paid > 0 || local.depositAmount > 0 ? "Partial" : local.status, paidAt: balance <= 0 ? now : local.paidAt, updatedAt: now }).where(eq(invoicesTable.id, local.id));
+  const now = importedAt.toISOString();
+  const [updated] = await db.update(invoicesTable).set({ ...payment, updatedAt: now })
+    .where(and(eq(invoicesTable.id, local.id), eq(invoicesTable.updatedAt, local.updatedAt)))
+    .returning({ id: invoicesTable.id });
+  if (!updated) throw new Error("The local invoice changed during payment reconciliation. Retry the sync.");
   await db.update(quickbooksEntityMappingsTable).set({ syncToken: String(remote.SyncToken ?? link.syncToken), fingerprint: fingerprint(remote), lastSyncedAt: now, updatedAt: now }).where(eq(quickbooksEntityMappingsTable.id, link.id));
 }
 

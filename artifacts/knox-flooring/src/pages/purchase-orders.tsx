@@ -39,7 +39,13 @@ function ReceiptHistory({ order, bins }: { order: PurchaseOrder; bins: readonly 
               <ul className="space-y-1 text-muted-foreground">
                 {receipt.lines.map((item) => {
                   const line = order.lines.find((candidate) => candidate.id === item.lineId);
-                  return <li key={item.movementId}>{line?.sku || line?.productName || "Product"} · {purchaseQuantity(item.quantity)} {line?.unit} · {binName(bins, item.binId)}</li>;
+                  return <li key={item.id ?? item.movementId}>
+                    {line?.sku || line?.productName || "Product"}
+                    {item.quantity > 0 && ` · ${purchaseQuantity(item.quantity)} ${line?.unit} · ${binName(bins, item.binId)}`}
+                    {item.unitCost != null && ` · $${purchaseQuantity(Number(item.unitCost))} per ${line?.unit || "unit"}`}
+                    {!!item.damagedQuantity && ` · ${purchaseQuantity(item.damagedQuantity)} ${line?.unit ?? "units"} damaged`}
+                    {item.damageNote && <p className="pl-2">{item.damageNote}</p>}
+                  </li>;
                 })}
               </ul>
             </li>

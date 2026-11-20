@@ -116,9 +116,10 @@ export const purchaseReceiptLinesTable = pgTable(
       .notNull()
       .references(() => purchaseOrderLinesTable.id, { onDelete: "restrict" }),
     movementId: text("movement_id")
-      .notNull()
       .references(() => inventoryMovementsTable.id, { onDelete: "restrict" }),
     quantity: numeric("quantity", { precision: 18, scale: 6 }).notNull(),
+    damagedQuantity: numeric("damaged_quantity", { precision: 18, scale: 6 }).notNull().default("0"),
+    damageNote: text("damage_note"),
   },
   (table) => [
     uniqueIndex("purchase_receipt_lines_movement_unique").on(table.movementId),
@@ -126,7 +127,17 @@ export const purchaseReceiptLinesTable = pgTable(
     index("purchase_receipt_lines_order_line_idx").on(table.lineId),
     check(
       "purchase_receipt_lines_quantity_valid",
-      sql`${table.quantity} > 0 AND ${table.quantity} < 'Infinity'::numeric`,
+      sql`${table.quantity} >= 0 AND ${table.quantity} < 'Infinity'::numeric
+        AND ${table.damagedQuantity} >= 0 AND ${table.damagedQuantity} < 'Infinity'::numeric
+        AND ${table.quantity} + ${table.damagedQuantity} > 0`,
+    ),
+    check(
+      "purchase_receipt_lines_stock_link_valid",
+      sql`(${table.quantity} > 0) = (${table.movementId} IS NOT NULL)`,
+    ),
+    check(
+      "purchase_receipt_lines_damage_note_valid",
+      sql`${table.damageNote} IS NULL OR (${table.damagedQuantity} > 0 AND char_length(${table.damageNote}) <= 240)`,
     ),
   ],
 );

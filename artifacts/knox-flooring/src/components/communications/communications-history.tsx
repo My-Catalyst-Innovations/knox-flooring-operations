@@ -13,6 +13,7 @@ function statusVariant(
 ): "default" | "secondary" | "destructive" | "outline" {
   switch (status) {
     case "failed":
+    case "unknown":
       return "destructive";
     case "delivered":
     case "sent":

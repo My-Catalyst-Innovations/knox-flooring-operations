@@ -21,16 +21,18 @@ export default function Welcome() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [resetToken, setResetToken] = useState(() => new URLSearchParams(window.location.search).get("reset"));
+  const [resetToken, setResetToken] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get("reset")
+    ?? new URLSearchParams(window.location.search).get("reset"));
   const [inviteToken, setInviteToken] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get("invite"));
   const settingPassword = Boolean(inviteToken || resetToken);
 
   useEffect(() => {
-    if (!inviteToken || !window.location.hash) return;
+    if (!inviteToken && !resetToken) return;
     const url = new URL(window.location.href);
+    url.searchParams.delete("reset");
     url.hash = "";
     window.history.replaceState(window.history.state, "", url);
-  }, [inviteToken]);
+  }, [inviteToken, resetToken]);
 
   const showSignIn = () => {
     setInviteToken(null); setResetToken(null); setPassword(""); setConfirmPassword("");

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useUpload } from "@workspace/object-storage-web";
+import { supportedImageTypes, useStoredFileUpload } from "@/lib/file-upload";
 import { useStore } from "@/hooks/use-store";
 import { useUnsavedForm } from "@/hooks/use-unsaved-changes";
 import {
@@ -116,14 +116,11 @@ export function ProductDialog({ open, onOpenChange, product }: Props) {
       onOpenChange(next);
   };
 
-  const { uploadFile, isUploading } = useUpload({
-    onError: (err: Error) =>
-      toast({
-        title: "Image upload failed",
-        description: err.message,
-        variant: "destructive",
-      }),
-  });
+  const { uploadFile, isUploading } = useStoredFileUpload((err) => toast({
+    title: "Image upload failed",
+    description: err.message,
+    variant: "destructive",
+  }));
 
   useEffect(() => {
     if (!open) return;
@@ -167,11 +164,10 @@ export function ProductDialog({ open, onOpenChange, product }: Props) {
   const handleImageFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const result = await uploadFile(file);
-    if (result) {
-      setImageUrl(result.objectPath);
+    await uploadFile(file, "product-image", null, (objectPath) => {
+      setImageUrl(objectPath);
       toast({ title: "Photo uploaded" });
-    }
+    });
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -298,7 +294,7 @@ export function ProductDialog({ open, onOpenChange, product }: Props) {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*"
+                  accept={supportedImageTypes}
                 className="hidden"
                 onChange={handleImageFile}
               />

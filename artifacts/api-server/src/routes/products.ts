@@ -18,6 +18,7 @@ import {
 import { stripNulls } from "../lib/strip-nulls";
 import { queueQuickBooksReview, quickBooksReviewRow } from "../lib/quickbooks-queue";
 import { catalogKey, catalogSkuLock, planCatalogImport } from "../lib/catalog-import";
+import { assertOwnedFile, externalImageUrl } from "../lib/file-store";
 
 const router: IRouter = Router();
 const importCsv = z.string().min(1).max(catalogImportMaxBytes).refine((value) => Buffer.byteLength(value, "utf8") <= catalogImportMaxBytes);
@@ -120,6 +121,9 @@ router.post("/products", requireRole("owner", "operations"), domainRoute(async (
   };
 
   validatePackMetadata(parsed.data);
+  if (values.imageUrl && !externalImageUrl(values.imageUrl)) {
+    await assertOwnedFile(values.imageUrl, ["product-image"], req.auth!.userId, "");
+  }
   const product = await db.transaction(async tx => {
     if (values.sku) {
       await tx.execute(catalogLockQuery);
@@ -154,6 +158,9 @@ router.patch("/products/:id", requireRole("owner", "operations"), domainRoute(as
     const [current] = await tx.select().from(productsTable).where(eq(productsTable.id, params.data.id)).for("update");
     if (!current) throw new DomainError(404, "Product not found");
     assertRevision(current.revision, parsed.data.revision);
+    if (parsed.data.imageUrl && parsed.data.imageUrl !== current.imageUrl && !externalImageUrl(parsed.data.imageUrl)) {
+      await assertOwnedFile(parsed.data.imageUrl, ["product-image"], req.auth!.userId, "");
+    }
     if (sku && catalogKey(sku) !== catalogKey(current.sku)) await assertSkuAvailable(tx, sku);
     if (parsed.data.quantityOnHand !== undefined && parsed.data.quantityOnHand !== current.quantityOnHand) throw new DomainError(409, "Record a receipt, return, consumption or adjustment to change stock.");
     if ((parsed.data.unit && parsed.data.unit !== current.unit) || (parsed.data.inventoryType && parsed.data.inventoryType !== current.inventoryType)) {

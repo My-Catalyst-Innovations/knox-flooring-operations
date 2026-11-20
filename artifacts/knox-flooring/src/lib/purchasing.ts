@@ -43,11 +43,15 @@ export interface PurchaseReceipt {
   reference: string | null;
   receivedAt: string;
   lines: {
+    id?: string;
     lineId: string;
     productId: string;
     binId: string | null;
     quantity: number;
-    movementId: string;
+    movementId: string | null;
+    unitCost?: string | null;
+    damagedQuantity?: number;
+    damageNote?: string | null;
   }[];
 }
 
@@ -95,5 +99,6 @@ export function useInventoryRequestKey() {
 
 export const purchaseQuantity = (amount: number) =>
   amount.toLocaleString("en-US", { maximumFractionDigits: 6 });
+export const purchaseUnitCostPattern = /^\d{1,12}(?:\.\d{1,6})?$/;
 
 export const inventorySelect = "h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";

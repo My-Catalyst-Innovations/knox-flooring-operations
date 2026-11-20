@@ -24,6 +24,9 @@ export interface WarehouseStockMovement extends StockMovement {
   binId?: string | null;
   transferId?: string | null;
   returnOfMovementId?: string | null;
+  acquisitionUnitCost?: string | null;
+  issueUnitCost?: string | null;
+  costAllocations?: { quantity: number; source: "purchase_order" | "stock_receipt" | "catalog" | "historical_issue"; unitCost: string }[] | null;
 }
 
 export interface WarehouseReservation extends Reservation {

@@ -22,7 +22,7 @@ const bins = [
   { id: "b1", warehouseId: "south", code: "B-01" },
 ];
 const purchasePath = "/api/inventory/purchase-orders";
-const change = (name: string | RegExp, value: string, scope = screen) => fireEvent.change(scope.getByLabelText(name), { target: { value } });
+const change = (name: string | RegExp, value: string, scope: Pick<typeof screen, "getByLabelText"> = screen) => fireEvent.change(scope.getByLabelText(name), { target: { value } });
 
 function mount(element: React.ReactNode, path: string) {
   window.history.replaceState({}, "", path);
@@ -119,6 +119,46 @@ it("creates an order and retries a split partial receipt with the original idemp
     revision: 2, reference: "Packing 123", idempotencyKey: expect.any(String),
     lines: [{ lineId: "line-1", quantity: 3, binId: "a1" }, { lineId: "line-1", quantity: 2, binId: "a2" }],
   });
+});
+
+it("records an entirely damaged delivery and shows why the order remains open", async () => {
+  const timestamp = "2026-11-20T15:00:00.000Z";
+  const order: PurchaseOrder = {
+    id: "po-damaged", orderNumber: "PO-1002", supplier: "Example Supply", warehouseId: "north", notes: null,
+    status: "Ordered", revision: 2, createdAt: timestamp, updatedAt: timestamp,
+    lines: [{ id: "line-2", productId: product.id, productName: product.name, sku: product.sku, unit: product.unit, quantity: 5, receivedQuantity: 0, unitCost: "20" }],
+  };
+  let receipt: PurchaseReceipt | undefined;
+  customFetch.mockImplementation(async (path: string, init: { method: string; body?: string }) => {
+    if (path === "/api/inventory/warehouses") return warehouses;
+    if (path === "/api/inventory/bins") return bins;
+    if (path === purchasePath) return [order];
+    if (path === `${purchasePath}/${order.id}/receipts`) return receipt ? [receipt] : [];
+    if (path === `${purchasePath}/${order.id}/receive`) {
+      const body = JSON.parse(init.body!);
+      receipt = { id: "damage-1", reference: body.reference, receivedAt: timestamp, lines: [
+        { ...body.lines[0], id: "damage-line", productId: product.id, movementId: null, unitCost: null },
+      ] };
+      return { order, receipt };
+    }
+    throw new Error(`Unexpected request ${init.method} ${path}`);
+  });
+
+  mount(<PurchaseOrders />, "/inventory/purchase-orders?order=po-damaged");
+  const receiveShipment = await screen.findByRole("button", { name: "Receive shipment" });
+  await waitFor(() => expect(receiveShipment).toBeEnabled());
+  fireEvent.click(receiveShipment);
+  const dialog = within(screen.getByRole("dialog"));
+  change("Damaged quantity", "5", dialog);
+  change("Damage note (optional)", "Cartons crushed", dialog);
+  fireEvent.click(dialog.getByRole("button", { name: "Record receipt" }));
+  expect(await screen.findByText(/5 box damaged/)).toBeVisible();
+  expect(screen.getByText("Cartons crushed")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Receive shipment" })).toBeEnabled();
+  const submit = customFetch.mock.calls.find(([path]) => path === `${purchasePath}/${order.id}/receive`);
+  expect(JSON.parse(submit?.[1].body).lines).toEqual([
+    { lineId: "line-2", quantity: 0, binId: null, damagedQuantity: 5, damageNote: "Cartons crushed" },
+  ]);
 });
 
 it("opens a bin by warehouse, creates a new bin, and transfers on-hand stock into it", async () => {

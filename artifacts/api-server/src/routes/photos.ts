@@ -9,10 +9,10 @@ import {
   CreateJobPhotoBody,
   DeleteJobPhotoParams,
 } from "@workspace/api-zod";
-import { ObjectStorageService } from "../lib/objectStorage";
+import { assertOwnedFile, storedFilePath } from "../lib/file-store";
+import { domainRoute } from "../lib/domain-http";
 
 const router: IRouter = Router();
-const objectStorageService = new ObjectStorageService();
 
 router.get("/jobs/:id/photos", async (req, res): Promise<void> => {
   const params = ListJobPhotosParams.safeParse(req.params);
@@ -29,7 +29,7 @@ router.get("/jobs/:id/photos", async (req, res): Promise<void> => {
   res.json(ListJobPhotosResponse.parse(photos));
 });
 
-router.post("/jobs/:id/photos", async (req, res): Promise<void> => {
+router.post("/jobs/:id/photos", domainRoute(async (req, res) => {
   const params = CreateJobPhotoParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -53,9 +53,8 @@ router.post("/jobs/:id/photos", async (req, res): Promise<void> => {
     return;
   }
 
-  const objectPath = objectStorageService.normalizeObjectEntityPath(
-    parsed.data.objectPath,
-  );
+  const objectPath = storedFilePath(parsed.data.objectPath);
+  await assertOwnedFile(objectPath, ["job-photo", "portal-photo"], req.auth!.userId, params.data.id);
 
   const values: JobPhotoInsert = {
     id: randomUUID(),
@@ -68,7 +67,7 @@ router.post("/jobs/:id/photos", async (req, res): Promise<void> => {
 
   const [photo] = await db.insert(jobPhotosTable).values(values).returning();
   res.status(201).json(photo);
-});
+}));
 
 router.delete("/jobs/:id/photos/:photoId", async (req, res): Promise<void> => {
   const params = DeleteJobPhotoParams.safeParse(req.params);

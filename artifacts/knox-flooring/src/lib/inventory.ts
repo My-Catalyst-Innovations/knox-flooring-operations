@@ -67,5 +67,5 @@ export function marginPct(cost: number, price: number): number | null {
 
 /** Build a servable URL for a stored product image object path. */
 export function productImageSrc(objectPath: string): string {
-  return `/api/storage${objectPath}`;
+  return objectPath.startsWith("/objects/") ? `/api/storage${objectPath}` : objectPath;
 }

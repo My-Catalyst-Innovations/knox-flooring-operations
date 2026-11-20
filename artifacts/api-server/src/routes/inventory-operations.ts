@@ -12,12 +12,22 @@ import {
   materialUsageTable,
   supplierProductAliasesTable,
   warehousesTable,
+  type InventoryCostSlice,
 } from "@workspace/db";
 import { validateCallback } from "../lib/entry-references";
 import {
-  issueChargeCents,
+  allocatedIssueCents,
+  allocatedIssueUnitCost,
   returnCreditCents,
 } from "../lib/inventory-issue-cost";
+import {
+  acquisitionCostSlice,
+  inventoryUnitCostPattern,
+  normalizeInventoryUnitCost,
+  placeStockCosts,
+  sliceCostLayers,
+  withdrawStockCosts,
+} from "../lib/inventory-costing";
 import { requireRole } from "../middlewares/auth";
 import {
   assertBinWithdrawal,
@@ -141,15 +151,18 @@ function issueUnitCostFor(product: StockProduct) {
   return String(product.cost);
 }
 
-function postedIssueCost(quantity: number, rate: string) {
-  const cents = issueChargeCents(quantity, rate);
+function priceJobIssue(product: StockProduct, movementId: string, quantity: number, now: string, costs: Awaited<ReturnType<typeof withdrawStockCosts>>) {
+  const allocations = [...costs.slices];
+  if (costs.untracked > 0)
+    allocations.unshift(acquisitionCostSlice(movementId, costs.untracked, issueUnitCostFor(product), now, "catalog"));
+  const cents = allocatedIssueCents(allocations);
   if (!Number.isSafeInteger(cents)) {
     throw new DomainError(
       409,
       "This material charge exceeds the supported amount.",
     );
   }
-  return cents / 100;
+  return { allocations, cost: cents / 100, unitCost: allocatedIssueUnitCost(allocations, quantity) };
 }
 
 async function calculateReturnCredit(
@@ -206,7 +219,8 @@ async function calculateReturnCredit(
     (sum, row) => sum + row.quantity,
     0,
   );
-  if (quantity > issuedQuantity - earlierQuantity + 0.000001) {
+  const remainingQuantity = roundStock(issuedQuantity - earlierQuantity);
+  if (issue.costAllocations ? roundStock(quantity) > remainingQuantity : quantity > remainingQuantity + 0.000001) {
     throw new DomainError(
       409,
       "The return exceeds the remaining quantity from that issue.",
@@ -241,17 +255,19 @@ async function calculateReturnCredit(
     );
   }
 
-  return {
-    charge,
-    amount:
-      returnCreditCents({
-        issuedQuantity,
-        postedCents,
-        issueUnitCost: issue.issueUnitCost,
-        creditedQuantity: roundStock(creditedQuantity + quantity),
-        creditedCents,
-      }) / 100,
-  };
+  const nextQuantity = roundStock(creditedQuantity + quantity);
+  if (issue.costAllocations) {
+    // Partial returns relieve the most recently issued lots first. Full returns reverse the posted cents exactly.
+    const restored = sliceCostLayers(issue.costAllocations, earlierQuantity, earlierQuantity + quantity, true);
+    const target = nextQuantity >= roundStock(issuedQuantity)
+      ? postedCents
+      : allocatedIssueCents(sliceCostLayers(issue.costAllocations, 0, nextQuantity, true));
+    return { charge, allocations: restored, amount: Math.max(0, Math.min(postedCents, target) - creditedCents) / 100 };
+  }
+  const rate = issue.issueUnitCost ?? String(postedCents / 100 / issuedQuantity);
+  const allocations = [acquisitionCostSlice(issue.id, quantity, rate, issue.createdAt, "historical_issue")];
+  const amount = returnCreditCents({ issuedQuantity, postedCents, issueUnitCost: issue.issueUnitCost, creditedQuantity: nextQuantity, creditedCents }) / 100;
+  return { charge, allocations, amount };
 }
 
 router.get(
@@ -406,6 +422,7 @@ router.post(
         labelCode: productLabelCode.optional(),
         kind: z.enum(["receipt", "return", "consume", "adjustment"]),
         quantity: z.number().finite().refine(finiteStockRange),
+        unitCost: z.string().trim().regex(inventoryUnitCostPattern).transform(normalizeInventoryUnitCost).optional(),
         reason: z.string().trim().min(1).max(2000),
         idempotencyKey: requestKey,
         overrideReason: z.string().trim().min(1).optional(),
@@ -414,6 +431,8 @@ router.post(
     );
     const warehouseId = data.warehouseId ?? null;
     const binId = data.binId ?? null;
+    if (data.unitCost !== undefined && data.kind !== "receipt")
+      throw new DomainError(400, "An acquisition cost applies only to a stock receipt.");
     if (data.returnOfMovementId && (data.kind !== "return" || !data.jobId)) {
       throw new DomainError(
         400,
@@ -464,6 +483,7 @@ router.post(
           duplicate.jobId !== (data.jobId ?? null) ||
           duplicate.warehouseId !== warehouseId ||
           duplicate.binId !== binId ||
+          duplicate.acquisitionUnitCost !== (data.unitCost ?? null) ||
           duplicate.returnOfMovementId !== (data.returnOfMovementId ?? null)
         )
           throw new DomainError(
@@ -545,18 +565,31 @@ router.post(
       const now = new Date().toISOString();
       if (delta < 0) await assertBinWithdrawal(tx, product.id, warehouseId, binId, -delta);
       const issuingJob = data.kind === "consume" ? data.jobId : undefined;
-      const issueUnitCost = issuingJob ? issueUnitCostFor(product) : undefined;
       await ensureOpeningMovement(tx, product, now);
+      const movementId = randomUUID();
+      const location = { productId: product.id, warehouseId, binId };
+      let allocations: InventoryCostSlice[] | null = null;
+      let jobCost: ReturnType<typeof priceJobIssue> | undefined;
+      if (delta < 0) {
+        const costs = await withdrawStockCosts(tx, location, -delta);
+        if (issuingJob) jobCost = priceJobIssue(product, movementId, -delta, now, costs);
+        allocations = jobCost?.allocations ?? costs.slices;
+      } else if (returnCredit || data.unitCost !== undefined) {
+        const incoming = returnCredit?.allocations ?? [acquisitionCostSlice(movementId, delta, data.unitCost!, now, "stock_receipt")];
+        allocations = await placeStockCosts(tx, location, movementId, delta, incoming);
+      }
       const [row] = await tx
         .insert(inventoryMovementsTable)
         .values({
-          id: randomUUID(),
+          id: movementId,
           productId: product.id,
           jobId: data.jobId,
           warehouseId,
           binId,
           returnOfMovementId: data.returnOfMovementId,
-          issueUnitCost,
+          issueUnitCost: jobCost?.unitCost,
+          acquisitionUnitCost: data.unitCost,
+          costAllocations: allocations?.length ? allocations : null,
           quantity: delta,
           kind: data.kind,
           reason: data.overrideReason
@@ -567,7 +600,7 @@ router.post(
           createdAt: now,
         })
         .returning();
-      if (issuingJob && issueUnitCost !== undefined)
+      if (issuingJob && jobCost)
         await tx.insert(materialUsageTable).values({
           id: randomUUID(),
           jobId: issuingJob,
@@ -576,7 +609,7 @@ router.post(
           callbackId: data.callbackId,
           material: product.name,
           quantity: -row.quantity,
-          cost: postedIssueCost(-row.quantity, issueUnitCost),
+          cost: jobCost.cost,
           notes: data.reason,
           createdAt: now,
         });
@@ -768,16 +801,20 @@ router.patch(
         await verifyBin(tx, current.warehouseId, binId);
         await assertBinWithdrawal(tx, product.id, current.warehouseId, binId, current.quantity);
         await ensureOpeningMovement(tx, product, now);
-        const issueUnitCost = issueUnitCostFor(product);
+        const movementId = randomUUID();
+        const location = { productId: product.id, warehouseId: current.warehouseId, binId };
+        const costs = await withdrawStockCosts(tx, location, current.quantity);
+        const jobCost = priceJobIssue(product, movementId, current.quantity, now, costs);
         const [movement] = await tx
           .insert(inventoryMovementsTable)
           .values({
-            id: randomUUID(),
+            id: movementId,
             productId: product.id,
             jobId: current.jobId,
             warehouseId: current.warehouseId,
             binId,
-            issueUnitCost,
+            issueUnitCost: jobCost.unitCost,
+            costAllocations: jobCost.allocations,
             quantity: -current.quantity,
             kind: "consume",
             reason: "Consumed job reservation",
@@ -794,7 +831,7 @@ router.patch(
           callbackId: data.callbackId,
           material: product.name,
           quantity: current.quantity,
-          cost: postedIssueCost(current.quantity, issueUnitCost),
+          cost: jobCost.cost,
           notes: "Consumed reserved stock",
           createdAt: now,
         });
@@ -846,13 +883,24 @@ async function recordTransferMovement(
   now: string,
 ) {
   const dispatch = kind === "transfer_out";
-  await tx.insert(inventoryMovementsTable).values({
-    id: randomUUID(),
+  const movementId = randomUUID();
+  const location = {
     productId: transfer.productId,
-    warehouseId: dispatch
-      ? transfer.sourceWarehouseId
-      : transfer.destinationWarehouseId,
+    warehouseId: dispatch ? transfer.sourceWarehouseId : transfer.destinationWarehouseId,
     binId: dispatch ? transfer.sourceBinId : transfer.destinationBinId,
+  };
+  let costAllocations: InventoryCostSlice[] | null;
+  if (dispatch) {
+    costAllocations = (await withdrawStockCosts(tx, location, transfer.quantity)).slices;
+  } else {
+    const [outgoing] = await tx.select({ allocations: inventoryMovementsTable.costAllocations })
+      .from(inventoryMovementsTable).where(eq(inventoryMovementsTable.idempotencyKey, `transfer:${transfer.id}:transfer_out`));
+    costAllocations = await placeStockCosts(tx, location, movementId, transfer.quantity, outgoing?.allocations ?? []);
+  }
+  await tx.insert(inventoryMovementsTable).values({
+    id: movementId,
+    ...location,
+    costAllocations: costAllocations?.length ? costAllocations : null,
     transferId: transfer.id,
     quantity: dispatch ? -transfer.quantity : transfer.quantity,
     kind,

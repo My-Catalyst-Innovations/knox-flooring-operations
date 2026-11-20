@@ -12,6 +12,24 @@ For a temporary evaluation environment, set `DEMO_ACCESS_ENABLED=true` to show a
 
 Use `.env.example` to identify the required settings. Store production values in the Catalyst Works App Service environment variables in Azure and keep real credentials out of Git.
 
+## Email, texts, and password reset
+
+Verify the sending domain in Resend, including its DNS records for SPF and DKIM. Create a send-only key and set `RESEND_API_KEY` and `RESEND_FROM_EMAIL` in App Service. Set `RESEND_REPLY_TO_EMAIL` if replies should go to a different monitored mailbox. [Resend domain verification](https://resend.com/docs/dashboard/domains/introduction)
+
+For texts, enable the sender for your destination and traffic type in Twilio. Set `TWILIO_ACCOUNT_SID`, `TWILIO_API_KEY_SID`, `TWILIO_API_KEY_SECRET`, and either `TWILIO_MESSAGING_SERVICE_SID` or `TWILIO_FROM_NUMBER`. [Twilio Messaging API](https://www.twilio.com/docs/messaging/api/message-resource)
+
+When `DEMO_MODE=false`, `COMMS_DELIVERY_MODE=allowlist` permits sends to approved addresses and phone numbers in the comma-separated `COMMS_ALLOWLIST`. `COMMS_DELIVERY_MODE=live` enables delivery to other recipients. Choose `capture` to keep messages in the Demo Outbox, which is also the behavior in demo mode. In communication history, a provider's queued or sent status indicates its response to the submission. Later delivery receipts aren't tracked.
+
+To allow active staff to request reset links, set `PASSWORD_RESET_EMAIL_ENABLED=true` alongside a configured Resend sender, `DEMO_MODE=false`, and the workspace HTTPS `APP_BASE_URL` (for example, `https://works.mycatalystinnovations.com`). Reset emails use a separate setting from customer delivery. Their links expire after 30 minutes. Keep click and open tracking disabled on the sending domain. [Resend tracking settings](https://resend.com/blog/introducing-custom-tracking-domain)
+
+## File storage on Azure
+
+Enable App Service's system-assigned managed identity and grant it **Storage Blob Data Contributor** on a dedicated private Blob container. Set `AZURE_STORAGE_ACCOUNT_URL` to `https://<account>.blob.core.windows.net` and `AZURE_STORAGE_CONTAINER` to the container name. Keep anonymous Blob access disabled. App Service supplies its identity endpoint and header. The application sends and reads files through the server using that identity. [Managed identity setup](https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity)
+
+Job photos, product images and lead documents stay within the workspace. Select **Share this photo on the customer portal** when adding a photo intended for customers with the job link. A company logo uploaded in **Settings → Customer document branding** is published on customer documents when the owner saves branding. Files can be up to 15 MB. Choose JPEG, PNG, WebP or GIF for inline images.
+
+If you are moving a workspace from Replit, copy existing objects into the private container under their original keys to keep links working. Older job photos remain internal.
+
 ## Inventory onboarding
 
 Create your warehouse names under **Inventory → Warehouses**. Download the CSV template under **Inventory → Import products**. Enter each internal SKU as text to preserve leading zeros. If a product has no internal SKU yet, leave that value blank and enter a stable `source_item_id` from your export. Use a separate row for each warehouse with an opening count for that item. Keep the item identifiers, product details, stock unit, and prices the same on those rows. The preview shows the assigned SKUs and flags existing records and rows that need correction.

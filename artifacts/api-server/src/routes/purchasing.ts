@@ -15,6 +15,7 @@ import {
 import { requireRole } from "../middlewares/auth";
 import { domainRoute, id, parse, revision } from "../lib/domain-http";
 import { assertRevision, DomainError } from "../lib/operations-rules";
+import { acquisitionCostSlice, inventoryUnitCostPattern, normalizeInventoryUnitCost, placeStockCosts } from "../lib/inventory-costing";
 import {
   ensureOpeningMovement,
   lockStockProduct,
@@ -46,7 +47,7 @@ const cost = z
   .string()
   .trim()
   .regex(
-    /^\d{1,12}(?:\.\d{1,6})?$/,
+    inventoryUnitCostPattern,
     "Use a nonnegative unit cost with at most six decimals.",
   );
 const fingerprint = (value: unknown) =>
@@ -76,14 +77,28 @@ const orderEdit = z.union([
         lines !== undefined,
     ),
 ]);
+const receiptQuantity = z.union([z.literal(0), quantity]);
+const receivedLine = z.object({
+  lineId: identifier,
+  quantity: receiptQuantity,
+  binId: identifier.nullable(),
+  unitCost: cost.transform(normalizeInventoryUnitCost).optional(),
+  damagedQuantity: receiptQuantity.default(0),
+  damageNote: z.string().trim().max(240).optional(),
+}).superRefine((line, ctx) => {
+  if (line.quantity === 0 && line.damagedQuantity === 0)
+    ctx.addIssue({ code: "custom", path: ["quantity"], message: "Enter stock received or rejected as damaged." });
+  if (line.damageNote && line.damagedQuantity === 0)
+    ctx.addIssue({ code: "custom", path: ["damageNote"], message: "Enter a damaged quantity for this note." });
+  if (line.quantity === 0 && (line.binId !== null || line.unitCost !== undefined))
+    ctx.addIssue({ code: "custom", path: ["quantity"], message: "A bin and unit cost apply only to accepted stock." });
+});
 const receiptInput = z.object({
   revision,
   idempotencyKey: requestKey,
   reference: z.string().trim().max(200).default(""),
   lines: z
-    .array(
-      z.object({ lineId: identifier, quantity, binId: identifier.nullable() }),
-    )
+    .array(receivedLine)
     .min(1)
     .max(200),
 });
@@ -146,14 +161,19 @@ async function presentReceipts(reader: Reader, receipts: Receipt[]) {
   const joined = await reader
     .select({
       receiptId: line.receiptId,
+      id: line.id,
       lineId: line.lineId,
       quantity: line.quantity,
+      damagedQuantity: line.damagedQuantity,
+      damageNote: line.damageNote,
       movementId: line.movementId,
-      productId: inventoryMovementsTable.productId,
+      productId: purchaseOrderLinesTable.productId,
       binId: inventoryMovementsTable.binId,
+      unitCost: inventoryMovementsTable.acquisitionUnitCost,
     })
     .from(line)
-    .innerJoin(
+    .innerJoin(purchaseOrderLinesTable, eq(purchaseOrderLinesTable.id, line.lineId))
+    .leftJoin(
       inventoryMovementsTable,
       eq(inventoryMovementsTable.id, line.movementId),
     )
@@ -163,18 +183,19 @@ async function presentReceipts(reader: Reader, receipts: Receipt[]) {
         receipts.map((receipt) => receipt.id),
       ),
     )
-    .orderBy(asc(line.lineId), asc(line.movementId));
+    .orderBy(asc(line.lineId), asc(line.movementId), asc(line.id));
   const byReceipt = new Map<
     string,
     Array<
-      Omit<(typeof joined)[number], "receiptId" | "quantity"> & {
+      Omit<(typeof joined)[number], "receiptId" | "quantity" | "damagedQuantity"> & {
         quantity: number;
+        damagedQuantity: number;
       }
     >
   >();
-  for (const { receiptId, quantity, ...row } of joined) {
+  for (const { receiptId, quantity, damagedQuantity, ...row } of joined) {
     const group = byReceipt.get(receiptId) ?? [];
-    group.push({ ...row, quantity: Number(quantity) });
+    group.push({ ...row, quantity: Number(quantity), damagedQuantity: Number(damagedQuantity) });
     byReceipt.set(receiptId, group);
   }
   return receipts.map(
@@ -376,11 +397,14 @@ router.post(
         400,
         "Combine counts for the same purchase order line and bin.",
       );
+    // Omit empty damage fields so undamaged receipts keep their original request hashes.
     const hash = fingerprint([
       reference,
-      [...input.lines].sort((a, b) =>
-        locationKey(a) < locationKey(b) ? -1 : 1,
-      ),
+      [...input.lines]
+        .sort((a, b) => locationKey(a) < locationKey(b) ? -1 : 1)
+        .map(({ damagedQuantity, damageNote, ...line }) => damagedQuantity ? {
+          ...line, damagedQuantity, ...(damageNote ? { damageNote } : {}),
+        } : line),
     ]);
     const actor = req.auth!.userId;
     const result = await db.transaction(async (tx) => {
@@ -415,7 +439,7 @@ router.post(
       const byLine = new Map(
         openLines.map(({ line, received }) => [
           line.id,
-          { line, remaining: micros(line.quantity) - micros(received) },
+          { line, remaining: micros(line.quantity) - micros(received), damaged: 0 },
         ]),
       );
       const binIds = [
@@ -452,20 +476,24 @@ router.post(
             "A receipt line does not belong to this purchase order.",
           );
         const received = micros(entry.quantity);
-        if (received > item.remaining)
+        const damagedQuantity = entry.damagedQuantity ?? 0;
+        const damaged = micros(damagedQuantity);
+        if (received + damaged > item.remaining - item.damaged)
           throw new DomainError(
             409,
             `The receipt exceeds the open quantity for ${item.line.productName}.`,
           );
         item.remaining -= received;
+        item.damaged += damaged;
         const productId = item.line.productId;
+        if (received === 0) return { ...entry, damagedQuantity, productId, unitCost: null, movementId: null };
         const affected = stockByProduct.get(productId) ?? {
           quantity: 0,
           unit: item.line.unit,
         };
         affected.quantity += received;
         stockByProduct.set(productId, affected);
-        return { ...entry, productId, movementId: randomUUID() };
+        return { ...entry, damagedQuantity, productId, unitCost: entry.unitCost ?? item.line.unitCost, movementId: randomUUID() };
       });
       const productIds = [...stockByProduct.keys()].sort();
       for (const productId of productIds) await lockStockProduct(tx, productId);
@@ -502,20 +530,27 @@ router.post(
           receivedAt: now,
         })
         .returning();
-      await tx.insert(inventoryMovementsTable).values(
-        receiptLines.map((line) => ({
+      const movements: Array<typeof inventoryMovementsTable.$inferInsert> = [];
+      for (const line of receiptLines) {
+        if (line.movementId === null) continue;
+        const location = { productId: line.productId, warehouseId: order.warehouseId, binId: line.binId };
+        const costAllocations = await placeStockCosts(tx, location, line.movementId, line.quantity, [
+          acquisitionCostSlice(line.movementId, line.quantity, line.unitCost, now, "purchase_order"),
+        ]);
+        movements.push({
           id: line.movementId,
-          productId: line.productId,
-          warehouseId: order.warehouseId,
-          binId: line.binId,
+          ...location,
           quantity: line.quantity,
           kind: "receipt",
+          acquisitionUnitCost: line.unitCost,
+          costAllocations,
           reason: `Received on ${formatOrderNumber(order.number)}`,
           actorUserId: actor,
           idempotencyKey: `purchase-receipt:${line.movementId}`,
           createdAt: now,
-        })),
-      );
+        });
+      }
+      if (movements.length) await tx.insert(inventoryMovementsTable).values(movements);
       await tx.insert(purchaseReceiptLinesTable).values(
         receiptLines.map((line) => ({
           id: randomUUID(),
@@ -523,6 +558,8 @@ router.post(
           lineId: line.lineId,
           movementId: line.movementId,
           quantity: line.quantity.toFixed(6),
+          damagedQuantity: line.damagedQuantity.toFixed(6),
+          damageNote: line.damageNote || null,
         })),
       );
       for (const product of products)
@@ -534,7 +571,7 @@ router.post(
         );
       const status = [...byLine.values()].every((item) => item.remaining === 0)
         ? "Received"
-        : "Partially received";
+        : movements.length ? "Partially received" : order.status;
       const [saved] = await tx
         .update(purchaseOrdersTable)
         .set({ status, revision: order.revision + 1, updatedAt: now })

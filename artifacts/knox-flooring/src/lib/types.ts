@@ -541,10 +541,12 @@ export interface Task {
 export type CommunicationChannel = 'email' | 'sms';
 export type CommunicationDirection = 'outbound' | 'inbound';
 export type CommunicationStatus =
+  | 'captured'
   | 'queued'
   | 'sent'
   | 'delivered'
   | 'failed'
+  | 'unknown'
   | 'received';
 
 export interface Communication {

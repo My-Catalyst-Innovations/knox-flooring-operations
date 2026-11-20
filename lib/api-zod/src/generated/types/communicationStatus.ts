@@ -10,9 +10,11 @@ export type CommunicationStatus = typeof CommunicationStatus[keyof typeof Commun
 
 
 export const CommunicationStatus = {
+  captured: 'captured',
   queued: 'queued',
   sent: 'sent',
   delivered: 'delivered',
   failed: 'failed',
+  unknown: 'unknown',
   received: 'received',
 } as const;

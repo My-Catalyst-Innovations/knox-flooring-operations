@@ -138,6 +138,15 @@ export const inventoryTransfersTable = pgTable("inventory_transfers", {
   check("inventory_transfers_valid_status", sql`${table.status} IN ('In transit', 'Received')`),
 ]);
 
+export type InventoryCostSlice = {
+  layerId: string | null;
+  sourceMovementId: string;
+  source: "purchase_order" | "stock_receipt" | "catalog" | "historical_issue";
+  acquiredAt: string;
+  quantity: number;
+  unitCost: string;
+};
+
 export const inventoryMovementsTable = pgTable(
   "inventory_movements",
   {
@@ -149,6 +158,8 @@ export const inventoryMovementsTable = pgTable(
     transferId: text("transfer_id").references(() => inventoryTransfersTable.id, { onDelete: "restrict" }),
     returnOfMovementId: text("return_of_movement_id"),
     issueUnitCost: numeric("issue_unit_cost"),
+    acquisitionUnitCost: numeric("acquisition_unit_cost", { precision: 18, scale: 6 }),
+    costAllocations: jsonb("cost_allocations").$type<InventoryCostSlice[]>(),
     quantity: doublePrecision("quantity").notNull(),
     kind: text("kind").notNull(),
     reason: text("reason").notNull(),
@@ -164,6 +175,8 @@ export const inventoryMovementsTable = pgTable(
     index("inventory_movements_bin_warehouse_idx").on(t.binId, t.warehouseId),
     index("inventory_movements_return_of_idx").on(t.returnOfMovementId),
     check("inventory_movements_issue_unit_cost_valid", sql`${t.issueUnitCost} IS NULL OR (${t.kind} = 'consume' AND ${t.jobId} IS NOT NULL AND ${t.issueUnitCost} >= 0 AND ${t.issueUnitCost} < 'Infinity'::numeric)`),
+    check("inventory_movements_acquisition_cost_valid", sql`${t.acquisitionUnitCost} IS NULL OR (${t.kind} = 'receipt' AND ${t.acquisitionUnitCost} >= 0 AND ${t.acquisitionUnitCost} < 'Infinity'::numeric)`),
+    check("inventory_movements_cost_allocations_valid", sql`${t.costAllocations} IS NULL OR jsonb_typeof(${t.costAllocations}) = 'array'`),
     check("inventory_movements_bin_requires_warehouse", sql`${t.binId} IS NULL OR ${t.warehouseId} IS NOT NULL`),
     foreignKey({ columns: [t.binId, t.warehouseId], foreignColumns: [warehouseBinsTable.id, warehouseBinsTable.warehouseId], name: "inventory_movements_bin_warehouse_fk" }).onDelete("restrict"),
     foreignKey({

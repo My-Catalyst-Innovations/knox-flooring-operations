@@ -279,6 +279,7 @@ export function LeadTabs({ lead, section }: LeadTabsProps) {
 
       <TabsContent value="Documents" className="mt-4">
         <DocumentsTab
+          leadId={lead.id}
           documents={lead.documents ?? []}
           onSave={(documents) => save({ documents })}
         />

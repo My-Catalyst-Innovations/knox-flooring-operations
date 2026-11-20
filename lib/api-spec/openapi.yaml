@@ -382,7 +382,7 @@ paths:
               $ref: "#/components/schemas/SendEmailRequest"
       responses:
         "201":
-          description: Sent and logged communication
+          description: Logged communication with submission, capture, or failure status
           content:
             application/json:
               schema:
@@ -393,14 +393,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "502":
-          description: Email provider error
+        "200":
+          description: Existing communication for the same send request
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
-        "503":
-          description: Email provider not configured
+                $ref: "#/components/schemas/Communication"
+        "409":
+          description: Send request identifier already used for a different message
           content:
             application/json:
               schema:
@@ -418,7 +418,7 @@ paths:
               $ref: "#/components/schemas/SendSmsRequest"
       responses:
         "201":
-          description: Sent and logged communication
+          description: Logged communication with submission, capture, or failure status
           content:
             application/json:
               schema:
@@ -429,14 +429,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "502":
-          description: SMS provider error
+        "200":
+          description: Existing communication for the same send request
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
-        "503":
-          description: SMS provider not configured
+                $ref: "#/components/schemas/Communication"
+        "409":
+          description: Send request identifier already used for a different message
           content:
             application/json:
               schema:
@@ -5076,7 +5076,7 @@ components:
       enum: [ outbound, inbound ]
     CommunicationStatus:
       type: string
-      enum: [ queued, sent, delivered, failed, received ]
+      enum: [ captured, queued, sent, delivered, failed, unknown, received ]
     Communication:
       type: object
       required:
@@ -5129,6 +5129,9 @@ components:
         - subject
         - body
       properties:
+        idempotencyKey:
+          type: string
+          description: Reuse for retries of one immutable message. Required for external delivery.
         to:
           type: string
         subject:
@@ -5147,6 +5150,9 @@ components:
         - to
         - body
       properties:
+        idempotencyKey:
+          type: string
+          description: Reuse for retries of one immutable message. Required for external delivery.
         to:
           type: string
         body:

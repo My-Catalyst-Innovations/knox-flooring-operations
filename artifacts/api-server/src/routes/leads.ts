@@ -17,6 +17,7 @@ import { ensureCustomer, validateCustomerLinks } from "../lib/estimate-service";
 import { domainRoute } from "../lib/domain-http";
 import { convertLead } from "../lib/conversions";
 import { assertRevision, DomainError } from "../lib/operations-rules";
+import { assertOwnedFile } from "../lib/file-store";
 
 const router: IRouter = Router();
 
@@ -34,6 +35,7 @@ router.post(
       res.status(400).json({ error: parsed.error.message });
       return;
     }
+    if (parsed.data.documents?.length) throw new DomainError(400, "Create the lead before attaching files.");
 
     const now = new Date().toISOString();
 
@@ -94,6 +96,12 @@ router.patch(
         .for("update");
       if (!current) throw new DomainError(404, "Lead not found");
       assertRevision(current.revision, revision);
+      if (data.documents) {
+        const previousPaths = new Set(current.documents.map((document) => document.objectPath));
+        for (const path of new Set(data.documents.map((document) => document.objectPath))) {
+          if (!previousPaths.has(path)) await assertOwnedFile(path, ["lead-document"], req.auth!.userId, current.id);
+        }
+      }
       if (
         data.convertedJobId !== undefined &&
         data.convertedJobId !== current.convertedJobId

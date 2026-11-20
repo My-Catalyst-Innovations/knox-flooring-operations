@@ -1,15 +1,18 @@
 import { Router, type IRouter } from "express";
 import { randomUUID } from "node:crypto";
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import { db, passwordResetTokensTable, sessionsTable, usersTable } from "@workspace/db";
 import { audit, createSession, hashPassword, hashToken, newToken, normalizeEmail, SESSION_COOKIE, SESSION_TTL_MS, verifyPassword } from "../lib/auth";
 import { requireAuth } from "../middlewares/auth";
+import { availableCommunicationProviders, CommsError, emailAddress, passwordResetLink, sendPasswordResetEmail } from "../lib/comms";
 import staffRouter from "./staff";
 
 const router: IRouter = Router();
 router.use(staffRouter);
 const cookieOptions = { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax" as const, path: "/", maxAge: SESSION_TTL_MS };
 const attempts = new Map<string, { count: number; resetAt: number }>();
+const resetAttempts = new Map<string, { count: number; resetAt: number }>();
+const resetWindow = 60 * 60_000;
 
 export function isDemoAccessEnabled() {
   return process.env.DEMO_ACCESS_ENABLED === "true";
@@ -98,28 +101,67 @@ router.post("/auth/logout", requireAuth, async (req, res) => {
   res.clearCookie(SESSION_COOKIE, cookieOptions); await audit("auth.logout", { userId: req.auth!.userId, ip: req.ip }); res.status(204).end();
 });
 
-router.post("/auth/password/forgot", async (req, res) => {
-  const email = normalizeEmail(String(req.body?.email ?? ""));
+function allowResetRequest(ip: string, now: number) {
+  let entry = resetAttempts.get(ip);
+  if (!entry || entry.resetAt <= now) {
+    if (resetAttempts.size >= 5000) {
+      for (const [key, value] of resetAttempts) if (value.resetAt <= now) resetAttempts.delete(key);
+      if (resetAttempts.size >= 5000) return false;
+    }
+    entry = { count: 0, resetAt: now + resetWindow };
+    resetAttempts.set(ip, entry);
+  }
+  if (entry.count >= 15) return false;
+  entry.count += 1;
+  return true;
+}
+
+async function requestPasswordReset(email: string, ip: string) {
+  const base = process.env.APP_BASE_URL;
+  const now = new Date();
+  if (process.env.DEMO_MODE !== "false" || process.env.PASSWORD_RESET_EMAIL_ENABLED !== "true" ||
+    !availableCommunicationProviders().email || !passwordResetLink(base, "") || !allowResetRequest(ip, now.getTime())) return;
   const reset = await db.transaction(async (tx) => {
     const [user] = await tx.select({ id: usersTable.id }).from(usersTable)
       .where(and(eq(usersTable.email, email), eq(usersTable.active, true))).for("update");
     if (!user) return null;
-    const token = newToken(); const now = new Date();
-    await tx.insert(passwordResetTokensTable).values({ id: randomUUID(), userId: user.id, tokenHash: hashToken(token), expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(), createdAt: now.toISOString() });
-    return { userId: user.id, token };
+    const recent = await tx.select({ createdAt: passwordResetTokensTable.createdAt }).from(passwordResetTokensTable)
+      .where(and(eq(passwordResetTokensTable.userId, user.id), gt(passwordResetTokensTable.createdAt, new Date(now.getTime() - resetWindow).toISOString())))
+      .orderBy(desc(passwordResetTokensTable.createdAt)).limit(3);
+    if (recent.length >= 3 || (recent[0] && now.getTime() - Date.parse(recent[0].createdAt) < 60_000)) return null;
+    const id = randomUUID();
+    const token = newToken();
+    await tx.insert(passwordResetTokensTable).values({ id, userId: user.id, tokenHash: hashToken(token), expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(), createdAt: now.toISOString() });
+    await audit("auth.password_reset_requested", { entityType: "user", entityId: user.id, ip }, tx);
+    return { id, userId: user.id, token };
   });
-  if (reset) {
-    if (process.env.RESEND_API_KEY && process.env.APP_BASE_URL) {
-      await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: process.env.RESEND_FROM_EMAIL ?? "Knox Ops <noreply@knoxflooring.com>", to: [email], subject: "Reset your Knox Ops password", html: `<p>A password reset was requested for Knox Ops.</p><p><a href="${process.env.APP_BASE_URL}/welcome?reset=${encodeURIComponent(reset.token)}">Reset password</a></p><p>This link expires in 30 minutes.</p>` }) });
-    }
-    await audit("auth.password_reset_requested", { entityType: "user", entityId: reset.userId, ip: req.ip });
+  if (!reset) return;
+  const link = passwordResetLink(base, reset.token);
+  if (!link) return;
+  let action = "auth.password_reset_submitted";
+  try {
+    await sendPasswordResetEmail(email, link, reset.id);
+  } catch (error) {
+    action = error instanceof CommsError && !error.ambiguous
+      ? "auth.password_reset_submission_failed" : "auth.password_reset_submission_unconfirmed";
   }
-  res.status(202).json({ message: "If that account exists, a reset email has been sent." });
+  await audit(action, { entityType: "user", entityId: reset.userId, ip });
+}
+
+router.post("/auth/password/forgot", (req, res) => {
+  const email = typeof req.body?.email === "string" ? emailAddress(req.body.email) : null;
+  res.setHeader("Cache-Control", "no-store");
+  res.status(202).json({ message: "If an eligible account matches, you’ll receive a password reset link." });
+  if (email) void requestPasswordReset(email, req.ip ?? "").catch(() => req.log.error("Password reset request could not be completed"));
 });
 
 router.post("/auth/password/reset", async (req, res) => {
-  const token = String(req.body?.token ?? ""); const password = String(req.body?.password ?? "");
+  const token = typeof req.body?.token === "string" ? req.body.token : "";
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  res.setHeader("Cache-Control", "no-store");
   if (password.length < 12) { res.status(400).json({ error: "Password must be at least 12 characters" }); return; }
+  if (password.length > 256) { res.status(400).json({ error: "Password must be at most 256 characters" }); return; }
+  if (!/^[a-zA-Z0-9_-]{43}$/.test(token)) { res.status(400).json({ error: "Reset link is invalid or expired" }); return; }
   const tokenHash = hashToken(token);
   const validReset = (now: string) => and(eq(passwordResetTokensTable.tokenHash, tokenHash), gt(passwordResetTokensTable.expiresAt, now), isNull(passwordResetTokensTable.usedAt));
   const [reset] = await db.select().from(passwordResetTokensTable).where(validReset(new Date().toISOString())).limit(1);
@@ -132,6 +174,8 @@ router.post("/auth/password/reset", async (req, res) => {
     const [claimed] = await tx.update(passwordResetTokensTable).set({ usedAt: now })
       .where(and(eq(passwordResetTokensTable.id, reset.id), validReset(now))).returning({ id: passwordResetTokensTable.id });
     if (!claimed) return false;
+    await tx.update(passwordResetTokensTable).set({ usedAt: now })
+      .where(and(eq(passwordResetTokensTable.userId, reset.userId), isNull(passwordResetTokensTable.usedAt)));
     await tx.update(usersTable).set({ passwordHash, updatedAt: now }).where(eq(usersTable.id, reset.userId));
     await tx.delete(sessionsTable).where(eq(sessionsTable.userId, reset.userId));
     await audit("auth.password_reset", { entityType: "user", entityId: reset.userId, ip: req.ip }, tx);

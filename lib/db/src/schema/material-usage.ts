@@ -1,5 +1,5 @@
 import { jobsTable } from "./jobs";
-import { index, pgTable, text, real } from "drizzle-orm/pg-core";
+import { doublePrecision, index, pgTable, text } from "drizzle-orm/pg-core";
 
 export const materialUsageTable = pgTable("material_usage", {
   id: text("id").primaryKey(),
@@ -8,8 +8,8 @@ export const materialUsageTable = pgTable("material_usage", {
   movementId: text("movement_id"),
   callbackId: text("callback_id"),
   material: text("material").notNull(),
-  quantity: real("quantity").notNull().default(0),
-  cost: real("cost").notNull().default(0),
+  quantity: doublePrecision("quantity").notNull().default(0),
+  cost: doublePrecision("cost").notNull().default(0),
   vendorName: text("vendor_name").notNull().default(""),
   vendorExternalId: text("vendor_external_id"),
   expenseAccountExternalId: text("expense_account_external_id"),

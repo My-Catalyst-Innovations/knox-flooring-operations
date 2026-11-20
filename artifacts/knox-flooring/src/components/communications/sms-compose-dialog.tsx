@@ -27,6 +27,7 @@ interface SmsComposeDialogProps {
     to: string;
     body: string;
     customerName?: string;
+    idempotencyKey: string;
   }) => Promise<Communication>;
 }
 
@@ -45,6 +46,7 @@ export function SmsComposeDialog({
   const [body, setBody] = useState(defaultBody);
   const [sending, setSending] = useState(false);
   const pending = useRef(false);
+  const attempt = useRef<{ fingerprint: string; key: string }>(null);
   const formId = useId();
 
   useEffect(() => {
@@ -69,12 +71,18 @@ export function SmsComposeDialog({
     pending.current = true;
     setSending(true);
     try {
-      const result = await onSend({ to: to.trim(), body, customerName });
-      toast({ title: communicationStatus(result) });
-      onOpenChange(false);
+      const input = { to: to.trim(), body, customerName };
+      const fingerprint = JSON.stringify(input);
+      if (attempt.current?.fingerprint !== fingerprint) attempt.current = { fingerprint, key: crypto.randomUUID() };
+      const result = await onSend({ ...input, idempotencyKey: attempt.current.key });
+      const failed = result.status === "failed";
+      const unconfirmed = result.status === "unknown" || (result.status === "queued" && !result.providerMessageId);
+      toast({ title: communicationStatus(result), description: result.errorMessage ?? undefined, ...(failed || unconfirmed ? { variant: "destructive" as const } : {}) });
+      if (!unconfirmed) attempt.current = null;
+      if (!failed) onOpenChange(false);
     } catch (err) {
       toast({
-        title: "Text could not be sent",
+        title: "Text submission not confirmed",
         description: err instanceof Error ? err.message : undefined,
         variant: "destructive",
       });

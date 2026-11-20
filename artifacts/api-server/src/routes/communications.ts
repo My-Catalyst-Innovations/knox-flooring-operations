@@ -1,11 +1,13 @@
-import { Router, type IRouter } from "express";
-import { randomUUID } from "node:crypto";
+import { Router, type IRouter, type Request } from "express";
+import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import {
   db,
   communicationsTable,
   demoOutboxTable,
+  type CommunicationChannel,
   type CommunicationInsert,
+  type CommunicationRow,
 } from "@workspace/db";
 import {
   ListCommunicationsQueryParams,
@@ -15,198 +17,244 @@ import {
   SendSmsBody,
 } from "@workspace/api-zod";
 import { stripNulls } from "../lib/strip-nulls";
-import { CommsError, sendEmail, sendSms } from "../lib/comms";
+import {
+  canSendCommunication,
+  CommsError,
+  emailAddress,
+  sendEmail,
+  sendSms,
+  smsNumber,
+} from "../lib/comms";
 import { customerKey } from "../lib/customer-key";
+import { domainRoute, parse } from "../lib/domain-http";
+import { DomainError } from "../lib/operations-rules";
 
 const router: IRouter = Router();
 
-function canDeliverExternally(recipient: string): boolean {
-  if (process.env.DEMO_MODE !== "false") return false;
-  const allowed = (process.env.COMMS_ALLOWLIST ?? "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
-  return allowed.includes(recipient.trim().toLowerCase());
+function presentCommunication(row: CommunicationRow) {
+  if (
+    row.status === "queued" &&
+    !row.providerMessageId &&
+    Date.now() - Date.parse(row.createdAt) > 60_000
+  ) {
+    return stripNulls({
+      ...row,
+      status: "unknown",
+      errorMessage:
+        "The provider did not confirm the submission. Check the provider before sending again.",
+    });
+  }
+  return stripNulls(row);
 }
 
-async function captureDemoMessage(input: { channel: "email" | "sms"; recipient: string; subject?: string; body: string; userId?: string }) {
-  const id = randomUUID();
-  await db.insert(demoOutboxTable).values({ id, channel: input.channel, recipient: input.recipient, subject: input.subject, body: input.body, status: "captured", externalDelivery: false, createdBy: input.userId, createdAt: new Date().toISOString() });
-  return id;
-}
+router.get(
+  "/communications",
+  domainRoute(async (req, res) => {
+    const query = parse(ListCommunicationsQueryParams, req.query);
+    const filters = [];
+    if (query.leadId)
+      filters.push(eq(communicationsTable.leadId, query.leadId));
+    if (query.customerKey)
+      filters.push(eq(communicationsTable.customerKey, query.customerKey));
+    const rows = await db
+      .select()
+      .from(communicationsTable)
+      .where(filters.length ? and(...filters) : undefined)
+      .orderBy(desc(communicationsTable.createdAt));
+    res.json(ListCommunicationsResponse.parse(rows.map(presentCommunication)));
+  }),
+);
 
-router.get("/communications", async (req, res): Promise<void> => {
-  const query = ListCommunicationsQueryParams.safeParse(req.query);
-  if (!query.success) {
-    res.status(400).json({ error: query.error.message });
-    return;
-  }
-
-  const filters = [];
-  if (query.data.leadId) {
-    filters.push(eq(communicationsTable.leadId, query.data.leadId));
-  }
-  if (query.data.customerKey) {
-    filters.push(eq(communicationsTable.customerKey, query.data.customerKey));
-  }
-
-  const rows = await db
-    .select()
-    .from(communicationsTable)
-    .where(filters.length ? and(...filters) : undefined)
-    .orderBy(desc(communicationsTable.createdAt));
-
-  res.json(ListCommunicationsResponse.parse(rows.map(stripNulls)));
-});
-
-router.post("/communications/email", async (req, res): Promise<void> => {
-  const parsed = SendEmailBody.safeParse(req.body);
-  if (!parsed.success) {
-    req.log.warn({ errors: parsed.error.message }, "Invalid send-email body");
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
-
-  const { to, subject, body, leadId, customerKey: ckey, customerName } =
-    parsed.data;
-  const resolvedKey =
-    ckey ?? (customerName ? customerKey(customerName) : undefined);
-
-  try {
-    if (!canDeliverExternally(to)) {
-      const demoId = await captureDemoMessage({ channel: "email", recipient: to, subject, body, userId: req.auth?.userId });
-      const row = await persist({ leadId, customerKey: resolvedKey, customerName: customerName ?? "", channel: "email", direction: "outbound", toAddress: to, fromAddress: "Demo Outbox", subject, body, status: "sent", providerMessageId: `demo:${demoId}` });
-      res.status(201).json(ListCommunicationsResponseItem.parse(stripNulls(row))); return;
-    }
-    const result = await sendEmail({ to, subject, body });
-    const row = await persist({
-      leadId,
-      customerKey: resolvedKey,
+function messageFields(req: Request, channel: CommunicationChannel) {
+  const input =
+    channel === "email"
+      ? parse(SendEmailBody, req.body)
+      : parse(SendSmsBody, req.body);
+  const recipient =
+    channel === "email" ? emailAddress(input.to) : smsNumber(input.to);
+  if (!recipient)
+    throw new DomainError(
+      400,
+      channel === "email"
+        ? "Enter a valid email address for one recipient."
+        : "Enter a valid phone number with a country code, or a ten-digit US number.",
+    );
+  const subject =
+    "subject" in input && typeof input.subject === "string"
+      ? input.subject.trim()
+      : "";
+  const rawSubject =
+    "subject" in input && typeof input.subject === "string"
+      ? input.subject
+      : "";
+  if (
+    channel === "email" &&
+    (!subject || subject.length > 512 || /[\r\n]/.test(rawSubject))
+  )
+    throw new DomainError(
+      400,
+      "Enter a one-line email subject of no more than 512 characters.",
+    );
+  if (
+    !input.body.trim() ||
+    input.body.length > (channel === "email" ? 12_000 : 1600)
+  )
+    throw new DomainError(
+      400,
+      "Enter a message within the channel’s length limit.",
+    );
+  const { leadId, customerName, customerKey: explicitCustomerKey } = input;
+  const capture = !canSendCommunication(channel, recipient);
+  const requestKey = input.idempotencyKey;
+  if (requestKey !== undefined && !/^[a-zA-Z0-9._:-]{8,128}$/.test(requestKey))
+    throw new DomainError(400, "Invalid send request identifier.");
+  if (!capture && !requestKey)
+    throw new DomainError(
+      400,
+      "A send request identifier is required. Reload the app and try again.",
+    );
+  const id = requestKey
+    ? createHash("sha256")
+        .update(JSON.stringify([req.auth!.userId, channel, requestKey]))
+        .digest("hex")
+    : randomUUID();
+  return {
+    id,
+    capture,
+    fields: {
+      leadId: leadId || null,
+      customerKey:
+        explicitCustomerKey ||
+        (customerName ? customerKey(customerName) : null),
       customerName: customerName ?? "",
-      channel: "email",
-      direction: "outbound",
-      toAddress: to,
-      fromAddress: result.fromAddress,
+      channel,
+      direction: "outbound" as const,
+      toAddress: recipient,
       subject,
-      body,
-      status: "sent",
-      providerMessageId: result.providerMessageId || null,
-    });
-    res.status(201).json(ListCommunicationsResponseItem.parse(stripNulls(row)));
-  } catch (err) {
-    await logFailedSend(err, {
-      leadId,
-      customerKey: resolvedKey,
-      customerName: customerName ?? "",
-      channel: "email",
-      toAddress: to,
-      fromAddress: "",
-      subject,
-      body,
-    });
-    handleSendError(err, res, req.log.error.bind(req.log));
-  }
-});
-
-router.post("/communications/sms", async (req, res): Promise<void> => {
-  const parsed = SendSmsBody.safeParse(req.body);
-  if (!parsed.success) {
-    req.log.warn({ errors: parsed.error.message }, "Invalid send-sms body");
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
-
-  const { to, body, leadId, customerKey: ckey, customerName } = parsed.data;
-  const resolvedKey =
-    ckey ?? (customerName ? customerKey(customerName) : undefined);
-
-  try {
-    if (!canDeliverExternally(to)) {
-      const demoId = await captureDemoMessage({ channel: "sms", recipient: to, body, userId: req.auth?.userId });
-      const row = await persist({ leadId, customerKey: resolvedKey, customerName: customerName ?? "", channel: "sms", direction: "outbound", toAddress: to, fromAddress: "Demo Outbox", subject: "", body, status: "sent", providerMessageId: `demo:${demoId}` });
-      res.status(201).json(ListCommunicationsResponseItem.parse(stripNulls(row))); return;
-    }
-    const result = await sendSms({ to, body });
-    const row = await persist({
-      leadId,
-      customerKey: resolvedKey,
-      customerName: customerName ?? "",
-      channel: "sms",
-      direction: "outbound",
-      toAddress: to,
-      fromAddress: result.fromAddress,
-      subject: "",
-      body,
-      status: "sent",
-      providerMessageId: result.providerMessageId || null,
-    });
-    res.status(201).json(ListCommunicationsResponseItem.parse(stripNulls(row)));
-  } catch (err) {
-    await logFailedSend(err, {
-      leadId,
-      customerKey: resolvedKey,
-      customerName: customerName ?? "",
-      channel: "sms",
-      toAddress: to,
-      fromAddress: "",
-      subject: "",
-      body,
-    });
-    handleSendError(err, res, req.log.error.bind(req.log));
-  }
-});
-
-async function persist(
-  values: Omit<CommunicationInsert, "id" | "createdAt">,
-) {
-  const [row] = await db
-    .insert(communicationsTable)
-    .values({
-      ...values,
-      id: randomUUID(),
-      createdAt: new Date().toISOString(),
-    })
-    .returning();
-  return row;
+      body: input.body,
+    },
+  };
 }
 
-// Records a failed outbound attempt so it shows up in the history. Only
-// genuine send attempts (provider/connectivity errors) are logged; plain
-// bad-input (400) errors are not persisted. Persistence failures here are
-// swallowed so the original send error is still returned to the caller.
-async function logFailedSend(
-  err: unknown,
-  values: Omit<
+function matchesFields(
+  row: CommunicationRow,
+  fields: Pick<
     CommunicationInsert,
-    "id" | "createdAt" | "direction" | "status" | "errorMessage"
+    | "leadId"
+    | "customerKey"
+    | "customerName"
+    | "channel"
+    | "direction"
+    | "toAddress"
+    | "subject"
+    | "body"
   >,
-): Promise<void> {
-  if (err instanceof CommsError && err.status === 400) return;
-  const errorMessage =
-    err instanceof Error ? err.message : "Unknown send error";
-  try {
-    await persist({
-      ...values,
-      direction: "outbound",
-      status: "failed",
-      errorMessage,
-    });
-  } catch {
-    // Best effort — never mask the original send error.
-  }
+) {
+  return (
+    row.leadId === fields.leadId &&
+    row.customerKey === fields.customerKey &&
+    row.customerName === fields.customerName &&
+    row.channel === fields.channel &&
+    row.direction === fields.direction &&
+    row.toAddress === fields.toAddress &&
+    row.subject === fields.subject &&
+    row.body === fields.body
+  );
 }
 
-function handleSendError(
-  err: unknown,
-  res: import("express").Response,
-  log: (obj: unknown, msg?: string) => void,
-): void {
-  if (err instanceof CommsError) {
-    log({ err: err.message, status: err.status }, "Communication send failed");
-    res.status(err.status).json({ error: err.message });
-    return;
-  }
-  log({ err }, "Unexpected communication send error");
-  res
-    .status(500)
-    .json({ error: "Something went wrong while sending the message." });
+function submit(channel: CommunicationChannel) {
+  return domainRoute(async (req, res) => {
+    const { id, capture, fields } = messageFields(req, channel);
+    const now = new Date().toISOString();
+    const claimed = await db.transaction(async (tx) => {
+      const [first] = await tx
+        .insert(communicationsTable)
+        .values({
+          id,
+          ...fields,
+          fromAddress: capture ? "Demo Outbox" : "",
+          status: capture ? "captured" : "queued",
+          providerMessageId: capture ? `demo:${id}` : null,
+          createdAt: now,
+        })
+        .onConflictDoNothing({ target: communicationsTable.id })
+        .returning();
+      if (!first) return null;
+      if (capture)
+        await tx.insert(demoOutboxTable).values({
+          id,
+          channel,
+          recipient: fields.toAddress,
+          subject: fields.subject,
+          body: fields.body,
+          status: "captured",
+          externalDelivery: false,
+          createdBy: req.auth!.userId,
+          createdAt: now,
+        });
+      return first;
+    });
+    if (!claimed) {
+      const [previous] = await db
+        .select()
+        .from(communicationsTable)
+        .where(eq(communicationsTable.id, id));
+      if (!previous || !matchesFields(previous, fields))
+        throw new DomainError(
+          409,
+          "This send request was already used for a different message.",
+        );
+      res.json(
+        ListCommunicationsResponseItem.parse(presentCommunication(previous)),
+      );
+      return;
+    }
+    if (capture) {
+      res
+        .status(201)
+        .json(ListCommunicationsResponseItem.parse(stripNulls(claimed)));
+      return;
+    }
+    let outcome: Pick<
+      CommunicationInsert,
+      "status" | "providerMessageId" | "fromAddress" | "errorMessage"
+    >;
+    try {
+      const response =
+        channel === "email"
+          ? await sendEmail({
+              to: fields.toAddress,
+              subject: fields.subject,
+              body: fields.body,
+              idempotencyKey: `outbound/${id}`,
+            })
+          : await sendSms({ to: fields.toAddress, body: fields.body });
+      outcome = response;
+    } catch (error) {
+      outcome =
+        error instanceof CommsError
+          ? {
+              status: error.ambiguous ? "unknown" : "failed",
+              errorMessage: error.message,
+            }
+          : {
+              status: "unknown",
+              errorMessage:
+                "The provider did not confirm the submission. Check the provider before sending again.",
+            };
+    }
+    const [recorded] = await db
+      .update(communicationsTable)
+      .set(outcome)
+      .where(eq(communicationsTable.id, id))
+      .returning();
+    res
+      .status(201)
+      .json(ListCommunicationsResponseItem.parse(stripNulls(recorded)));
+  });
 }
+
+router.post("/communications/email", submit("email"));
+router.post("/communications/sms", submit("sms"));
 
 export default router;

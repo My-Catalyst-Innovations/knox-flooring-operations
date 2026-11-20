@@ -7,6 +7,8 @@
  */
 
 export interface SendEmailRequest {
+  /** Reuse for retries of one immutable message. Required for external delivery. */
+  idempotencyKey?: string;
   to: string;
   subject: string;
   body: string;

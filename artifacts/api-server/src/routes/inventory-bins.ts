@@ -11,6 +11,7 @@ import {
 import { requireRole } from "../middlewares/auth";
 import { domainRoute, parse } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
+import { placeStockCosts, withdrawStockCosts } from "../lib/inventory-costing";
 import {
   assertBinWithdrawal,
   binBalances,
@@ -187,20 +188,26 @@ router.post(
         createdAt: new Date().toISOString(),
       };
       const moveId = randomUUID();
+      const incomingId = randomUUID();
+      const location = { productId: data.productId, warehouseId: data.warehouseId };
+      const costs = await withdrawStockCosts(tx, { ...location, binId: data.fromBinId }, data.quantity);
+      const incoming = await placeStockCosts(tx, { ...location, binId: data.toBinId }, incomingId, data.quantity, costs.slices);
       await tx.insert(inventoryMovementsTable).values([
         {
           ...common,
           id: moveId,
           binId: data.fromBinId,
           quantity: -data.quantity,
+          costAllocations: costs.slices.length ? costs.slices : null,
           kind: "bin_out",
           idempotencyKey: outKey,
         },
         {
           ...common,
-          id: randomUUID(),
+          id: incomingId,
           binId: data.toBinId,
           quantity: data.quantity,
+          costAllocations: incoming?.length ? incoming : null,
           kind: "bin_in",
           idempotencyKey: inKey,
         },

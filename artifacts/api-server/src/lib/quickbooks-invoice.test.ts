@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { GetPublicJobResponse, UpdateInvoiceBody } from "@workspace/api-zod";
-import { assertQuickBooksCompanyLink, invoiceServiceMappingKey, isActiveQuickBooksServiceItem, quickBooksInvoiceLines } from "./quickbooks-invoice";
+import { assertQuickBooksCompanyLink, invoiceServiceMappingKey, isActiveQuickBooksServiceItem, quickBooksInvoiceLines, quickBooksInvoicePaymentState } from "./quickbooks-invoice";
 
 const line = {
   id: "line",
@@ -110,5 +110,48 @@ describe("QuickBooks invoice lines", () => {
       invoiceServiceMappingKey(company, "Add-on"),
     ];
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("QuickBooks invoice payment import", () => {
+  const now = new Date("2026-11-21T02:00:00.000Z"); // Still November 20 in Knoxville.
+  const paidAt = "2026-11-18T16:30:00.000Z";
+  const paid = { status: "Paid", dueDate: "2026-11-20", paidAt, depositAmount: 0, refundedAmount: 0 };
+
+  it("reopens a previously paid or partial invoice when QuickBooks returns the full balance", () => {
+    const remote = { TotalAmt: 100, Balance: 100 };
+    expect(quickBooksInvoicePaymentState(paid, remote, now)).toEqual({
+      total: 100, paidAmount: 0, balanceAmount: 100, status: "Sent", paidAt: null,
+    });
+    expect(quickBooksInvoicePaymentState({ ...paid, status: "Partial", dueDate: "2026-11-19" }, remote, now))
+      .toMatchObject({ status: "Overdue", paidAt: null, paidAmount: 0, balanceAmount: 100 });
+  });
+
+  it("clears the paid date on a partial reversal and retains it on repeated fully paid updates", () => {
+    expect(quickBooksInvoicePaymentState(paid, { TotalAmt: 100, Balance: 30 }, now))
+      .toMatchObject({ status: "Partial", paidAt: null, paidAmount: 70, balanceAmount: 30 });
+    expect(quickBooksInvoicePaymentState(paid, { TotalAmt: 100, Balance: 0 }, now))
+      .toMatchObject({ status: "Paid", paidAt });
+  });
+
+  it.each([
+    { TotalAmt: 100 }, { TotalAmt: 100, Balance: null }, { TotalAmt: 100, Balance: "0" },
+    { TotalAmt: 100, Balance: -1 }, { TotalAmt: 100, Balance: NaN }, { TotalAmt: 100, Balance: 101 },
+    { Balance: 0 }, { TotalAmt: 0, Balance: 0 },
+  ])("leaves local amounts intact for an incomplete or invalid snapshot %o", (remote) => {
+    expect(quickBooksInvoicePaymentState(paid, remote, now)).toBeUndefined();
+  });
+
+  it("preserves manually settled records and does not treat a linked credit or refund as cash", () => {
+    for (const status of ["Credited", "Refunded", "Voided"]) {
+      expect(quickBooksInvoicePaymentState({ ...paid, status }, { TotalAmt: 100, Balance: 100 }, now)).toBeUndefined();
+    }
+    expect(quickBooksInvoicePaymentState({ ...paid, refundedAmount: 10 }, { TotalAmt: 100, Balance: 0 }, now)).toBeUndefined();
+    expect(quickBooksInvoicePaymentState(paid, { TotalAmt: 100, Balance: 0, LinkedTxn: [{ TxnType: "CreditMemo" }] }, now)).toBeUndefined();
+  });
+
+  it("preserves original totals while closing an explicitly voided QuickBooks invoice", () => {
+    expect(quickBooksInvoicePaymentState(paid, { TotalAmt: 0, Balance: 0, PrivateNote: "Voided\nOld memo" }, now))
+      .toEqual({ status: "Voided", paidAmount: 0, balanceAmount: 0, paidAt: null });
   });
 });
