@@ -15,6 +15,13 @@ import { Loader2, Printer } from "lucide-react";
 import { money, formatDate } from "@/lib/portal";
 import { invoiceBalance } from "@/lib/invoices";
 import { ClientBrandScope, CompanyBrand } from "@/components/layout/Brand";
+import { invoiceLineAmount } from "@workspace/domain";
+
+const unitPriceFormat = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 8,
+});
 
 export default function PublicPrint() {
   const params = useParams();
@@ -271,11 +278,11 @@ function InvoiceDoc({
                 </div>
                 <div className="flex justify-between gap-3">
                   <dt className="text-muted-foreground">Unit price</dt>
-                  <dd>{money(li.unitPrice)}</dd>
+                  <dd>{unitPriceFormat.format(li.unitPrice)}</dd>
                 </div>
                 <div className="flex justify-between gap-3 font-medium">
                   <dt>Amount</dt>
-                  <dd>{money(li.quantity * li.unitPrice)}</dd>
+                  <dd>{money(invoiceLineAmount(li))}</dd>
                 </div>
               </dl>
             </div>
@@ -304,10 +311,10 @@ function InvoiceDoc({
                   {li.quantity}
                 </td>
                 <td className="py-2 pl-4 whitespace-nowrap text-right text-muted-foreground">
-                  {money(li.unitPrice)}
+                  {unitPriceFormat.format(li.unitPrice)}
                 </td>
                 <td className="py-2 pl-4 whitespace-nowrap text-right text-foreground">
-                  {money(li.quantity * li.unitPrice)}
+                  {money(invoiceLineAmount(li))}
                 </td>
               </tr>
             ))}

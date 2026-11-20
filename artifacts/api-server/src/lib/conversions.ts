@@ -17,6 +17,7 @@ import {
 import type { EstimateSnapshot } from "@workspace/domain";
 import { ensureCustomer, type Transaction } from "./estimate-service";
 import { assertRevision, DomainError } from "./operations-rules";
+import { acceptedQuoteInvoice } from "./quote-lines";
 
 export async function nextDocumentNumber(
   tx: Transaction,
@@ -375,21 +376,8 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
       customerId,
       jobNumber: job.jobNumber,
       customerName: proposal.customerName,
-      lineItems: [
-        {
-          id: randomUUID(),
-          description:
-            proposal.scopeOfWork || `${proposal.flooringType} installation`,
-          category: "Materials",
-          quantity: 1,
-          unitPrice: proposal.estimatedPrice,
-        },
-      ],
-      subtotal: proposal.estimatedPrice,
-      taxableAmount: proposal.estimatedPrice,
-      total: proposal.estimatedPrice,
+      ...acceptedQuoteInvoice(proposal),
       depositAmount: 0,
-      balanceAmount: proposal.estimatedPrice,
       status: "Draft",
       issueDate: now.slice(0, 10),
       dueDate: "",

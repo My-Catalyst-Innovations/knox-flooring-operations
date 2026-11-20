@@ -1,10 +1,12 @@
-import { domainRoute } from "../lib/domain-http";
+import { domainRoute, parse } from "../lib/domain-http";
 import { DomainError, assertRevision } from "../lib/operations-rules";
 import { requireRole } from "../middlewares/auth";
 import { Router, type IRouter } from "express";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { db, productsTable, inventoryMovementsTable, inventoryReservationsTable, jobMaterialsTable, materialUsageTable, type ProductInsert } from "@workspace/db";
+import { z } from "zod";
+import { catalogImportMaxBytes } from "@workspace/domain";
+import { db, productsTable, inventoryMovementsTable, inventoryReservationsTable, jobMaterialsTable, materialUsageTable, quickbooksSyncJobsTable, warehousesTable, type ProductInsert } from "@workspace/db";
 import {
   ListProductsResponse,
   CreateProductBody,
@@ -14,9 +16,34 @@ import {
   DeleteProductParams,
 } from "@workspace/api-zod";
 import { stripNulls } from "../lib/strip-nulls";
-import { queueQuickBooksReview } from "../lib/quickbooks-queue";
+import { queueQuickBooksReview, quickBooksReviewRow } from "../lib/quickbooks-queue";
+import { catalogKey, catalogSkuLock, planCatalogImport } from "../lib/catalog-import";
 
 const router: IRouter = Router();
+const importCsv = z.string().min(1).max(catalogImportMaxBytes).refine((value) => Buffer.byteLength(value, "utf8") <= catalogImportMaxBytes);
+const importRequest = z.object({ csv: importCsv });
+const confirmImportRequest = importRequest.extend({ previewKey: z.string().regex(/^[0-9a-f]{64}$/) });
+const catalogLockQuery = sql`select pg_advisory_xact_lock(hashtext(${catalogSkuLock}))`;
+type CatalogReader = Pick<typeof db, "select">;
+
+async function readCatalogSkus(reader: CatalogReader) {
+  return reader.select({ id: productsTable.id, sku: productsTable.sku }).from(productsTable);
+}
+
+async function readImportPlan(reader: CatalogReader, csv: string) {
+  const [products, warehouses] = await Promise.all([
+    readCatalogSkus(reader),
+    reader.select({ id: warehousesTable.id, name: warehousesTable.name }).from(warehousesTable),
+  ]);
+  return planCatalogImport(csv, products, warehouses);
+}
+
+async function assertSkuAvailable(reader: CatalogReader, sku: string) {
+  if ((await readCatalogSkus(reader)).some((product) => catalogKey(product.sku) === catalogKey(sku))) {
+    throw new DomainError(409, "This internal SKU is already assigned to a product.");
+  }
+}
+
 function validatePackMetadata(data: { coveragePerUnit?: number | null; orderMultiple?: number | null; minimumOrderQty?: number | null; reorderPoint?: number | null }) {
   for (const key of ["coveragePerUnit", "orderMultiple"] as const) if (data[key] != null && (!Number.isFinite(data[key]) || data[key]! <= 0)) throw new DomainError(400, "Coverage and order multiples must be positive when configured.");
   for (const key of ["minimumOrderQty", "reorderPoint"] as const) if (data[key] != null && (!Number.isFinite(data[key]) || data[key]! < 0)) throw new DomainError(400, "Minimum order and reorder thresholds cannot be negative.");
@@ -26,6 +53,54 @@ router.get("/products", async (_req, res): Promise<void> => {
   const products = await db.select().from(productsTable);
   res.json(ListProductsResponse.parse(products.map(stripNulls)));
 });
+
+router.post("/products/catalog-import/preview", requireRole("owner", "operations"), domainRoute(async (req, res) => {
+  const { csv } = parse(importRequest, req.body);
+  res.json((await readImportPlan(db, csv)).preview);
+}));
+
+router.post("/products/catalog-import", requireRole("owner", "operations"), domainRoute(async (req, res) => {
+  const { csv, previewKey } = parse(confirmImportRequest, req.body);
+  const created = await db.transaction(async (tx) => {
+    await tx.execute(catalogLockQuery);
+    const { products, preview } = await readImportPlan(tx, csv);
+    if (preview.previewKey !== previewKey) throw new DomainError(409, "The catalog changed. Preview the file again before importing.");
+    if (preview.errors.length || preview.rows.some((row) => row.status === "error")) {
+      throw new DomainError(400, "Correct the rows marked in the preview before importing.");
+    }
+    if (!products.length) return 0;
+
+    const now = new Date().toISOString();
+    const entries = products.map(({ details, balances }) => ({
+      product: {
+        ...details,
+        id: randomUUID(),
+        inventoryType: "Inventory",
+        quantityOnHand: balances.reduce((total, balance) => total + balance.quantity, 0),
+        createdAt: now,
+        updatedAt: now,
+      },
+      balances: balances.length ? balances : [{ warehouseId: null, quantity: 0 }],
+    }));
+    const saved = await tx.insert(productsTable).values(entries.map(({ product }) => product)).returning();
+    await tx.insert(inventoryMovementsTable).values(entries.flatMap(({ product, balances }) => balances.map(({ warehouseId, quantity }) => ({
+      id: randomUUID(),
+      productId: product.id,
+      warehouseId,
+      kind: "opening",
+      quantity,
+      reason: "Opening balance from catalog import",
+      actorUserId: req.auth!.userId,
+      idempotencyKey: `opening:${product.id}:${warehouseId ?? "unassigned"}`,
+      createdAt: now,
+    }))));
+    await tx.insert(quickbooksSyncJobsTable).values(saved.map((product) => quickBooksReviewRow(
+      "item", product.id, "create", stripNulls(product), ["An approved QuickBooks income account is required"], now,
+    )));
+    return saved.length;
+  });
+  res.status(created ? 201 : 200).json({ created });
+}));
 
 router.post("/products", requireRole("owner", "operations"), domainRoute(async (req, res) => {
   const parsed = CreateProductBody.safeParse(req.body);
@@ -38,6 +113,7 @@ router.post("/products", requireRole("owner", "operations"), domainRoute(async (
   const now = new Date().toISOString();
   const values: ProductInsert = {
     ...parsed.data,
+    sku: parsed.data.sku?.trim(),
     id: randomUUID(),
     createdAt: now,
     updatedAt: now,
@@ -45,6 +121,10 @@ router.post("/products", requireRole("owner", "operations"), domainRoute(async (
 
   validatePackMetadata(parsed.data);
   const product = await db.transaction(async tx => {
+    if (values.sku) {
+      await tx.execute(catalogLockQuery);
+      await assertSkuAvailable(tx, values.sku);
+    }
     const [row] = await tx.insert(productsTable).values(values).returning();
     if (row.inventoryType === "Inventory") await tx.insert(inventoryMovementsTable).values({ id: randomUUID(), productId: row.id, kind: "opening", quantity: row.quantityOnHand, reason: "Opening balance recorded when product was created", actorUserId: req.auth!.userId, idempotencyKey: "opening:" + row.id, createdAt: now });
     return row;
@@ -68,10 +148,13 @@ router.patch("/products/:id", requireRole("owner", "operations"), domainRoute(as
 
   validatePackMetadata(parsed.data);
   const product = await db.transaction(async tx => {
+    const sku = parsed.data.sku?.trim();
+    if (sku) await tx.execute(catalogLockQuery);
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${"inventory:" + params.data.id}))`);
     const [current] = await tx.select().from(productsTable).where(eq(productsTable.id, params.data.id)).for("update");
     if (!current) throw new DomainError(404, "Product not found");
     assertRevision(current.revision, parsed.data.revision);
+    if (sku && catalogKey(sku) !== catalogKey(current.sku)) await assertSkuAvailable(tx, sku);
     if (parsed.data.quantityOnHand !== undefined && parsed.data.quantityOnHand !== current.quantityOnHand) throw new DomainError(409, "Record a receipt, return, consumption or adjustment to change stock.");
     if ((parsed.data.unit && parsed.data.unit !== current.unit) || (parsed.data.inventoryType && parsed.data.inventoryType !== current.inventoryType)) {
       const history = await tx.select({ id: inventoryMovementsTable.id }).from(inventoryMovementsTable).where(eq(inventoryMovementsTable.productId, current.id)).limit(1);
@@ -79,7 +162,7 @@ router.patch("/products/:id", requireRole("owner", "operations"), domainRoute(as
       const linked = await tx.select({ id: jobMaterialsTable.id }).from(jobMaterialsTable).where(eq(jobMaterialsTable.productId, current.id)).limit(1);
       if (history.length || reserved.length || linked.length || current.quantityOnHand !== 0) throw new DomainError(409, "This product is linked to stock or job requirements. Create a new product to change its unit or inventory type.");
     }
-    const [row] = await tx.update(productsTable).set({ ...parsed.data, quantityOnHand: undefined, revision: current.revision + 1, updatedAt: new Date().toISOString() }).where(eq(productsTable.id, current.id)).returning();
+    const [row] = await tx.update(productsTable).set({ ...parsed.data, sku, quantityOnHand: undefined, revision: current.revision + 1, updatedAt: new Date().toISOString() }).where(eq(productsTable.id, current.id)).returning();
     return row;
   });
   await queueQuickBooksReview("item", product.id, "update", stripNulls(product), ["An approved QuickBooks income account is required"]);

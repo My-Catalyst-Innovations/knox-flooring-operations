@@ -64,6 +64,12 @@ export function StockActivity({
   const [jobId, setJobId] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
   const [returnOfMovementId, setReturnOfMovementId] = useState("");
+  const [labelCode, setLabelCode] = useState("");
+  const [labelCheck, setLabelCheck] = useState<{
+    code: string;
+    error?: string;
+  }>();
+  const [checkingLabel, setCheckingLabel] = useState(false);
   const [reason, setReason] = useState("");
   const [overrideReason, setOverrideReason] = useState("");
   const [error, setError] = useState("");
@@ -82,6 +88,7 @@ export function StockActivity({
       jobId,
       warehouseId,
       returnOfMovementId,
+      labelCode,
       reason,
       overrideReason,
     },
@@ -90,15 +97,48 @@ export function StockActivity({
     movements.data?.filter(
       (movement) => movement.kind === "consume" && movement.jobId === jobId,
     ) ?? [];
+  const activeReservations =
+    reservations.data?.filter((r) => r.status === "Active") ?? [];
+  const checkedLabel =
+    labelCheck?.code === labelCode.trim() ? labelCheck : undefined;
   const close = () => {
-    if (!busy && !transferBusy && changes.confirmDiscard()) onClose();
+    if (!busy && !transferBusy && !checkingLabel && changes.confirmDiscard())
+      onClose();
   };
   const change = () => {
     setRequestKey(crypto.randomUUID());
     setMessage("");
   };
+  const clearLabel = () => {
+    setLabelCode("");
+    setLabelCheck(undefined);
+  };
+  const checkLabel = async () => {
+    const code = labelCode.trim();
+    if (!code || busy || checkingLabel || transferBusy) return;
+    setCheckingLabel(true);
+    setLabelCheck(undefined);
+    try {
+      await operation("/inventory/verify-product-label", "POST", {
+        productId: product.id,
+        labelCode: code,
+      });
+      setLabelCheck({ code });
+    } catch (failure) {
+      setLabelCheck({
+        code,
+        error:
+          failure instanceof Error
+            ? failure.message
+            : "Could not check this product label.",
+      });
+    } finally {
+      setCheckingLabel(false);
+    }
+  };
   const submit = async () => {
-    if (busy) return;
+    if (busy || checkingLabel || (kind === "consume" && checkedLabel?.error))
+      return;
     setBusy(true);
     setError("");
     setMessage("");
@@ -124,6 +164,8 @@ export function StockActivity({
           warehouseId: warehouseId || null,
           returnOfMovementId:
             kind === "return" ? returnOfMovementId || undefined : undefined,
+          labelCode:
+            kind === "consume" ? labelCode.trim() || undefined : undefined,
           quantity: Number(amount),
           kind,
           reason,
@@ -138,6 +180,7 @@ export function StockActivity({
         jobId,
         warehouseId,
         returnOfMovementId: "",
+        labelCode: kind === "consume" ? "" : labelCode,
         reason: "",
         overrideReason: "",
       });
@@ -145,6 +188,7 @@ export function StockActivity({
       setReason("");
       setOverrideReason("");
       setReturnOfMovementId("");
+      if (kind === "consume") clearLabel();
       setRequestKey(crypto.randomUUID());
       setMessage("Stock activity recorded.");
     } catch (e) {
@@ -159,15 +203,19 @@ export function StockActivity({
     r: WarehouseReservation,
     status: "Released" | "Consumed",
   ) => {
-    if (busy) return;
+    if (busy || checkingLabel || (status === "Consumed" && checkedLabel?.error))
+      return;
     setBusy(true);
     setError("");
     try {
       await operation(`/inventory/reservations/${r.id}`, "PATCH", {
         revision: r.revision,
         status,
+        labelCode:
+          status === "Consumed" ? labelCode.trim() || undefined : undefined,
       });
       await refresh();
+      if (status === "Consumed") clearLabel();
       setMessage(
         status === "Consumed"
           ? "Reserved stock recorded as used."
@@ -254,6 +302,55 @@ export function StockActivity({
               Retry
             </button>
           </p>
+        )}
+        {canWrite && (kind === "consume" || activeReservations.length > 0) && (
+          <div className="space-y-2 rounded-lg border p-3">
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="min-w-40 flex-1 space-y-1 text-sm font-medium">
+                Product label (optional)
+                <Input
+                  value={labelCode}
+                  maxLength={512}
+                  autoComplete="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  placeholder="Scan or type a product code"
+                  disabled={busy || transferBusy || checkingLabel}
+                  onChange={(event) => {
+                    setLabelCode(event.target.value);
+                    setLabelCheck(undefined);
+                    setError("");
+                    change();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    void checkLabel();
+                  }}
+                />
+              </label>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={
+                  !labelCode.trim() || busy || transferBusy || checkingLabel
+                }
+                onClick={() => void checkLabel()}
+              >
+                {checkingLabel ? "Checking…" : "Check label"}
+              </Button>
+            </div>
+            {checkedLabel &&
+              (checkedLabel.error ? (
+                <p role="alert" className="text-sm text-destructive">
+                  {checkedLabel.error}
+                </p>
+              ) : (
+                <p role="status" className="text-sm text-emerald-800">
+                  Label matches {product.name}.
+                </p>
+              ))}
+          </div>
         )}
         {canWrite && product.inventoryType === "Inventory" && (
           <fieldset
@@ -392,7 +489,12 @@ export function StockActivity({
                 </label>
               </details>
             )}
-            <Button onClick={submit}>
+            <Button
+              onClick={submit}
+              disabled={
+                checkingLabel || (kind === "consume" && !!checkedLabel?.error)
+              }
+            >
               {busy ? "Recording…" : "Record activity"}
             </Button>
           </fieldset>
@@ -427,39 +529,42 @@ export function StockActivity({
               Loading reservations…
             </p>
           )}
-          {reservations.data
-            ?.filter((r) => r.status === "Active")
-            .map((r) => (
-              <div
-                key={r.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"
-              >
-                <p className="text-sm">
-                  {jobs.find((j) => j.id === r.jobId)?.jobNumber ?? r.jobId} ·{" "}
-                  {quantity(r.quantity)} {product.unit} ·{" "}
-                  {warehouseName(warehouses, r.warehouseId)}
-                </p>
-                {canWrite && (
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={busy || transferBusy}
-                      onClick={() => updateReservation(r, "Released")}
-                    >
-                      Release
-                    </Button>
-                    <Button
-                      size="sm"
-                      disabled={busy || transferBusy}
-                      onClick={() => updateReservation(r, "Consumed")}
-                    >
-                      Record used
-                    </Button>
-                  </div>
-                )}
-              </div>
-            ))}
+          {activeReservations.map((r) => (
+            <div
+              key={r.id}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"
+            >
+              <p className="text-sm">
+                {jobs.find((j) => j.id === r.jobId)?.jobNumber ?? r.jobId} ·{" "}
+                {quantity(r.quantity)} {product.unit} ·{" "}
+                {warehouseName(warehouses, r.warehouseId)}
+              </p>
+              {canWrite && (
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy || transferBusy}
+                    onClick={() => updateReservation(r, "Released")}
+                  >
+                    Release
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={
+                      busy ||
+                      transferBusy ||
+                      checkingLabel ||
+                      !!checkedLabel?.error
+                    }
+                    onClick={() => updateReservation(r, "Consumed")}
+                  >
+                    Record used
+                  </Button>
+                </div>
+              )}
+            </div>
+          ))}
           {!reservations.isError &&
             reservations.data?.every((r) => r.status !== "Active") && (
               <p className="text-sm text-muted-foreground">

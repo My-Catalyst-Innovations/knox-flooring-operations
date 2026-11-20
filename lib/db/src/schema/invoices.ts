@@ -9,6 +9,8 @@ export interface InvoiceLineItem {
   category: InvoiceLineCategory;
   quantity: number;
   unitPrice: number;
+  productId?: string;
+  sku?: string;
 }
 
 export const invoicesTable = pgTable("invoices", {

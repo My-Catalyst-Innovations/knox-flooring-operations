@@ -8,7 +8,15 @@ import { useStore } from "@/hooks/use-store";
 import { useUrlState } from "@/hooks/use-url-state";
 import { contextualCreateHref } from "@/lib/create-context";
 import { invoiceBalance } from "@/lib/invoices";
-import { currency, jobsNeedingInstallation, useOperation, type Booking, type Crew } from "@/lib/operations";
+import {
+  confirmedInstallationBookings,
+  currency,
+  installationBookingHref,
+  jobsNeedingInstallation,
+  useOperation,
+  type Booking,
+  type Crew,
+} from "@/lib/operations";
 import type { JobStatus } from "@/lib/types";
 
 const phases = ["Sales", "Preparation", "Installation", "Closeout"] as const;
@@ -30,6 +38,7 @@ type Entry = {
   invoice?: { label: string; href: string };
   accounting?: string;
   scheduleHref?: string;
+  bookingHref?: string;
   workOrderHref?: string;
 };
 
@@ -85,9 +94,10 @@ function WorkflowCard({ entry }: { entry: Entry }) {
           {entry.accounting && <Link href="/settings" className="underline">QuickBooks · {entry.accounting}</Link>}
         </div>
       )}
-      {(entry.scheduleHref || entry.workOrderHref) && (
+      {(entry.scheduleHref || entry.bookingHref || entry.workOrderHref) && (
         <div className="flex flex-wrap gap-2">
           {entry.scheduleHref && <Button size="sm" variant="outline" asChild><Link href={entry.scheduleHref}>Schedule</Link></Button>}
+          {entry.bookingHref && <Button size="sm" variant="outline" asChild><Link href={entry.bookingHref}>View booking</Link></Button>}
           {entry.workOrderHref && <Button size="sm" variant="outline" asChild><Link href={entry.workOrderHref}>Work order</Link></Button>}
         </div>
       )}
@@ -106,15 +116,22 @@ export default function Pipeline() {
   const accounting = useOperation<AccountingEntry[]>("/quickbooks/queue", ["owner"]);
   const [search, setSearch] = useUrlState<string>("q", "");
   const [view, setView] = useUrlState<"board" | "list">("view", "board");
-  const readyToSchedule = new Set(operations && bookings.data && !bookings.isError
-    ? jobsNeedingInstallation(jobs, bookings.data).map((job) => job.id)
-    : []);
+  const bookingRecords = operations && !bookings.isError ? bookings.data : undefined;
+  const readyToSchedule = new Set(bookingRecords ? jobsNeedingInstallation(jobs, bookingRecords).map((job) => job.id) : []);
   const now = Date.now();
+  const upcomingByJob = new Map<string, Booking>();
+  const previousByJob = new Map<string, Booking>();
+  for (const booking of confirmedInstallationBookings(bookingRecords ?? [])) {
+    if (Date.parse(booking.endAt) <= now) previousByJob.set(booking.jobId, booking);
+    else if (!upcomingByJob.has(booking.jobId)) upcomingByJob.set(booking.jobId, booking);
+  }
+  const crewNames = new Map((crews.isError ? [] : crews.data ?? []).map((crew) => [crew.id, crew.name]));
   const entries: Entry[] = jobs.map((job) => {
-    const [phase, next, team] = workflow[job.status] ?? workflow.Approved;
-    const booking = (bookings.data ?? []).filter((row) => row.jobId === job.id && row.status === "Confirmed" && Date.parse(row.endAt) >= now)
-      .sort((left, right) => left.startAt.localeCompare(right.startAt))[0];
-    const crew = booking && crews.data?.find((item) => item.id === booking.crewId)?.name;
+    const [jobPhase, defaultNext, team] = workflow[job.status] ?? workflow.Approved;
+    const booking = upcomingByJob.get(job.id);
+    const previousBooking = previousByJob.get(job.id);
+    const visibleBooking = booking ?? previousBooking;
+    const crew = visibleBooking && crewNames.get(visibleBooking.crewId);
     const quote = sales ? proposals.filter((row) => row.convertedJobId === job.id || row.jobId === job.id)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] : undefined;
     const invoice = owner ? invoices.filter((row) => row.jobId === job.id && row.status !== "Voided")
@@ -123,15 +140,25 @@ export default function Pipeline() {
       row.entityType === "invoice" ? row.localId === invoice?.id : row.entityType === "project" && row.localId === job.id,
     );
     const blocked = operations && materials.find((row) => row.jobId === job.id && (row.damaged || row.missingItems.trim() || row.status === "Delayed"));
+    const bookedAfterMaterials = Boolean(booking && job.status === "Material Received" && !blocked);
+    const phase = bookedAfterMaterials ? "Installation" : jobPhase;
+    let next = defaultNext;
+    if (bookedAfterMaterials) next = "Review work order";
+    else if (job.status === "Material Received" && blocked) next = "Resolve material issue";
+    else if (job.status === "Scheduled" && readyToSchedule.has(job.id)) next = "Rebook the installation";
+    else if (!booking && previousBooking && ["Material Received", "Scheduled"].includes(job.status)) {
+      next = "Review the previous booking";
+    } else if (job.status === "Material Received" && operations && !bookingRecords) next = "Review installation readiness";
     const date = job.estStartDate ? `&date=${encodeURIComponent(job.estStartDate)}` : "";
-    const schedule = booking
-      ? `${scheduleDate.format(new Date(booking.startAt))} ET${crew ? ` · ${crew}` : ""}`
+    const schedule = visibleBooking
+      ? `${booking ? "Confirmed" : "Previous booking"} · ${scheduleDate.format(new Date(visibleBooking.startAt))} ET${crew ? ` · ${crew}` : ""}`
       : job.estStartDate ? `Planned ${job.estStartDate}${job.crewAssigned && job.crewAssigned !== "Unassigned" ? ` · ${job.crewAssigned}` : ""}` : undefined;
     return {
-      id: job.id, title: job.customerName, reference: job.jobNumber, stage: job.status, phase, team,
+      id: job.id, title: job.customerName, reference: job.jobNumber, stage: job.status, phase,
+      team: bookedAfterMaterials ? "Installation crew" : team,
       href: `/jobs/${encodeURIComponent(job.id)}`,
       search: [job.customerName, job.jobNumber, job.city].join(" "),
-      action: invoice?.status === "Paid" ? "Payment received" : next,
+      action: phase === "Closeout" && invoice?.status === "Paid" ? "Payment received" : next,
       schedule,
       materials: phase === "Preparation" || phase === "Installation" ? job.materialStatus : undefined,
       blocker: blocked ? blocked.damaged ? "Damaged materials" : blocked.missingItems.trim() ? `Missing materials: ${blocked.missingItems}` : "Material delivery delayed" : undefined,
@@ -139,6 +166,7 @@ export default function Pipeline() {
       invoice: invoice && { label: `Invoice · ${invoice.status}${invoiceBalance(invoice) > 0 && invoice.status !== "Draft" ? ` · ${currency(invoiceBalance(invoice))} due` : ""}`, href: `/invoices?invoice=${encodeURIComponent(invoice.id)}` },
       accounting: queueEntry ? accountingLabels[queueEntry.status] : undefined,
       scheduleHref: readyToSchedule.has(job.id) ? contextualCreateHref(`/calendar?create=1${date}`, { jobId: job.id }) : undefined,
+      bookingHref: visibleBooking ? installationBookingHref(visibleBooking) : undefined,
       workOrderHref: phase === "Installation" ? `/jobs/${encodeURIComponent(job.id)}/work-order` : undefined,
     };
   });
@@ -178,6 +206,11 @@ export default function Pipeline() {
             </div>
           </div>
         </header>
+        {operations && !bookingRecords && (
+          <p role={bookings.isError ? "alert" : "status"} className="text-sm text-muted-foreground">
+            {bookings.isError ? <>Booking status could not load. <button className="underline" onClick={() => void bookings.refetch()}>Retry bookings</button></> : "Loading booking status…"}
+          </p>
+        )}
         <div className={view === "list" ? "space-y-4" : "grid items-start gap-3 md:grid-cols-2 2xl:grid-cols-4"}>
           {phases.map((phase) => {
             const phaseEntries = matches.filter((entry) => entry.phase === phase);

@@ -134,6 +134,7 @@ export * from './proposalUpdate';
 export * from './publicBalance';
 export * from './publicCompany';
 export * from './publicInvoice';
+export * from './publicInvoiceLineItem';
 export * from './publicJob';
 export * from './publicPortalQuote';
 export * from './publicQuote';

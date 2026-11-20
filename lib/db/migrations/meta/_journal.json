@@ -78,6 +78,13 @@
       "when": 1795192500881,
       "tag": "0010_outlook_calendar",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795195591849,
+      "tag": "0011_inventory_issue_cost",
+      "breakpoints": true
     }
   ]
 }

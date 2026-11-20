@@ -335,13 +335,28 @@ export function ProductDialog({ open, onOpenChange, product }: Props) {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="product-sku">SKU / Style #</Label>
-              <Input
-                id="product-sku"
-                placeholder="e.g. CP-7OAK-NAT"
-                value={sku}
-                onChange={(e) => setSku(e.target.value)}
-              />
+              <Label htmlFor="product-sku">Internal SKU</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="product-sku"
+                  placeholder="e.g. CP-7OAK-NAT"
+                  value={sku}
+                  onChange={(e) => setSku(e.target.value)}
+                />
+                {!sku.trim() && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() =>
+                      setSku(
+                        `SKU-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+                      )
+                    }
+                  >
+                    Generate SKU
+                  </Button>
+                )}
+              </div>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="product-supplier">Supplier / Manufacturer</Label>

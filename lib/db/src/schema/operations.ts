@@ -2,6 +2,7 @@ import {
   pgTable,
   text,
   real,
+  numeric,
   integer,
   boolean,
   jsonb,
@@ -127,6 +128,7 @@ export const inventoryMovementsTable = pgTable(
     warehouseId: text("warehouse_id").references(() => warehousesTable.id, { onDelete: "restrict" }),
     transferId: text("transfer_id").references(() => inventoryTransfersTable.id, { onDelete: "restrict" }),
     returnOfMovementId: text("return_of_movement_id"),
+    issueUnitCost: numeric("issue_unit_cost"),
     quantity: real("quantity").notNull(),
     kind: text("kind").notNull(),
     reason: text("reason").notNull(),
@@ -140,6 +142,7 @@ export const inventoryMovementsTable = pgTable(
     index("inventory_movements_job_id_idx").on(t.jobId),
     index("inventory_movements_product_warehouse_idx").on(t.productId, t.warehouseId),
     index("inventory_movements_return_of_idx").on(t.returnOfMovementId),
+    check("inventory_movements_issue_unit_cost_valid", sql`${t.issueUnitCost} IS NULL OR (${t.kind} = 'consume' AND ${t.jobId} IS NOT NULL AND ${t.issueUnitCost} >= 0 AND ${t.issueUnitCost} < 'Infinity'::numeric)`),
     foreignKey({
       columns: [t.returnOfMovementId],
       foreignColumns: [t.id],

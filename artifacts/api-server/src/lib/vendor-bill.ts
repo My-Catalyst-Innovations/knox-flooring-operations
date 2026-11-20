@@ -14,8 +14,9 @@ const line = z.object({
     .refine((value) => Number(value) > 0),
   unitCost: z.string().regex(decimal),
 });
+export const vendorBillMode = z.enum(["review", "simulated", "sandbox"]);
 export const vendorBillInput = z.object({
-  mode: z.enum(["simulated", "sandbox"]),
+  mode: vendorBillMode,
   supplier: text(200),
   vendorId: z
     .string()
@@ -31,7 +32,7 @@ export const vendorBillInput = z.object({
 });
 
 export type VendorBillInput = z.infer<typeof vendorBillInput>;
-export interface VendorBillLineMapping {
+interface SupplierBillLineMapping {
   supplierSku: string;
   productName: string;
   internalSku: string;
@@ -39,13 +40,15 @@ export interface VendorBillLineMapping {
   expectedUnitCost: string;
   priceEffectiveOn: string;
   priceSource: string;
+}
+
+export interface VendorBillLineMapping extends SupplierBillLineMapping {
   quickBooksItemId: string;
 }
 
-export function buildVendorBill(
+export function reviewVendorBill<Mapping extends SupplierBillLineMapping>(
   input: VendorBillInput,
-  mappings: VendorBillLineMapping[],
-  vendorId: string,
+  mappings: readonly Mapping[],
 ) {
   const lines = input.lines.map((requested, index) => {
     const mapping = mappings[index];
@@ -83,11 +86,22 @@ export function buildVendorBill(
     totalCents,
     priceDiffers: lines.some((item) => item.priceDiffers),
     lines,
+  };
+}
+
+export function buildVendorBill(
+  input: VendorBillInput,
+  mappings: VendorBillLineMapping[],
+  vendorId: string,
+) {
+  const reviewed = reviewVendorBill(input, mappings);
+  return {
+    ...reviewed,
     quickBooksBill: {
       VendorRef: { value: vendorId },
       DocNumber: input.billNumber,
       TxnDate: input.billDate,
-      Line: lines.map((item) => ({
+      Line: reviewed.lines.map((item) => ({
         Amount: item.totalCents / 100,
         DetailType: "ItemBasedExpenseLineDetail",
         Description: `${item.productName} (${item.supplierSku})`,

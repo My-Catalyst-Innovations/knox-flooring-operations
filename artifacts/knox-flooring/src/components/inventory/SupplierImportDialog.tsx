@@ -50,6 +50,74 @@ function needsReview(row: SupplierImportRow) {
   );
 }
 
+const normalizedSku = (value: string) => value.trim().toLowerCase();
+
+function CatalogSkuPicker({
+  row,
+  products,
+  onChoose,
+  onCancel,
+}: {
+  row: SupplierImportRow;
+  products: readonly SupplierImportProduct[];
+  onChoose: (sku: string) => void;
+  onCancel: () => void;
+}) {
+  const [search, setSearch] = useState("");
+  const term = normalizedSku(search);
+  const matches = products.filter(
+    (product) =>
+      normalizedSku(product.unit) === normalizedSku(row.unit) &&
+      (normalizedSku(product.name).includes(term) ||
+        normalizedSku(product.sku).includes(term)),
+  );
+  return (
+    <div className="space-y-2 rounded-md border p-2 sm:col-span-2 lg:col-span-4">
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="min-w-0 flex-1 space-y-1 font-medium">
+          Search catalog for {row.supplierSku}
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Product name or internal SKU"
+          />
+        </label>
+        <Button type="button" size="sm" variant="ghost" onClick={onCancel}>
+          Close product picker
+        </Button>
+      </div>
+      {matches.length > 0 ? (
+        <ul
+          aria-label={`Catalog matches for ${row.supplierSku}`}
+          className="max-h-40 space-y-1 overflow-y-auto"
+        >
+          {matches.slice(0, 50).map((product) => (
+            <li key={product.id}>
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-auto w-full justify-start whitespace-normal text-left"
+                onClick={() => onChoose(product.sku.trim())}
+              >
+                {product.name} · {product.sku}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-muted-foreground">
+          No active products with a unique SKU match this unit and search.
+        </p>
+      )}
+      {matches.length > 50 && (
+        <p className="text-muted-foreground">
+          Showing 50 products. Search by name or SKU to narrow the list.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function SupplierImportContent({
   products,
 }: {
@@ -69,24 +137,58 @@ function SupplierImportContent({
   const [source, setSource] = useState("");
   const [approvalError, setApprovalError] = useState("");
   const [approved, setApproved] = useState<ApprovalResult | null>(null);
+  const [approvedLines, setApprovedLines] = useState<ReadonlySet<number>>(
+    new Set(),
+  );
   const [onlyReview, setOnlyReview] = useState(false);
   const [page, setPage] = useState(0);
+  const [chosenSkus, setChosenSkus] = useState<ReadonlyMap<number, string>>(
+    new Map(),
+  );
+  const [pickerLine, setPickerLine] = useState<number | null>(null);
+  const selectableProducts = useMemo(() => {
+    const occurrences = new Map<string, number>();
+    for (const product of products) {
+      const sku = normalizedSku(product.sku);
+      occurrences.set(sku, (occurrences.get(sku) ?? 0) + 1);
+    }
+    return products.filter((product) => {
+      const sku = normalizedSku(product.sku);
+      return product.active && sku && occurrences.get(sku) === 1;
+    });
+  }, [products]);
   const preview = useMemo(
     () =>
       csv === null
         ? null
-        : previewSupplierImport(csv, products, crosswalk.data),
-    [csv, products, crosswalk.data],
+        : previewSupplierImport(csv, products, crosswalk.data, chosenSkus),
+    [csv, products, crosswalk.data, chosenSkus],
   );
   const rows = preview?.rows ?? [];
-  const reviewRows = rows.filter(needsReview);
+  const reviewRows = rows.filter(
+    (row) =>
+      !approvedLines.has(row.line) && (needsReview(row) || !!row.chosenSku),
+  );
   const approvable = rows.filter(
-    (row) => row.status === "matched" && row.product,
+    (row) =>
+      row.status === "matched" && row.product && !approvedLines.has(row.line),
   );
   const visible = onlyReview ? reviewRows : rows;
   const lastPage = Math.max(0, Math.ceil(visible.length / pageSize) - 1);
   const currentPage = Math.min(page, lastPage);
   const start = currentPage * pageSize;
+  const canEditMatches = !!crosswalk.data && !crosswalk.isError && !saving;
+
+  function chooseSku(line: number, sku?: string) {
+    setChosenSkus((current) => {
+      const next = new Map(current);
+      if (sku) next.set(line, sku);
+      else next.delete(line);
+      return next;
+    });
+    setPickerLine(null);
+    setApprovalError("");
+  }
 
   const readFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
@@ -94,8 +196,11 @@ function SupplierImportContent({
     setFileError("");
     setApprovalError("");
     setApproved(null);
+    setApprovedLines(new Set());
     setPage(0);
     setOnlyReview(false);
+    setChosenSkus(new Map());
+    setPickerLine(null);
     if (!file) return;
     if (file.size > maxFileSize) {
       setFileError("Choose a CSV file of 2 MB or less.");
@@ -153,7 +258,16 @@ function SupplierImportContent({
         "POST",
         payload,
       );
-      setApproved(result);
+      setApproved((current) => ({
+        aliasesAdded: (current?.aliasesAdded ?? 0) + result.aliasesAdded,
+        pricesAdded: (current?.pricesAdded ?? 0) + result.pricesAdded,
+        alreadyApproved:
+          (current?.alreadyApproved ?? 0) + result.alreadyApproved,
+      }));
+      setApprovedLines(
+        (current) =>
+          new Set([...current, ...approvable.map((row) => row.line)]),
+      );
       void crosswalk.refetch();
     } catch (error) {
       setApprovalError(
@@ -194,8 +308,8 @@ function SupplierImportContent({
         </Button>
       </div>
       <p className="text-sm text-muted-foreground">
-        Enter buy costs in USD per listed unit. Include the catalog SKU if you
-        know it.
+        Enter buy costs in USD per listed unit. Choose a catalog product in the
+        preview for an unmatched supplier SKU.
       </p>
       {crosswalk.isError && (
         <p role="alert" className="text-sm text-destructive">
@@ -250,73 +364,122 @@ function SupplierImportContent({
               aria-label="Supplier CSV preview"
               className="divide-y rounded-lg border text-sm"
             >
-              {visible.slice(start, start + pageSize).map((row) => (
-                <li
-                  key={row.line}
-                  className="grid gap-2 break-words p-3 sm:grid-cols-2 lg:grid-cols-4"
-                >
-                  <div className="min-w-0">
-                    <p className="font-medium">
-                      {row.supplier || "Supplier missing"}
-                    </p>
-                    <p className="text-muted-foreground">
-                      Line {row.line} ·{" "}
-                      {row.supplierSku || "Supplier SKU missing"}
-                    </p>
-                    {row.manufacturerPartNumber && (
-                      <p className="text-muted-foreground">
-                        Mfr. part {row.manufacturerPartNumber}
+              {visible.slice(start, start + pageSize).map((row) => {
+                const saved = approvedLines.has(row.line);
+                const editable = canEditMatches && !saved;
+                return (
+                  <li
+                    key={row.line}
+                    className="grid gap-2 break-words p-3 sm:grid-cols-2 lg:grid-cols-4"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-medium">
+                        {row.supplier || "Supplier missing"}
                       </p>
-                    )}
-                  </div>
-                  <div className="min-w-0">
-                    <p>{row.product?.name || "No catalog product resolved"}</p>
-                    {row.product?.sku ? (
                       <p className="text-muted-foreground">
-                        Catalog SKU {row.product.sku}
+                        Line {row.line} ·{" "}
+                        {row.supplierSku || "Supplier SKU missing"}
                       </p>
-                    ) : (
-                      row.internalSku && (
+                      {row.manufacturerPartNumber && (
                         <p className="text-muted-foreground">
-                          Requested SKU {row.internalSku}
+                          Mfr. part {row.manufacturerPartNumber}
                         </p>
-                      )
-                    )}
-                  </div>
-                  <div className="min-w-0 tabular-nums">
-                    {row.unitCost && (
+                      )}
+                    </div>
+                    <div className="min-w-0">
                       <p>
-                        CSV {row.unitCost} USD{row.unit && ` / ${row.unit}`}
+                        {row.product?.name || "No catalog product resolved"}
                       </p>
-                    )}
-                    {row.latestPrice ? (
-                      <p className="text-muted-foreground">
-                        Latest approved {row.latestPrice.unitCost} USD /{" "}
-                        {row.latestPrice.unit} · {row.latestPrice.effectiveOn} ·{" "}
-                        {row.latestPrice.source}
-                      </p>
-                    ) : (
-                      row.product && (
+                      {row.product?.sku ? (
                         <p className="text-muted-foreground">
-                          Catalog {row.product.cost} USD / {row.product.unit}
+                          Catalog SKU {row.product.sku}
                         </p>
-                      )
-                    )}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="font-medium">
-                      {row.priceDifference === "higher"
-                        ? "Higher buy cost"
-                        : row.priceDifference === "lower"
-                          ? "Lower buy cost"
-                          : statusLabels[row.status]}
-                    </p>
-                    {row.status !== "matched" && (
-                      <p className="text-muted-foreground">{row.message}</p>
-                    )}
-                  </div>
-                </li>
-              ))}
+                      ) : (
+                        (row.chosenSku || row.internalSku) && (
+                          <p className="text-muted-foreground">
+                            {row.chosenSku
+                              ? `Selected SKU ${row.chosenSku}`
+                              : `Requested SKU ${row.internalSku}`}
+                          </p>
+                        )
+                      )}
+                    </div>
+                    <div className="min-w-0 tabular-nums">
+                      {row.unitCost && (
+                        <p>
+                          CSV {row.unitCost} USD{row.unit && ` / ${row.unit}`}
+                        </p>
+                      )}
+                      {row.latestPrice ? (
+                        <p className="text-muted-foreground">
+                          Latest approved {row.latestPrice.unitCost} USD /{" "}
+                          {row.latestPrice.unit} · {row.latestPrice.effectiveOn}{" "}
+                          · {row.latestPrice.source}
+                        </p>
+                      ) : (
+                        row.product && (
+                          <p className="text-muted-foreground">
+                            Catalog {row.product.cost} USD / {row.product.unit}
+                          </p>
+                        )
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-medium">
+                        {saved
+                          ? "Approved"
+                          : row.priceDifference === "higher"
+                            ? "Higher buy cost"
+                            : row.priceDifference === "lower"
+                              ? "Lower buy cost"
+                              : statusLabels[row.status]}
+                      </p>
+                      {row.status !== "matched" && (
+                        <p className="text-muted-foreground">{row.message}</p>
+                      )}
+                      {row.status === "matched" && row.chosenSku && (
+                        <p className="text-muted-foreground">{row.message}</p>
+                      )}
+                      {editable &&
+                        row.canChooseProduct &&
+                        pickerLine !== row.line && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="mt-2"
+                            onClick={() => setPickerLine(row.line)}
+                          >
+                            {row.chosenSku
+                              ? "Change catalog product"
+                              : "Choose catalog product"}
+                          </Button>
+                        )}
+                      {editable && row.chosenSku && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="mt-2"
+                          onClick={() => chooseSku(row.line)}
+                        >
+                          Clear selection
+                        </Button>
+                      )}
+                    </div>
+                    {editable &&
+                      row.canChooseProduct &&
+                      pickerLine === row.line && (
+                        <CatalogSkuPicker
+                          row={row}
+                          products={selectableProducts}
+                          onChoose={(sku) => chooseSku(row.line, sku)}
+                          onCancel={() => setPickerLine(null)}
+                        />
+                      )}
+                  </li>
+                );
+              })}
             </ol>
           )}
           {lastPage > 0 && (
@@ -350,8 +513,8 @@ function SupplierImportContent({
               <p className="text-sm">
                 Approve {approvable.length.toLocaleString()} mapped{" "}
                 {approvable.length === 1 ? "row" : "rows"}.{" "}
-                {rows.length > approvable.length &&
-                  `${(rows.length - approvable.length).toLocaleString()} unresolved rows need correction.`}
+                {rows.length > approvable.length + approvedLines.size &&
+                  `${(rows.length - approvable.length - approvedLines.size).toLocaleString()} unresolved rows need correction.`}
               </p>
               <div className="flex flex-wrap items-end gap-3">
                 <label className="space-y-1 text-sm font-medium">
@@ -378,7 +541,6 @@ function SupplierImportContent({
                   onClick={() => void approve()}
                   disabled={
                     saving ||
-                    !!approved ||
                     !crosswalk.data ||
                     crosswalk.isError ||
                     !effectiveOn ||
@@ -393,14 +555,13 @@ function SupplierImportContent({
                   {approvalError}
                 </p>
               )}
-              {approved && (
-                <p role="status" className="text-sm text-emerald-800">
-                  Saved {approved.aliasesAdded} mappings and{" "}
-                  {approved.pricesAdded} prices. {approved.alreadyApproved} rows
-                  were already approved.
-                </p>
-              )}
             </div>
+          )}
+          {approved && (
+            <p role="status" className="text-sm text-emerald-800">
+              Saved {approved.aliasesAdded} mappings and {approved.pricesAdded}{" "}
+              prices. {approved.alreadyApproved} rows were already approved.
+            </p>
           )}
         </div>
       )}

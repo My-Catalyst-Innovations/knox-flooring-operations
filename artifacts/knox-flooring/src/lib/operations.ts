@@ -3,6 +3,7 @@ import { customFetch } from "@workspace/api-client-react";
 import type { EstimateInput, EstimateSnapshot } from "@workspace/domain";
 import { useAuth } from "@/contexts/auth";
 import type { Job } from "@/lib/types";
+import { businessDate } from "@/lib/reporting";
 
 export interface Customer { id: string; name: string; email: string; phone: string; notes: string; revision: number; mergedIntoId?: string | null }
 export interface CustomerSite { id: string; customerId: string; label: string; address: string; city: string; state: string; zip: string }
@@ -19,6 +20,17 @@ export function jobsNeedingInstallation(jobs: readonly Job[], bookings: readonly
   return jobs.filter((job) =>
     ["Approved", "Material Ordered", "Material Received", "Scheduled"].includes(job.status) && !bookedJobs.has(job.id),
   );
+}
+
+export function confirmedInstallationBookings(bookings: readonly Booking[]) {
+  return bookings
+    .filter(({ status, startAt, endAt }) => status === "Confirmed" && Date.parse(endAt) > Date.parse(startAt))
+    .sort((left, right) => Date.parse(left.startAt) - Date.parse(right.startAt));
+}
+
+export function installationBookingHref({ id, startAt }: Pick<Booking, "id" | "startAt">) {
+  const query = new URLSearchParams({ booking: id, date: businessDate(new Date(startAt)) });
+  return `/calendar?${query}`;
 }
 
 export function operation<T>(path: string, method = "GET", data?: unknown): Promise<T> {

@@ -5,13 +5,13 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { InvoiceLineItem } from './invoiceLineItem';
 import type { InvoiceStatus } from './invoiceStatus';
+import type { PublicInvoiceLineItem } from './publicInvoiceLineItem';
 
 export interface PublicInvoice {
   id: string;
   invoiceNumber: string;
-  lineItems: InvoiceLineItem[];
+  lineItems: PublicInvoiceLineItem[];
   subtotal: number;
   taxableAmount: number;
   taxAmount: number;

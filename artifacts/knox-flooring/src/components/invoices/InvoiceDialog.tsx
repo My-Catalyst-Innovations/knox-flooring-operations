@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/select";
 import { Plus, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { invoiceSubtotal } from "@workspace/domain";
 import type {
   Invoice,
   InvoiceLineItem,
@@ -107,10 +108,7 @@ export function InvoiceDialog({
   }, [open, invoice?.id, presetJobId, contextKey, contextLoading, queryState?.jobs.isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectedJob = jobs.find((j) => j.id === jobId);
-  const subtotal = lineItems.reduce(
-    (acc, li) => acc + (li.quantity || 0) * (li.unitPrice || 0),
-    0,
-  );
+  const subtotal = invoiceSubtotal(lineItems);
   const total = Math.max(0, Math.max(0, subtotal - (invoice?.discountAmount || 0)) + (invoice?.taxAmount || 0));
   const balance = Math.max(0, total - depositAmount - (invoice?.paidAmount || 0));
 
@@ -281,7 +279,7 @@ export function InvoiceDialog({
                     onChange={(e) =>
                       updateLine(li.id, { description: e.target.value })
                     }
-                  /></div>
+                  />{li.sku && <p className="text-xs text-muted-foreground">SKU {li.sku}</p>}</div>
                   <div className="space-y-1 sm:col-span-3"><span className="text-xs font-medium">Category</span>
                     <Select
                       value={li.category}
@@ -316,7 +314,7 @@ export function InvoiceDialog({
                     aria-label="Unit price"
                     type="number"
                     min={0}
-                    step="0.01"
+                    step="any"
                     value={li.unitPrice}
                     onChange={(e) =>
                       updateLine(li.id, { unitPrice: Number(e.target.value) })

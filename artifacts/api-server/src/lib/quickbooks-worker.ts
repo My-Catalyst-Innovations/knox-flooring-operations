@@ -4,13 +4,14 @@ import { db, invoicesTable, jobsTable, productsTable, proposalsTable, quickbooks
 import { audit } from "./auth";
 import { getConnection, qboRequest } from "./quickbooks";
 import { logger } from "./logger";
+import { assertQuickBooksCompanyLink, quickBooksInvoiceLines } from "./quickbooks-invoice";
 
 const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 async function mapping(entityType: string, localId: string) { const [row] = await db.select().from(quickbooksEntityMappingsTable).where(and(eq(quickbooksEntityMappingsTable.entityType, entityType), eq(quickbooksEntityMappingsTable.localId, localId))).limit(1); return row; }
 
-async function saveMapping(entityType: string, localId: string, entity: any) {
+async function saveMapping(entityType: string, localId: string, entity: any, company?: Pick<typeof quickbooksConnectionsTable.$inferSelect, "realmId" | "environment">) {
   const now = new Date().toISOString(); const existing = await mapping(entityType, localId);
-  const values = { quickbooksId: String(entity.Id), syncToken: String(entity.SyncToken ?? "0"), fingerprint: fingerprint(entity), status: "linked", lastSyncedAt: now, lastError: null, updatedAt: now };
+  const values = { quickbooksId: String(entity.Id), syncToken: String(entity.SyncToken ?? "0"), fingerprint: fingerprint(entity), status: "linked", lastSyncedAt: now, lastError: null, updatedAt: now, ...(company ? { realmId: company.realmId, environment: company.environment } : {}) };
   if (existing) await db.update(quickbooksEntityMappingsTable).set(values).where(eq(quickbooksEntityMappingsTable.id, existing.id));
   else await db.insert(quickbooksEntityMappingsTable).values({ id: randomUUID(), entityType, localId, ...values, createdAt: now });
 }
@@ -18,18 +19,51 @@ async function saveMapping(entityType: string, localId: string, entity: any) {
 async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
   if (job.entityType === "customer" || job.entityType === "project") {
     const [source] = await db.select().from(jobsTable).where(eq(jobsTable.id, job.localId)).limit(1); if (!source) throw new Error("Local job not found");
+    const connection = await getConnection();
+    if (connection?.status !== "connected") throw new Error("QuickBooks is not connected");
     const parent = job.entityType === "project" ? await mapping("customer", source.id) : null;
     const payload: any = job.entityType === "customer" ? { DisplayName: source.customerName, PrimaryEmailAddr: source.email ? { Address: source.email } : undefined, PrimaryPhone: source.phone ? { FreeFormNumber: source.phone } : undefined, BillAddr: { Line1: source.address, City: source.city } } : { DisplayName: `${source.jobNumber} - ${source.customerName}`, Job: true, ParentRef: parent ? { value: parent.quickbooksId } : undefined };
     if (job.entityType === "project" && !parent) throw new Error("Customer must be linked before its project");
-    const existing = await mapping(job.entityType, source.id); if (existing) Object.assign(payload, { Id: existing.quickbooksId, SyncToken: existing.syncToken, sparse: true });
-    const result = await qboRequest("/customer", { method: "POST", body: JSON.stringify(payload) }); await saveMapping(job.entityType, source.id, result.Customer);
+    if (parent) assertQuickBooksCompanyLink("customer", parent, connection);
+    const existing = await mapping(job.entityType, source.id);
+    if (existing) {
+      if (job.entityType === "customer") assertQuickBooksCompanyLink("customer", existing, connection);
+      Object.assign(payload, { Id: existing.quickbooksId, SyncToken: existing.syncToken, sparse: true });
+    }
+    const result = await qboRequest("/customer", { method: "POST", body: JSON.stringify(payload) }, connection.id);
+    await saveMapping(job.entityType, source.id, result.Customer, job.entityType === "customer" ? connection : undefined);
   } else if (job.entityType === "invoice") {
-    const [source] = await db.select().from(invoicesTable).where(eq(invoicesTable.id, job.localId)).limit(1); if (!source) throw new Error("Local invoice not found");
-    const customer = await mapping("customer", source.jobId); if (!customer) throw new Error("Customer mapping is required");
-    const payload: any = { CustomerRef: { value: customer.quickbooksId }, DocNumber: source.invoiceNumber, TxnDate: source.issueDate || undefined, DueDate: source.dueDate || undefined, PrivateNote: source.notes || undefined, Line: source.lineItems.map((line, i) => ({ Id: String(i + 1), Amount: Math.round(line.quantity * line.unitPrice * 100) / 100, DetailType: "SalesItemLineDetail", Description: line.description, SalesItemLineDetail: { Qty: line.quantity, UnitPrice: line.unitPrice } })) };
-    const existing = await mapping("invoice", source.id); if (existing) Object.assign(payload, { Id: existing.quickbooksId, SyncToken: existing.syncToken, sparse: false });
-    const result = await qboRequest("/invoice", { method: "POST", body: JSON.stringify(payload) }); await saveMapping("invoice", source.id, result.Invoice);
-    if (source.depositAmount > 0) await qboRequest("/payment", { method: "POST", body: JSON.stringify({ CustomerRef: { value: customer.quickbooksId }, TotalAmt: source.depositAmount, Line: [{ Amount: source.depositAmount, LinkedTxn: [{ TxnId: result.Invoice.Id, TxnType: "Invoice" }] }] }) });
+    const [source] = await db.select().from(invoicesTable).where(eq(invoicesTable.id, job.localId)).limit(1);
+    if (!source) throw new Error("Local invoice not found");
+    const connection = await getConnection();
+    if (connection?.status !== "connected") throw new Error("QuickBooks is not connected");
+    const productIds = [...new Set(source.lineItems.flatMap(({ productId }) => productId ? [productId] : []))];
+    const items = quickbooksEntityMappingsTable;
+    const links = productIds.length ? await db.select({ productId: items.localId, itemId: items.quickbooksId })
+      .from(items).where(and(
+        eq(items.entityType, "item"),
+        eq(items.status, "linked"),
+        eq(items.realmId, connection.realmId),
+        eq(items.environment, connection.environment),
+        inArray(items.localId, productIds),
+      )) : [];
+    const lines = quickBooksInvoiceLines(source, new Map(links.map(({ productId, itemId }) => [productId, itemId])));
+    const customer = await mapping("customer", source.jobId);
+    if (!customer) throw new Error("Customer mapping is required");
+    assertQuickBooksCompanyLink("customer", customer, connection);
+    const existing = await mapping("invoice", source.id);
+    if (existing) assertQuickBooksCompanyLink("invoice", existing, connection);
+    const payload = {
+      CustomerRef: { value: customer.quickbooksId },
+      DocNumber: source.invoiceNumber,
+      TxnDate: source.issueDate || undefined,
+      DueDate: source.dueDate || undefined,
+      PrivateNote: source.notes || undefined,
+      Line: lines,
+      ...(existing ? { Id: existing.quickbooksId, SyncToken: existing.syncToken, sparse: false } : {}),
+    };
+    const result = await qboRequest("/invoice", { method: "POST", body: JSON.stringify(payload) }, connection.id);
+    await saveMapping("invoice", source.id, result.Invoice, connection);
   } else if (job.entityType === "estimate") {
     const [source] = await db.select().from(proposalsTable).where(eq(proposalsTable.id, job.localId)).limit(1); if (!source) throw new Error("Local proposal not found");
     const customer = await mapping("customer", source.convertedJobId ?? source.id); if (!customer) throw new Error("Customer mapping is required");

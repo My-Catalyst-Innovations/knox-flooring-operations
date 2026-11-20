@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, or, and, inArray, sql } from "drizzle-orm";
+import { eq, ne, or, and, inArray, sql } from "drizzle-orm";
 import {
   db,
   jobsTable,
@@ -175,7 +175,9 @@ router.get("/public/jobs/:token", async (req, res): Promise<void> => {
   const invoiceRows = await db
     .select()
     .from(invoicesTable)
-    .where(eq(invoicesTable.jobId, job.id));
+    .where(
+      and(eq(invoicesTable.jobId, job.id), ne(invoicesTable.status, "Draft")),
+    );
   const sortedInvoices = [...invoiceRows].sort((a, b) =>
     (b.issueDate || "").localeCompare(a.issueDate || ""),
   );
@@ -206,10 +208,10 @@ router.get("/public/jobs/:token", async (req, res): Promise<void> => {
 
   // Payment balances are imported from QuickBooks when connected.
   const invoicedTotal = sortedInvoices
-    .filter((inv) => inv.status !== "Draft" && inv.status !== "Voided")
+    .filter((inv) => inv.status !== "Voided")
     .reduce((sum, inv) => sum + (inv.total || 0), 0);
   const outstanding = sortedInvoices
-    .filter((inv) => inv.status !== "Draft" && inv.status !== "Voided")
+    .filter((inv) => inv.status !== "Voided")
     .reduce((sum, inv) => sum + Math.max(0, inv.balanceAmount || 0), 0);
   const paidTotal = Math.max(0, invoicedTotal - outstanding);
 

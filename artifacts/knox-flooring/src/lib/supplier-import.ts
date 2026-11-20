@@ -1,3 +1,5 @@
+import { readCsv } from "@workspace/domain";
+
 export interface SupplierImportProduct {
   id: string;
   sku: string;
@@ -32,6 +34,8 @@ export interface SupplierImportRow {
   unitCost: string;
   product?: SupplierImportProduct;
   latestPrice?: NonNullable<SupplierCrosswalkAlias["latestPrice"]>;
+  canChooseProduct?: boolean;
+  chosenSku?: string;
   status:
     | "matched"
     | "unmatched"
@@ -49,79 +53,10 @@ export interface SupplierImportPreview {
   errors: string[];
 }
 
-interface CsvRecord {
-  line: number;
-  fields: string[];
-}
-
 const requiredHeaders = ["supplier", "supplier_sku", "unit", "unit_cost"];
 const normalize = (value: string) => value.trim().toLowerCase();
 const supplierSkuKey = (supplier: string, sku: string) =>
   JSON.stringify([normalize(supplier), normalize(sku)]);
-
-function readCsv(csv: string): CsvRecord[] {
-  const source = csv.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
-  const records: CsvRecord[] = [];
-  let line = 1;
-  let recordLine = 1;
-  let fields: string[] = [];
-  let field = "";
-  let state: "unquoted" | "quoted" | "closed" = "unquoted";
-
-  function finishField() {
-    fields.push(field.trim());
-    field = "";
-    state = "unquoted";
-  }
-
-  function finishRecord() {
-    finishField();
-    if (fields.some(Boolean)) records.push({ line: recordLine, fields });
-    fields = [];
-  }
-
-  for (let offset = 0; offset < source.length; offset++) {
-    const character = source[offset];
-    if (state === "quoted") {
-      if (character === '"') {
-        if (source[offset + 1] === '"') {
-          field += '"';
-          offset++;
-        } else {
-          state = "closed";
-        }
-      } else {
-        field += character;
-        if (character === "\n") line++;
-      }
-    } else if (character === ",") {
-      finishField();
-    } else if (character === "\n") {
-      finishRecord();
-      recordLine = ++line;
-    } else if (state === "closed") {
-      if (character !== " " && character !== "\t") {
-        throw new Error(
-          `Unexpected text after a closing quote on line ${line}.`,
-        );
-      }
-    } else if (character === '"') {
-      if (field.trim()) throw new Error(`Unexpected quote on line ${line}.`);
-      field = "";
-      state = "quoted";
-    } else {
-      field += character;
-    }
-  }
-
-  if (state === "quoted") {
-    throw new Error(
-      `Unclosed quoted field in the record on line ${recordLine}.`,
-    );
-  }
-  finishRecord();
-  return records;
-}
 
 function addProduct(
   index: Map<string, SupplierImportProduct[]>,
@@ -137,8 +72,9 @@ export function previewSupplierImport(
   csv: string,
   products: readonly SupplierImportProduct[],
   aliases: readonly SupplierCrosswalkAlias[] = [],
+  chosenSkus?: ReadonlyMap<number, string>,
 ): SupplierImportPreview {
-  let records: CsvRecord[];
+  let records: ReturnType<typeof readCsv>;
   try {
     records = readCsv(csv);
   } catch (error) {
@@ -247,12 +183,16 @@ export function previewSupplierImport(
     const supplierMatches = approvedProduct
       ? [approvedProduct]
       : (bySupplierSku.get(key) ?? []);
-    const matches = row.internalSku
-      ? (bySku.get(normalize(row.internalSku)) ?? [])
+    const chosenSku = chosenSkus?.get(row.line);
+    const canChooseProduct = !alias && !supplierMatches.length;
+    const internalSku = chosenSku ?? row.internalSku;
+    const matches = internalSku
+      ? (bySku.get(normalize(internalSku)) ?? [])
       : supplierMatches;
     if (matches.length > 1) {
       return {
         ...row,
+        chosenSku,
         status: "ambiguous",
         message: "Multiple catalog products match this SKU.",
       };
@@ -261,18 +201,21 @@ export function previewSupplierImport(
     if (!product) {
       return {
         ...row,
+        chosenSku,
+        canChooseProduct,
         status: "unmatched",
-        message: row.internalSku
+        message: internalSku
           ? "No catalog product matches the supplied internal SKU."
-          : "No catalog product matches this supplier and SKU. Enter its internal SKU to propose a crosswalk.",
+          : "Choose the product for this supplier SKU.",
       };
     }
     if (
-      row.internalSku &&
+      internalSku &&
       supplierMatches.some((match) => match.id !== product.id)
     ) {
       return {
         ...row,
+        chosenSku,
         status: "ambiguous",
         message:
           "The internal SKU and supplier SKU point to different catalog products.",
@@ -287,6 +230,7 @@ export function previewSupplierImport(
       return {
         ...row,
         product,
+        chosenSku,
         status: "ambiguous",
         message:
           "The manufacturer part number conflicts with the approved crosswalk.",
@@ -296,6 +240,7 @@ export function previewSupplierImport(
       return {
         ...row,
         product,
+        chosenSku,
         status: "archived",
         message: "The matched product is archived.",
       };
@@ -304,6 +249,7 @@ export function previewSupplierImport(
       return {
         ...row,
         product,
+        chosenSku,
         status: "invalid",
         message:
           "Assign an internal SKU in the catalog before approving a supplier crosswalk.",
@@ -313,6 +259,7 @@ export function previewSupplierImport(
       return {
         ...row,
         product,
+        chosenSku,
         status: "unit-mismatch",
         message: `The catalog uses ${product.unit}; confirm the supplier unit before comparing costs.`,
       };
@@ -329,13 +276,17 @@ export function previewSupplierImport(
     return {
       ...row,
       product,
+      chosenSku,
+      canChooseProduct: !!chosenSku && canChooseProduct,
       status: "matched",
       latestPrice,
       message: alias
         ? "Matched by approved crosswalk."
-        : row.internalSku
-          ? "Matched by internal SKU."
-          : "Matched by supplier and SKU.",
+        : chosenSku
+          ? "Matched by your catalog selection."
+          : row.internalSku
+            ? "Matched by internal SKU."
+            : "Matched by supplier and SKU.",
       priceDifference:
         proposed === reference
           ? "same"

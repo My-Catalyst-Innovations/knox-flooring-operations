@@ -3083,7 +3083,7 @@ components:
         lineItems:
           type: array
           items:
-            $ref: "#/components/schemas/InvoiceLineItem"
+            $ref: "#/components/schemas/PublicInvoiceLineItem"
         subtotal:
           type: number
         taxableAmount:
@@ -3959,7 +3959,7 @@ components:
         color:
           type: string
           nullable: true
-    InvoiceLineItem:
+    PublicInvoiceLineItem:
       type: object
       required: [ id, description, category, quantity, unitPrice ]
       properties:
@@ -3973,6 +3973,15 @@ components:
           type: number
         unitPrice:
           type: number
+    InvoiceLineItem:
+      allOf:
+        - $ref: "#/components/schemas/PublicInvoiceLineItem"
+        - type: object
+          properties:
+            productId:
+              type: string
+            sku:
+              type: string
     Invoice:
       type: object
       required:

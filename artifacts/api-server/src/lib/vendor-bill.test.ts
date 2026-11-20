@@ -3,6 +3,7 @@ import {
   buildVendorBill,
   matchesPostedBill,
   reconcileSandboxBill,
+  reviewVendorBill,
   vendorBillInput,
 } from "./vendor-bill";
 
@@ -31,6 +32,40 @@ const mapping = [
 ];
 
 describe("supplier bill purchase reconciliation", () => {
+  it("reviews dated purchase prices and exact totals without QuickBooks identifiers", () => {
+    const reviewInput = vendorBillInput.parse({
+      ...input,
+      mode: "review",
+      vendorId: undefined,
+    });
+    const localMapping = [{
+      supplierSku: "00073",
+      productName: "Oak",
+      internalSku: "KF-0073",
+      unit: "box",
+      expectedUnitCost: "48.000000",
+      priceEffectiveOn: "2026-11-01",
+      priceSource: "Vendor agreement",
+    }];
+
+    expect(reviewVendorBill(reviewInput, localMapping)).toEqual({
+      supplier: "Fixture Supply",
+      totalCents: 49925,
+      priceDiffers: true,
+      lines: [{
+        ...localMapping[0],
+        quantity: "10",
+        billedUnitCost: "49.925",
+        totalCents: 49925,
+        priceDiffers: true,
+      }],
+    });
+    expect(() => reviewVendorBill({ ...reviewInput, billTotal: "499.24" }, localMapping))
+      .toThrow("source bill total");
+    expect(() => reviewVendorBill(reviewInput, [{ ...localMapping[0], unit: "sqft" }]))
+      .toThrow("purchase unit");
+  });
+
   it("preserves the approved lot's price context and sends the exact source bill amount and item ID", () => {
     const review = buildVendorBill(input, mapping, input.vendorId!);
     expect(review.priceDiffers).toBe(true);

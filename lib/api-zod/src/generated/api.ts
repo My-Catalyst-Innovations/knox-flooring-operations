@@ -604,7 +604,10 @@ export const ConvertProposalResponse = zod.object({
   "category": zod.enum(['Labor', 'Materials', 'Add-on']),
   "quantity": zod.number(),
   "unitPrice": zod.number()
-})),
+}).and(zod.object({
+  "productId": zod.string().optional(),
+  "sku": zod.string().optional()
+}))),
   "subtotal": zod.number(),
   "taxableAmount": zod.number(),
   "taxAmount": zod.number(),
@@ -1716,7 +1719,10 @@ export const ListInvoicesResponseItem = zod.object({
   "category": zod.enum(['Labor', 'Materials', 'Add-on']),
   "quantity": zod.number(),
   "unitPrice": zod.number()
-})),
+}).and(zod.object({
+  "productId": zod.string().optional(),
+  "sku": zod.string().optional()
+}))),
   "subtotal": zod.number(),
   "taxableAmount": zod.number(),
   "taxAmount": zod.number(),
@@ -1753,7 +1759,10 @@ export const CreateInvoiceBody = zod.object({
   "category": zod.enum(['Labor', 'Materials', 'Add-on']),
   "quantity": zod.number(),
   "unitPrice": zod.number()
-})),
+}).and(zod.object({
+  "productId": zod.string().optional(),
+  "sku": zod.string().optional()
+}))),
   "depositAmount": zod.number().optional(),
   "taxAmount": zod.number().optional(),
   "discountAmount": zod.number().optional(),
@@ -1781,7 +1790,10 @@ export const UpdateInvoiceBody = zod.object({
   "category": zod.enum(['Labor', 'Materials', 'Add-on']),
   "quantity": zod.number(),
   "unitPrice": zod.number()
-})).optional(),
+}).and(zod.object({
+  "productId": zod.string().optional(),
+  "sku": zod.string().optional()
+}))).optional(),
   "depositAmount": zod.number().optional(),
   "taxAmount": zod.number().optional(),
   "discountAmount": zod.number().optional(),
@@ -1805,7 +1817,10 @@ export const UpdateInvoiceResponse = zod.object({
   "category": zod.enum(['Labor', 'Materials', 'Add-on']),
   "quantity": zod.number(),
   "unitPrice": zod.number()
-})),
+}).and(zod.object({
+  "productId": zod.string().optional(),
+  "sku": zod.string().optional()
+}))),
   "subtotal": zod.number(),
   "taxableAmount": zod.number(),
   "taxAmount": zod.number(),

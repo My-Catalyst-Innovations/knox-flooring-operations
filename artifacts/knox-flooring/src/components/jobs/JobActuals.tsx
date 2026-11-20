@@ -397,8 +397,9 @@ export function JobActuals({
                   <div className="min-w-0">
                     <p className="font-medium">{entry.material}</p>
                     <p className="text-sm text-muted-foreground">
-                      {entry.quantity} units · {currency(entry.cost)} total
-                      {entry.movementId ? " · Stock recorded" : ""}
+                      {entry.movementId && entry.quantity < 0
+                        ? `${Math.abs(entry.quantity)} returned · ${currency(entry.cost)} material credit`
+                        : `${entry.quantity} units · ${currency(entry.cost)} total${entry.movementId ? " · Stock issued" : ""}`}
                     </p>
                     {entry.callbackId && (
                       <p className="text-sm text-muted-foreground">

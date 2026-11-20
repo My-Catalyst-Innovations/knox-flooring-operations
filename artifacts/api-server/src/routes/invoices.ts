@@ -21,6 +21,7 @@ import { queueQuickBooksReview } from "../lib/quickbooks-queue";
 import { nextDocumentNumber } from "../lib/conversions";
 import { domainRoute } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
+import { invoiceSubtotal } from "@workspace/domain";
 
 const router: IRouter = Router();
 
@@ -38,10 +39,7 @@ function computeTotals(lineItems: InvoiceLineItem[], taxAmount = 0, discountAmou
   taxableAmount: number;
   balanceAmount: number;
 } {
-  const subtotal = lineItems.reduce(
-    (acc, item) => acc + (item.quantity || 0) * (item.unitPrice || 0),
-    0,
-  );
+  const subtotal = invoiceSubtotal(lineItems);
   const taxableAmount = Math.max(0, subtotal - discountAmount);
   const total = Math.max(0, taxableAmount + taxAmount);
   return { subtotal, taxableAmount, total, balanceAmount: Math.max(0, total - depositAmount - paidAmount) };
@@ -108,7 +106,13 @@ router.patch("/invoices/:id", async (req, res): Promise<void> => {
   const current = (await db.select().from(invoicesTable).where(eq(invoicesTable.id, params.data.id)).limit(1))[0];
   if (!current) { res.status(404).json({ error: "Invoice not found" }); return; }
   if (parsed.data.lineItems || parsed.data.taxAmount !== undefined || parsed.data.discountAmount !== undefined || parsed.data.depositAmount !== undefined) {
-    const lineItems = (parsed.data.lineItems ?? current.lineItems) as InvoiceLineItem[];
+    const existingLines = new Map(current.lineItems.map((line) => [line.id, line]));
+    const lineItems = parsed.data.lineItems?.map((line) => {
+      const existing = existingLines.get(line.id);
+      const productId = line.productId ?? existing?.productId;
+      const sku = line.sku ?? (productId === existing?.productId ? existing?.sku : undefined);
+      return { ...line, productId, sku };
+    }) ?? current.lineItems;
     const { subtotal, taxableAmount, total, balanceAmount } = computeTotals(lineItems, parsed.data.taxAmount ?? current?.taxAmount ?? 0, parsed.data.discountAmount ?? current?.discountAmount ?? 0, parsed.data.depositAmount ?? current?.depositAmount ?? 0, current?.paidAmount ?? 0);
     updates.lineItems = lineItems;
     updates.subtotal = subtotal;

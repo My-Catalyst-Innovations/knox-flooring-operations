@@ -1,0 +1,2 @@
+ALTER TABLE "inventory_movements" ADD COLUMN "issue_unit_cost" numeric;--> statement-breakpoint
+ALTER TABLE "inventory_movements" ADD CONSTRAINT "inventory_movements_issue_unit_cost_valid" CHECK ("inventory_movements"."issue_unit_cost" IS NULL OR ("inventory_movements"."kind" = 'consume' AND "inventory_movements"."job_id" IS NOT NULL AND "inventory_movements"."issue_unit_cost" >= 0 AND "inventory_movements"."issue_unit_cost" < 'Infinity'::numeric));

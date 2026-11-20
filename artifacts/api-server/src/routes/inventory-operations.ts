@@ -10,9 +10,14 @@ import {
   inventoryReservationsTable,
   inventoryTransfersTable,
   materialUsageTable,
+  supplierProductAliasesTable,
   warehousesTable,
 } from "@workspace/db";
 import { validateCallback } from "../lib/entry-references";
+import {
+  issueChargeCents,
+  returnCreditCents,
+} from "../lib/inventory-issue-cost";
 import { requireRole } from "../middlewares/auth";
 import { domainRoute, parse, revision, id } from "../lib/domain-http";
 import {
@@ -29,6 +34,7 @@ type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type StockProduct = typeof productsTable.$inferSelect;
 const warehouseIdInput = z.string().min(1).nullable().optional();
 const requestKey = z.string().min(8).max(200);
+const productLabelCode = z.string().trim().min(1).max(512);
 const roundStock = (quantity: number) => Math.round(quantity * 1e6) / 1e6;
 
 function namedBalances(tx: Transaction, productId?: string) {
@@ -90,6 +96,40 @@ async function verifyWarehouse(tx: Transaction, warehouseId: string | null) {
   if (!warehouse) throw new DomainError(404, "Warehouse not found.");
 }
 
+async function verifyProductLabel(
+  reader: Pick<typeof db, "execute">,
+  productId: string,
+  labelCode: string,
+) {
+  const normalized = labelCode.toLowerCase();
+  const { rows } = await reader.execute<{ productId: string }>(sql`
+    SELECT ${productsTable.id} AS "productId"
+    FROM ${productsTable}
+    WHERE lower(btrim(${productsTable.sku})) = ${normalized}
+    UNION
+    SELECT ${supplierProductAliasesTable.productId}
+    FROM ${supplierProductAliasesTable}
+    WHERE ${supplierProductAliasesTable.supplierSkuKey} = ${normalized}
+      OR lower(btrim(${supplierProductAliasesTable.manufacturerPartNumber})) = ${normalized}
+    LIMIT 2
+  `);
+  if (rows.length > 1)
+    throw new DomainError(
+      409,
+      "This label matches multiple products. Use the unique internal SKU or correct the catalog mapping.",
+    );
+  if (!rows.length)
+    throw new DomainError(
+      409,
+      "This label has no catalog match. Check the code and supplier mapping.",
+    );
+  if (rows[0].productId !== productId)
+    throw new DomainError(
+      409,
+      "This label belongs to a different product. Check the stock before recording the issue.",
+    );
+}
+
 async function ensureOpeningMovement(
   tx: Transaction,
   product: StockProduct,
@@ -129,6 +169,129 @@ async function updateStockTotal(
       updatedAt: now,
     })
     .where(eq(productsTable.id, product.id));
+}
+
+function issueUnitCostFor(product: StockProduct) {
+  if (!Number.isFinite(product.cost) || product.cost < 0) {
+    throw new DomainError(
+      409,
+      "Set a valid catalog cost before issuing this product to a job.",
+    );
+  }
+  return String(product.cost);
+}
+
+function postedIssueCost(quantity: number, rate: string) {
+  const cents = issueChargeCents(quantity, rate);
+  if (!Number.isSafeInteger(cents)) {
+    throw new DomainError(
+      409,
+      "This material charge exceeds the supported amount.",
+    );
+  }
+  return cents / 100;
+}
+
+async function calculateReturnCredit(
+  tx: Transaction,
+  issue: typeof inventoryMovementsTable.$inferSelect,
+  quantity: number,
+) {
+  const issuedQuantity = -issue.quantity;
+  const matchingCharges = await tx
+    .select()
+    .from(materialUsageTable)
+    .where(eq(materialUsageTable.movementId, issue.id))
+    .limit(2);
+  const [charge] = matchingCharges;
+  const postedCents = Math.round((charge?.cost ?? NaN) * 100);
+  if (
+    matchingCharges.length !== 1 ||
+    !charge ||
+    charge.jobId !== issue.jobId ||
+    charge.productId !== issue.productId ||
+    issuedQuantity <= 0 ||
+    !Number.isFinite(issuedQuantity) ||
+    charge.quantity !== issuedQuantity ||
+    !Number.isSafeInteger(postedCents) ||
+    postedCents < 0
+  ) {
+    throw new DomainError(
+      409,
+      "The original issue has no verifiable material charge. Review its stock and job history before returning it.",
+    );
+  }
+
+  const earlierReturns = await tx
+    .select({
+      id: inventoryMovementsTable.id,
+      quantity: inventoryMovementsTable.quantity,
+      usage: materialUsageTable,
+    })
+    .from(inventoryMovementsTable)
+    .leftJoin(
+      materialUsageTable,
+      eq(materialUsageTable.movementId, inventoryMovementsTable.id),
+    )
+    .where(eq(inventoryMovementsTable.returnOfMovementId, issue.id));
+  if (
+    new Set(earlierReturns.map((row) => row.id)).size !== earlierReturns.length
+  ) {
+    throw new DomainError(
+      409,
+      "A prior return has more than one material credit. Review its history before adding another.",
+    );
+  }
+  const earlierQuantity = earlierReturns.reduce(
+    (sum, row) => sum + row.quantity,
+    0,
+  );
+  if (quantity > issuedQuantity - earlierQuantity + 0.000001) {
+    throw new DomainError(
+      409,
+      "The return exceeds the remaining quantity from that issue.",
+    );
+  }
+
+  let creditedQuantity = 0;
+  let creditedCents = 0;
+  for (const row of earlierReturns) {
+    // Returns written before costing was enabled already restored stock. Their job costs remain as recorded.
+    if (!row.usage) continue;
+    const cents = Math.round(-row.usage.cost * 100);
+    if (
+      row.usage.jobId !== charge.jobId ||
+      row.usage.productId !== charge.productId ||
+      row.usage.quantity !== -row.quantity ||
+      !Number.isSafeInteger(cents) ||
+      cents < 0
+    ) {
+      throw new DomainError(
+        409,
+        "A prior return has an unverifiable material credit. Review its history before adding another.",
+      );
+    }
+    creditedQuantity += row.quantity;
+    creditedCents += cents;
+  }
+  if (creditedCents > postedCents) {
+    throw new DomainError(
+      409,
+      "Previous returns already exceed the original material charge.",
+    );
+  }
+
+  return {
+    charge,
+    amount:
+      returnCreditCents({
+        issuedQuantity,
+        postedCents,
+        issueUnitCost: issue.issueUnitCost,
+        creditedQuantity: roundStock(creditedQuantity + quantity),
+        creditedCents,
+      }) / 100,
+  };
 }
 
 router.get(
@@ -259,6 +422,17 @@ router.get(
   }),
 );
 router.post(
+  "/inventory/verify-product-label",
+  domainRoute(async (req, res) => {
+    const { productId, labelCode } = parse(
+      z.object({ productId: z.string().min(1), labelCode: productLabelCode }),
+      req.body,
+    );
+    await verifyProductLabel(db, productId, labelCode);
+    res.json({ matched: true });
+  }),
+);
+router.post(
   "/inventory/movements",
   domainRoute(async (req, res) => {
     const data = parse(
@@ -268,6 +442,7 @@ router.post(
         warehouseId: warehouseIdInput,
         returnOfMovementId: z.string().min(1).optional(),
         callbackId: z.string().min(1).optional(),
+        labelCode: productLabelCode.optional(),
         kind: z.enum(["receipt", "return", "consume", "adjustment"]),
         quantity: z.number().finite(),
         reason: z.string().trim().min(1).max(2000),
@@ -299,6 +474,8 @@ router.post(
         400,
         "Callback costs require consumption for a job.",
       );
+    if (data.labelCode && data.kind !== "consume")
+      throw new DomainError(400, "Label verification applies to stock issues.");
     if (
       data.overrideReason &&
       (req.auth!.actualRole !== "owner" || req.auth!.previewRole)
@@ -313,6 +490,8 @@ router.post(
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtext(${"inventory:" + data.productId}))`,
       );
+      if (data.labelCode)
+        await verifyProductLabel(tx, data.productId, data.labelCode);
       const [duplicate] = await tx
         .select()
         .from(inventoryMovementsTable)
@@ -361,6 +540,9 @@ router.post(
         )[0]
       )
         throw new DomainError(404, "Job not found");
+      let returnCredit:
+        | Awaited<ReturnType<typeof calculateReturnCredit>>
+        | undefined;
       if (data.returnOfMovementId) {
         const [issue] = await tx
           .select()
@@ -377,18 +559,7 @@ router.post(
             "The original issue must match the selected SKU and job.",
           );
         }
-        const [prior] = await tx
-          .select({
-            quantity: sql<number>`coalesce(sum(${inventoryMovementsTable.quantity}::double precision), 0)`,
-          })
-          .from(inventoryMovementsTable)
-          .where(eq(inventoryMovementsTable.returnOfMovementId, issue.id));
-        if (data.quantity > -issue.quantity - prior.quantity + 0.000001) {
-          throw new DomainError(
-            409,
-            "The return exceeds the remaining quantity from that issue.",
-          );
-        }
+        returnCredit = await calculateReturnCredit(tx, issue, data.quantity);
       }
       const { available } = await locationAvailability(
         tx,
@@ -410,6 +581,8 @@ router.post(
           { available },
         );
       const now = new Date().toISOString();
+      const issuingJob = data.kind === "consume" ? data.jobId : undefined;
+      const issueUnitCost = issuingJob ? issueUnitCostFor(product) : undefined;
       await ensureOpeningMovement(tx, product, now);
       const [row] = await tx
         .insert(inventoryMovementsTable)
@@ -419,6 +592,7 @@ router.post(
           jobId: data.jobId,
           warehouseId,
           returnOfMovementId: data.returnOfMovementId,
+          issueUnitCost,
           quantity: delta,
           kind: data.kind,
           reason: data.overrideReason
@@ -429,19 +603,33 @@ router.post(
           createdAt: now,
         })
         .returning();
-      if (data.kind === "consume" && data.jobId)
+      if (issuingJob && issueUnitCost !== undefined)
         await tx.insert(materialUsageTable).values({
           id: randomUUID(),
-          jobId: data.jobId,
+          jobId: issuingJob,
           productId: product.id,
           movementId: row.id,
           callbackId: data.callbackId,
           material: product.name,
-          quantity: data.quantity,
-          cost: Math.round(data.quantity * product.cost * 100) / 100,
+          quantity: -row.quantity,
+          cost: postedIssueCost(-row.quantity, issueUnitCost),
           notes: data.reason,
           createdAt: now,
         });
+      if (returnCredit) {
+        await tx.insert(materialUsageTable).values({
+          id: randomUUID(),
+          jobId: returnCredit.charge.jobId,
+          productId: product.id,
+          movementId: row.id,
+          callbackId: returnCredit.charge.callbackId,
+          material: returnCredit.charge.material,
+          quantity: -row.quantity,
+          cost: -returnCredit.amount,
+          notes: data.reason,
+          createdAt: now,
+        });
+      }
       await updateStockTotal(tx, product, delta, now);
       return row;
     });
@@ -530,6 +718,7 @@ router.patch(
         revision,
         status: z.enum(["Released", "Consumed"]),
         callbackId: z.string().min(1).optional(),
+        labelCode: productLabelCode.optional(),
       }),
       req.body,
     );
@@ -537,6 +726,11 @@ router.patch(
       throw new DomainError(
         400,
         "Callback costs apply only when reserved stock is consumed.",
+      );
+    if (data.labelCode && data.status !== "Consumed")
+      throw new DomainError(
+        400,
+        "Label verification applies to reservation issues.",
       );
     const result = await db.transaction(async (tx) => {
       const [initial] = await tx
@@ -552,6 +746,8 @@ router.patch(
         .from(inventoryReservationsTable)
         .where(eq(inventoryReservationsTable.id, id(req)))
         .for("update");
+      if (data.labelCode)
+        await verifyProductLabel(tx, current.productId, data.labelCode);
       if (current.status === data.status) {
         if (data.status === "Consumed") {
           const [movement] = await tx
@@ -603,6 +799,7 @@ router.patch(
             "Reserved material is no longer on hand; reconcile stock first.",
           );
         await ensureOpeningMovement(tx, product, now);
+        const issueUnitCost = issueUnitCostFor(product);
         const [movement] = await tx
           .insert(inventoryMovementsTable)
           .values({
@@ -610,6 +807,7 @@ router.patch(
             productId: product.id,
             jobId: current.jobId,
             warehouseId: current.warehouseId,
+            issueUnitCost,
             quantity: -current.quantity,
             kind: "consume",
             reason: "Consumed job reservation",
@@ -626,7 +824,7 @@ router.patch(
           callbackId: data.callbackId,
           material: product.name,
           quantity: current.quantity,
-          cost: Math.round(current.quantity * product.cost * 100) / 100,
+          cost: postedIssueCost(current.quantity, issueUnitCost),
           notes: "Consumed reserved stock",
           createdAt: now,
         });

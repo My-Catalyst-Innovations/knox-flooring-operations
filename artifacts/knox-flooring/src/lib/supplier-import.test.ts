@@ -76,6 +76,52 @@ describe("supplier CSV preview", () => {
     ).toEqual(["ambiguous", "unmatched"]);
   });
 
+  it("revalidates a manually selected SKU against supplier mappings, manufacturer codes, duplicates, and units", () => {
+    const csv = `${headers},manufacturer_part_number\nFactory,PICKED,sqft,1.50,PART-A\nFactory,OLD,sqft,1,PART-B\nFactory,PART,sqft,1,OTHER-PART\nFactory,DUP,sqft,1,\nFACTORY,dup,sqft,1,\nFactory,UNIT,box,1,`;
+    const alias = {
+      id: "alias-1",
+      productId: product.id,
+      supplier: "Factory",
+      supplierSku: "OLD",
+      manufacturerPartNumber: "PART-B",
+      latestPrice: null,
+    };
+    const other = { ...product, id: "other-1", sku: "OTHER" };
+    const selected = new Map([
+      [2, product.sku],
+      [3, other.sku],
+      [4, product.sku],
+      [5, product.sku],
+      [6, product.sku],
+      [7, product.sku],
+    ]);
+    const { rows } = previewSupplierImport(
+      csv,
+      [product, other],
+      [alias, { ...alias, supplierSku: "PART" }],
+      selected,
+    );
+    expect(rows).toMatchObject([
+      {
+        status: "matched",
+        canChooseProduct: true,
+        chosenSku: product.sku,
+        product: { id: product.id },
+      },
+      {
+        status: "ambiguous",
+        message: expect.stringContaining("point to different catalog products"),
+      },
+      {
+        status: "ambiguous",
+        message: expect.stringContaining("manufacturer part number conflicts"),
+      },
+      { status: "duplicate" },
+      { status: "duplicate" },
+      { status: "unit-mismatch" },
+    ]);
+  });
+
   it("resolves approved aliases and compares against the latest negotiated cost precisely", () => {
     const csv = `${headers},manufacturer_part_number\nFactory,AB-12,sqft,999999999999.000001,M-35\nFactory,AB-13,sqft,1,M-36`;
     const saved = {

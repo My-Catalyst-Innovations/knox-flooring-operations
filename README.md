@@ -10,6 +10,12 @@ For a temporary evaluation environment, set `DEMO_ACCESS_ENABLED=true` to show a
 
 Copy `.env.example` into your local secret manager and never commit real credentials. Production values belong in DigitalOcean encrypted environment variables.
 
+## Inventory onboarding
+
+Create your warehouse names under **Inventory → Warehouses**. Download the CSV template under **Inventory → Import products**. Enter each internal SKU as text to preserve leading zeros. If a product has no internal SKU yet, leave that value blank and enter a stable `source_item_id` from your export. Use a separate row for each warehouse with an opening count for that item. Keep the item identifiers, product details, stock unit, and prices the same on those rows. The preview shows the assigned SKUs and flags existing records and rows that need correction.
+
+Use **Preview supplier CSV** to match manufacturer part numbers and supplier SKUs to your internal SKUs. The owner approves each supplier price and its effective date. Use a physical stock count for warehouse balances and the vendor agreement for approved purchase prices.
+
 ## QuickBooks Online setup
 
 1. Create an app in the Intuit Developer dashboard and enable the `com.intuit.quickbooks.accounting` scope.

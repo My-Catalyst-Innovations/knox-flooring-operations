@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type IRouter } from "express";
-import { and, desc, eq, inArray, lte } from "drizzle-orm";
+import { and, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   db,
@@ -15,9 +15,11 @@ import { DomainError } from "../lib/operations-rules";
 import { getConnection, qboQuery, qboRequest } from "../lib/quickbooks";
 import {
   buildVendorBill,
+  reviewVendorBill,
   reconcileSandboxBill,
   vendorBillEntity,
   vendorBillInput,
+  vendorBillMode,
   type VendorBillInput,
 } from "../lib/vendor-bill";
 import { requireOwner } from "../middlewares/auth";
@@ -29,6 +31,7 @@ const hash = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const normalized = (value: string) => value.trim().toLowerCase();
 type Context =
+  | { mode: "review" }
   | { mode: "simulated" }
   | { mode: "sandbox"; realmId: string; connectionId: string };
 
@@ -36,6 +39,12 @@ async function billContext(
   mode: VendorBillInput["mode"],
   realmId?: string,
 ): Promise<Context> {
+  if (mode === "review") {
+    if (process.env.DEMO_MODE === "true") {
+      throw new DomainError(409, "Local supplier bill reviews are available outside demo mode.");
+    }
+    return { mode };
+  }
   const connection = await getConnection();
   if (
     mode === "simulated" &&
@@ -122,7 +131,7 @@ async function prepare(input: VendorBillInput, context: Context) {
   const items = new Map(
     itemLinks.map((link) => [link.localId, link.quickbooksId]),
   );
-  const mappings = input.lines.map((line) => {
+  const reviewedMappings = input.lines.map((line) => {
     const row = aliases.get(normalized(line.supplierSku));
     const price = row && prices.get(row.alias.id);
     if (
@@ -135,25 +144,33 @@ async function prepare(input: VendorBillInput, context: Context) {
         `An active product and approved dated purchase price are required for ${line.supplierSku}.`,
       );
     }
-    const itemId =
-      context.mode === "simulated"
-        ? `SIM-${row.product.id}`
-        : items.get(row.product.id);
-    if (!itemId || (context.mode === "sandbox" && !/^\d{1,30}$/.test(itemId)))
-      throw new DomainError(
-        409,
-        `Link ${row.product.sku} to an item in this sandbox through Import & reconcile.`,
-      );
     return {
-      supplierSku: row.alias.supplierSku,
-      productName: row.product.name,
-      internalSku: row.product.sku,
-      unit: price.unit,
-      expectedUnitCost: price.unitCost,
-      priceEffectiveOn: price.effectiveOn,
-      priceSource: price.source,
-      quickBooksItemId: itemId,
+      productId: row.product.id,
+      line: {
+        supplierSku: row.alias.supplierSku,
+        productName: row.product.name,
+        internalSku: row.product.sku,
+        unit: price.unit,
+        expectedUnitCost: price.unitCost,
+        priceEffectiveOn: price.effectiveOn,
+        priceSource: price.source,
+      },
     };
+  });
+  if (context.mode === "review") {
+    return {
+      ...reviewVendorBill(input, reviewedMappings.map(({ line }) => line)),
+      billNumber: input.billNumber,
+      billDate: input.billDate,
+      mode: context.mode,
+    } as const;
+  }
+  const mappings = reviewedMappings.map(({ productId, line }) => {
+    const itemId = context.mode === "simulated" ? `SIM-${productId}` : items.get(productId);
+    if (!itemId || (context.mode === "sandbox" && !/^\d{1,30}$/.test(itemId))) {
+      throw new DomainError(409, `Link ${line.internalSku} to an item in this sandbox through Import & reconcile.`);
+    }
+    return { ...line, quickBooksItemId: itemId };
   });
   if (context.mode === "sandbox" && !input.vendorId)
     throw new DomainError(
@@ -165,8 +182,8 @@ async function prepare(input: VendorBillInput, context: Context) {
     mappings,
     context.mode === "simulated" ? "SIM-VENDOR" : input.vendorId!,
   );
-  if (context.mode === "simulated") return { ...prepared, mode: context.mode };
-  return { ...prepared, mode: context.mode, realmId: context.realmId };
+  if (context.mode === "simulated") return { ...prepared, mode: context.mode } as const;
+  return { ...prepared, mode: context.mode, realmId: context.realmId } as const;
 }
 
 type BillPayload = Awaited<ReturnType<typeof prepare>> & {
@@ -178,11 +195,12 @@ type BillPayload = Awaited<ReturnType<typeof prepare>> & {
 router.get(
   basePath,
   requireOwner,
-  domainRoute(async (_req, res) => {
+  domainRoute(async (req, res) => {
+    const { mode } = parse(z.object({ mode: vendorBillMode.optional() }), req.query);
     const rows = await db
       .select()
       .from(queue)
-      .where(eq(queue.entityType, vendorBillEntity))
+      .where(and(eq(queue.entityType, vendorBillEntity), mode ? sql`${queue.payload}->>'mode' = ${mode}` : undefined))
       .orderBy(desc(queue.createdAt))
       .limit(20);
     res.json(rows);
@@ -218,8 +236,8 @@ router.post(
       );
 
     const counterparty =
-      context.mode === "sandbox"
-        ? [context.realmId, prepared.quickBooksBill.VendorRef.value]
+      prepared.mode === "sandbox"
+        ? [prepared.realmId, prepared.quickBooksBill.VendorRef.value]
         : [normalized(prepared.supplier)];
     const localId = hash([
       context.mode,
@@ -235,7 +253,7 @@ router.post(
         idempotencyKey,
         entityType: vendorBillEntity,
         localId,
-        action: "create",
+        action: prepared.mode === "review" ? "review" : "create",
         status: "pending_approval",
         payload: { ...prepared, fingerprint: input.fingerprint },
         warnings: prepared.priceDiffers
@@ -274,16 +292,37 @@ router.post(
         and(eq(queue.id, id(req)), eq(queue.entityType, vendorBillEntity)),
       );
     if (!bill) throw new DomainError(404, "Supplier bill not found.");
-    if (bill.status === "completed" || bill.status === "demo_completed") {
+    if (bill.status === "completed" || bill.status === "demo_completed" || bill.status === "reviewed") {
       res.json(bill);
       return;
     }
     const payload = bill.payload as BillPayload;
+    const now = new Date().toISOString();
+    if (payload.mode === "review") {
+      await billContext("review");
+      const [reviewed] = await db.update(queue).set({
+        status: "reviewed",
+        approvedBy: req.auth!.userId,
+        approvedAt: now,
+        completedAt: now,
+        updatedAt: now,
+      }).where(and(eq(queue.id, bill.id), eq(queue.status, "pending_approval"))).returning();
+      if (reviewed) {
+        res.json(reviewed);
+        return;
+      }
+      const [current] = await db.select().from(queue).where(eq(queue.id, bill.id));
+      if (current?.status !== "reviewed") {
+        throw new DomainError(409, "Review the current supplier bill status before retrying.");
+      }
+      res.json(current);
+      return;
+    }
     const context = await billContext(
       payload.mode,
       payload.mode === "sandbox" ? payload.realmId : undefined,
     );
-    const now = new Date().toISOString();
+    if (context.mode === "review") throw new DomainError(409, "Review the original supplier bill mode before retrying.");
     const stuck =
       bill.status === "processing" &&
       !!bill.startedAt &&

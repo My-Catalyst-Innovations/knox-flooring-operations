@@ -396,7 +396,7 @@ export interface PublicPortalQuote {
   lineItems?: ProposalLineItem[];
 }
 
-export interface InvoiceLineItem {
+export interface PublicInvoiceLineItem {
   id: string;
   description: string;
   category: InvoiceLineCategory;
@@ -407,7 +407,7 @@ export interface InvoiceLineItem {
 export interface PublicInvoice {
   id: string;
   invoiceNumber: string;
-  lineItems: InvoiceLineItem[];
+  lineItems: PublicInvoiceLineItem[];
   subtotal: number;
   taxableAmount: number;
   taxAmount: number;
@@ -738,6 +738,11 @@ export interface QuoteResponseInput {
   /** @minimum 1 */
   revision: number;
 }
+
+export type InvoiceLineItem = PublicInvoiceLineItem & {
+  productId?: string;
+  sku?: string;
+};
 
 export interface Invoice {
   id: string;

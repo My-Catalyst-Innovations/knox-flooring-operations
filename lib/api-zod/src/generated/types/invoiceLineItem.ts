@@ -5,12 +5,9 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { InvoiceLineCategory } from './invoiceLineCategory';
+import type { PublicInvoiceLineItem } from './publicInvoiceLineItem';
 
-export interface InvoiceLineItem {
-  id: string;
-  description: string;
-  category: InvoiceLineCategory;
-  quantity: number;
-  unitPrice: number;
-}
+export type InvoiceLineItem = PublicInvoiceLineItem & {
+  productId?: string;
+  sku?: string;
+};

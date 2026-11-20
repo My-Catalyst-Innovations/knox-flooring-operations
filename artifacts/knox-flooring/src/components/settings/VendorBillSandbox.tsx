@@ -10,7 +10,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { operation } from "@/lib/operations";
 
-type Mode = "simulated" | "sandbox";
+type Mode = "review" | "simulated" | "sandbox";
 type Line = {
   supplierSku: string;
   unit: string;
@@ -22,6 +22,7 @@ type ReviewedLine = {
   internalSku: string;
   productName: string;
   unit: string;
+  quantity: string;
   billedUnitCost: string;
   expectedUnitCost: string;
   priceEffectiveOn: string;
@@ -30,15 +31,19 @@ type ReviewedLine = {
 };
 type Prepared = {
   fingerprint: string;
-  mode: Mode;
   supplier: string;
   totalCents: number;
   lines: ReviewedLine[];
   priceDiffers: boolean;
-  quickBooksBill: { DocNumber: string; VendorRef: { value: string } };
-  postedId?: string;
-  reconciledExisting?: boolean;
-};
+} & (
+  | { mode: "review"; billNumber: string; billDate: string }
+  | {
+      mode: "simulated" | "sandbox";
+      quickBooksBill: { DocNumber: string; VendorRef: { value: string } };
+      postedId?: string;
+      reconciledExisting?: boolean;
+    }
+);
 type Bill = {
   id: string;
   status: string;
@@ -49,6 +54,21 @@ type Bill = {
 export type SandboxVendor = { Id: string; DisplayName?: string };
 
 const path = "/quickbooks/vendor-bills";
+const titles: Record<Mode, string> = {
+  review: "Supplier bills · local review",
+  sandbox: "Supplier bills · QuickBooks sandbox",
+  simulated: "Supplier bills · simulation",
+};
+const approvalLabels: Record<Mode, string> = {
+  review: "Record owner review",
+  sandbox: "Approve and post to sandbox",
+  simulated: "Approve simulated bill",
+};
+const approvalMessages: Record<Mode, string> = {
+  review: "Supplier bill review recorded.",
+  sandbox: "Supplier bill verified in the QuickBooks sandbox.",
+  simulated: "Supplier bill simulated.",
+};
 const blankLine: Line = {
   supplierSku: "",
   unit: "box",
@@ -59,6 +79,32 @@ const dollars = (cents: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
     cents / 100,
   );
+
+function billNumberFor(bill: Prepared) {
+  return bill.mode === "review" ? bill.billNumber : bill.quickBooksBill.DocNumber;
+}
+
+function ReviewedLines({ lines }: { lines: ReviewedLine[] }) {
+  return (
+    <ul className="divide-y text-sm">
+      {lines.map((line, index) => (
+        <li key={index} className="py-2">
+          <span className="font-medium">
+            {line.supplierSku} → {line.internalSku} · {line.productName}
+          </span>
+          <p>
+            Quantity {line.quantity} · Approved {line.expectedUnitCost} / {line.unit} · billed{" "}
+            {line.billedUnitCost} / {line.unit}
+            {line.priceDiffers && " · Price differs"}
+          </p>
+          <p className="text-muted-foreground">
+            {line.priceEffectiveOn} · {line.priceSource}
+          </p>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 export function VendorBillSandbox({
   mode,
@@ -78,10 +124,11 @@ export function VendorBillSandbox({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const historyPath = `${path}?mode=${mode}`;
 
   useEffect(() => {
     let disposed = false;
-    operation<Bill[]>(path)
+    operation<Bill[]>(historyPath)
       .then((rows) => {
         if (!disposed) setBills(rows);
       })
@@ -92,7 +139,7 @@ export function VendorBillSandbox({
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [historyPath]);
 
   function edit(update: () => void) {
     update();
@@ -129,7 +176,7 @@ export function VendorBillSandbox({
   };
   const canPreview =
     supplier.trim() &&
-    (mode === "simulated" || /^\d+$/.test(vendorId)) &&
+    (mode !== "sandbox" || /^\d+$/.test(vendorId)) &&
     billNumber.trim() &&
     billDate &&
     billTotal.trim() &&
@@ -139,14 +186,11 @@ export function VendorBillSandbox({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>
-          {mode === "sandbox"
-            ? "Supplier bills · QuickBooks sandbox"
-            : "Supplier bills · simulation"}
-        </CardTitle>
+        <CardTitle>{titles[mode]}</CardTitle>
         <CardDescription>
           Review purchase lines against approved supplier SKUs and the price
           effective on the bill date.
+          {mode === "review" && " Owner reviews are recorded in Catalyst Works."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -297,31 +341,15 @@ export function VendorBillSandbox({
         {preview && (
           <div className="space-y-2 rounded-md border p-3">
             <p className="font-medium">
-              Bill {preview.quickBooksBill.DocNumber} ·{" "}
+              Bill {billNumberFor(preview)} ·{" "}
               {dollars(preview.totalCents)}
             </p>
-            {mode === "sandbox" && (
+            {preview.mode === "sandbox" && (
               <p className="text-sm text-muted-foreground">
                 QuickBooks vendor ID {preview.quickBooksBill.VendorRef.value}
               </p>
             )}
-            <ul className="divide-y text-sm">
-              {preview.lines.map((line, index) => (
-                <li key={index} className="py-2">
-                  <span className="font-medium">
-                    {line.supplierSku} → {line.internalSku} · {line.productName}
-                  </span>
-                  <p>
-                    Approved {line.expectedUnitCost} / {line.unit} · billed{" "}
-                    {line.billedUnitCost} / {line.unit}
-                    {line.priceDiffers && " · Price differs"}
-                  </p>
-                  <p className="text-muted-foreground">
-                    {line.priceEffectiveOn} · {line.priceSource}
-                  </p>
-                </li>
-              ))}
-            </ul>
+            <ReviewedLines lines={preview.lines} />
             <Button
               disabled={busy}
               onClick={() =>
@@ -336,12 +364,14 @@ export function VendorBillSandbox({
                   ]);
                   setPreview(undefined);
                   setMessage(
-                    `Bill ${draft.payload.quickBooksBill.DocNumber} is in the approval list.`,
+                    draft.status === "reviewed"
+                      ? `Bill ${billNumberFor(draft.payload)} has already been reviewed.`
+                      : `Bill ${billNumberFor(draft.payload)} is in the approval list.`,
                   );
                 })
               }
             >
-              Queue for approval
+              {mode === "review" ? "Queue for review" : "Queue for approval"}
             </Button>
           </div>
         )}
@@ -351,7 +381,7 @@ export function VendorBillSandbox({
               <li className="rounded-md border p-3" key={bill.id}>
                 <p className="font-medium">
                   {bill.payload.supplier} ·{" "}
-                  {bill.payload.quickBooksBill.DocNumber} ·{" "}
+                  {billNumberFor(bill.payload)} ·{" "}
                   {dollars(bill.payload.totalCents)}
                 </p>
                 {bill.payload.priceDiffers && (
@@ -359,7 +389,19 @@ export function VendorBillSandbox({
                     Billed price differs from the approved purchase price.
                   </p>
                 )}
-                {bill.payload.postedId && (
+                {bill.payload.mode === "review" && (
+                  <details className="my-1 text-sm">
+                    <summary className="cursor-pointer">Bill details</summary>
+                    <p className="mt-2 text-muted-foreground">Bill date {bill.payload.billDate}</p>
+                    <ReviewedLines lines={bill.payload.lines} />
+                  </details>
+                )}
+                {bill.status === "reviewed" && (
+                  <p className="text-sm text-muted-foreground">
+                    Reviewed in Catalyst Works
+                  </p>
+                )}
+                {bill.payload.mode !== "review" && bill.payload.postedId && (
                   <p className="text-sm text-muted-foreground">
                     {mode === "simulated"
                       ? "Simulated bill"
@@ -373,10 +415,11 @@ export function VendorBillSandbox({
                   <p className="text-sm text-destructive">{bill.lastError}</p>
                 )}
                 {(bill.status === "pending_approval" ||
-                  bill.status === "failed" ||
-                  (bill.status === "processing" &&
-                    !!bill.startedAt &&
-                    Date.parse(bill.startedAt) < Date.now() - 300_000)) && (
+                  (mode !== "review" &&
+                    (bill.status === "failed" ||
+                      (bill.status === "processing" &&
+                        !!bill.startedAt &&
+                        Date.parse(bill.startedAt) < Date.now() - 300_000)))) && (
                   <Button
                     className="mt-2"
                     size="sm"
@@ -393,13 +436,9 @@ export function VendorBillSandbox({
                               item.id === completed.id ? completed : item,
                             ),
                           );
-                          setMessage(
-                            mode === "simulated"
-                              ? "Supplier bill simulated."
-                              : "Supplier bill verified in the QuickBooks sandbox.",
-                          );
+                          setMessage(approvalMessages[mode]);
                         } catch (failure) {
-                          const rows = await operation<Bill[]>(path).catch(
+                          const rows = await operation<Bill[]>(historyPath).catch(
                             () => undefined,
                           );
                           if (rows) setBills(rows);
@@ -410,9 +449,7 @@ export function VendorBillSandbox({
                   >
                     {bill.status !== "pending_approval"
                       ? "Retry bill"
-                      : mode === "simulated"
-                        ? "Approve simulated bill"
-                        : "Approve and post to sandbox"}
+                      : approvalLabels[mode]}
                   </Button>
                 )}
                 {bill.status === "processing" && (

@@ -17,7 +17,10 @@ vi.mock("@/lib/operations", () => ({
   operation: vi.fn(),
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 it("previews supplier rows and saves only the mappings the owner can approve", async () => {
   vi.mocked(operation).mockResolvedValue({
@@ -117,6 +120,167 @@ it("previews supplier rows and saves only the mappings the owner can approve", a
           supplier: "Sample Supply",
           supplierSku: "00456",
           manufacturerPartNumber: undefined,
+          unit: "box",
+          unitCost: "48",
+        },
+      ],
+    },
+  );
+  vi.mocked(operation).mockResolvedValue({
+    aliasesAdded: 1,
+    pricesAdded: 1,
+    alreadyApproved: 0,
+  });
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "Choose catalog product" }),
+  );
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "Oak flooring · KF-001" }),
+  );
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "Approve matched rows" }),
+  );
+  expect(
+    await within(dialog).findByText(
+      "Saved 3 mappings and 3 prices. 0 rows were already approved.",
+    ),
+  ).toBeVisible();
+  expect(operation).toHaveBeenLastCalledWith(
+    "/inventory/supplier-crosswalk/approve",
+    "POST",
+    {
+      effectiveOn: "2026-11-20",
+      source: "Approved vendor list",
+      rows: [
+        {
+          productId: "product-1",
+          productSku: "KF-001",
+          supplier: "Sample Supply",
+          supplierSku: "00999",
+          manufacturerPartNumber: undefined,
+          unit: "box",
+          unitCost: "48",
+        },
+      ],
+    },
+  );
+});
+
+it("lets the owner choose and approve a catalog SKU for an unmatched supplier code", async () => {
+  vi.mocked(operation).mockResolvedValue({
+    aliasesAdded: 1,
+    pricesAdded: 1,
+    alreadyApproved: 0,
+  });
+  const product = {
+    id: "oak",
+    name: "Oak flooring",
+    sku: "KF-001",
+    supplier: "Another supplier",
+    unit: "Box",
+    cost: 48,
+    active: true,
+  };
+  render(
+    <SupplierImportDialog
+      disabled={false}
+      products={[
+        product,
+        {
+          ...product,
+          id: "roll",
+          sku: "KF-002",
+          name: "Carpet roll",
+          unit: "sqft",
+        },
+        {
+          ...product,
+          id: "old",
+          sku: "KF-003",
+          name: "Archived flooring",
+          active: false,
+        },
+        {
+          ...product,
+          id: "duplicate-one",
+          sku: "KF-004",
+          name: "Duplicate flooring",
+        },
+        {
+          ...product,
+          id: "duplicate-two",
+          sku: "kf-004",
+          name: "Second duplicate",
+        },
+      ]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Preview supplier CSV" }));
+  const dialog = within(screen.getByRole("dialog"));
+  const csv =
+    "supplier,supplier_sku,manufacturer_part_number,unit,unit_cost\nFixture Supply,00000,M-003,box,48";
+  const file = Object.assign(
+    new File([csv], "suppliers.csv", { type: "text/csv" }),
+    { text: async () => csv },
+  );
+  fireEvent.change(dialog.getByLabelText("Supplier CSV"), {
+    target: { files: [file] },
+  });
+  const choose = await dialog.findByRole("button", {
+    name: "Choose catalog product",
+  });
+  expect(
+    dialog.queryByRole("button", { name: "Approve matched rows" }),
+  ).not.toBeInTheDocument();
+  fireEvent.click(choose);
+  const picker = within(
+    dialog.getByRole("list", { name: "Catalog matches for 00000" }),
+  );
+  expect(picker.getAllByRole("button")).toHaveLength(1);
+  fireEvent.change(
+    dialog.getByRole("textbox", { name: "Search catalog for 00000" }),
+    { target: { value: "kf-001" } },
+  );
+  fireEvent.click(
+    picker.getByRole("button", { name: "Oak flooring · KF-001" }),
+  );
+  expect(dialog.getByText("Matched by your catalog selection.")).toBeVisible();
+  expect(operation).not.toHaveBeenCalled();
+  fireEvent.click(dialog.getByRole("button", { name: "Clear selection" }));
+  expect(
+    dialog.queryByRole("button", { name: "Approve matched rows" }),
+  ).not.toBeInTheDocument();
+  fireEvent.click(
+    dialog.getByRole("button", { name: "Choose catalog product" }),
+  );
+  fireEvent.click(
+    dialog.getByRole("button", { name: "Oak flooring · KF-001" }),
+  );
+  fireEvent.change(dialog.getByLabelText("Effective date"), {
+    target: { value: "2026-11-20" },
+  });
+  fireEvent.change(dialog.getByLabelText("Price source"), {
+    target: { value: "Fixture agreement" },
+  });
+  fireEvent.click(dialog.getByRole("button", { name: "Approve matched rows" }));
+  expect(
+    await dialog.findByText(
+      "Saved 1 mappings and 1 prices. 0 rows were already approved.",
+    ),
+  ).toBeVisible();
+  expect(operation).toHaveBeenCalledWith(
+    "/inventory/supplier-crosswalk/approve",
+    "POST",
+    {
+      effectiveOn: "2026-11-20",
+      source: "Fixture agreement",
+      rows: [
+        {
+          productId: "oak",
+          productSku: "KF-001",
+          supplier: "Fixture Supply",
+          supplierSku: "00000",
+          manufacturerPartNumber: "M-003",
           unit: "box",
           unitCost: "48",
         },

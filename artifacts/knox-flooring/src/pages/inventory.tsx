@@ -9,10 +9,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { ProductDialog } from "@/components/inventory/ProductDialog";
 import { StockActivity } from "@/components/inventory/StockActivity";
 import { SupplierImportDialog } from "@/components/inventory/SupplierImportDialog";
+import { CatalogImportDialog } from "@/components/inventory/CatalogImportDialog";
 import { WarehouseSetup } from "@/components/inventory/WarehouseSetup";
 import { PRODUCT_CATEGORIES, marginPct, stockStatus, stockStatusClass, productImageSrc } from "@/lib/inventory";
 import { useOperation, currency, quantity } from "@/lib/operations";
 import { inventoryRoles, unassignedLocation, warehouseName, type Warehouse, type WarehouseStockSummary } from "@/lib/warehouse-inventory";
+import type { SupplierCrosswalkAlias } from "@/lib/supplier-import";
 import { Plus, Search, Pencil, Archive, ArchiveRestore, Trash2, Package, ArrowDownUp } from "lucide-react";
 import type { Product } from "@/lib/types";
 
@@ -32,6 +34,7 @@ export default function Inventory() {
   );
   const [category, setCategory] = useUrlState<string>("category", "All");
   const [search, setSearch] = useUrlState<string>("q", "");
+  const crosswalk = useOperation<SupplierCrosswalkAlias[]>("/inventory/supplier-crosswalk", inventoryRoles);
   const [state, setState] = useUrlState<string>("state", "active");
   const [filter, setFilter] = useUrlState<string>("stock", "all");
   const [warehouseFilter, setWarehouseFilter] = useUrlState<string>("warehouse", "all");
@@ -49,10 +52,13 @@ export default function Inventory() {
   const low = (p: Product) => ["Low Stock", "Out of Stock"].includes(stockStatus(p));
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const aliasMatches = new Set((!q || crosswalk.isError ? [] : crosswalk.data ?? [])
+      .filter((alias) => [alias.supplierSku, alias.manufacturerPartNumber].some((value) => value?.toLowerCase().includes(q)))
+      .map((alias) => alias.productId));
     return products.filter(p => p.active === (state !== "archived"))
       .filter(p => category === "All" || category === p.category)
       .filter(p => filter === "all" || (filter === "low" ? low(p) : filter === "special" ? p.inventoryType === "Special Order" : p.inventoryType === "Inventory"))
-      .filter(p => !q || [p.name, p.sku, p.supplier, p.color].some(v => v.toLowerCase().includes(q)))
+      .filter(p => !q || aliasMatches.has(p.id) || [p.name, p.sku, p.supplier, p.color].some(v => v.toLowerCase().includes(q)))
       .filter(p => warehouseFilter === "all" || stockByProduct.get(p.id)?.locations?.some(
         (location) => location.warehouseId === selectedLocation && (location.onHand !== 0 || location.reserved !== 0),
       ))
@@ -61,7 +67,7 @@ export default function Inventory() {
         const av = a[key], bv = b[key];
         return (typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv))) * (sortDir === "desc" ? -1 : 1);
       });
-  }, [products, category, search, state, filter, sortKey, sortDir, warehouseFilter, selectedLocation, stockByProduct]);
+  }, [products, category, search, state, filter, sortKey, sortDir, warehouseFilter, selectedLocation, stockByProduct, crosswalk.data, crosswalk.isError]);
   const edit = (p: Product | null) => { setEditing(p); setDialogOpen(true); };
   const mutate = async (action: () => Promise<unknown>) => { setBusy(true); setError(""); try { await action(); } catch (e) { setError(e instanceof Error ? e.message : "Unable to update the product."); } finally { setBusy(false); } };
   const actions = (p: Product) => <div className="flex flex-wrap gap-1"><Button size="sm" variant="outline" onClick={() => setActivity(p)}>Stock activity</Button>{canWrite && <><Button variant="ghost" size="icon" aria-label={`Edit ${p.name}`} onClick={() => edit(p)}><Pencil className="h-4 w-4" /></Button><Button disabled={busy} variant="ghost" size="icon" aria-label={`${p.active ? "Archive" : "Restore"} ${p.name}`} onClick={() => mutate(() => updateProduct(p.id, { active: !p.active }))}>{p.active ? <Archive className="h-4 w-4" /> : <ArchiveRestore className="h-4 w-4" />}</Button>{user?.role === "owner" && !p.active && <Button variant="ghost" size="icon" aria-label={`Delete ${p.name}`} onClick={() => setDeleteTarget(p)}><Trash2 className="h-4 w-4" /></Button>}</>}</div>;
@@ -93,6 +99,7 @@ export default function Inventory() {
       <div><h1 className="text-2xl font-semibold tracking-tight">Inventory</h1><p className="mt-1 text-sm text-muted-foreground">Product specifications, available stock, and movements.</p></div>
       {canWrite && <div className="flex flex-wrap gap-2">
         <WarehouseSetup warehouses={warehouses} />
+        <CatalogImportDialog />
         <SupplierImportDialog products={products} disabled={queryState.products.isLoading || !!queryState.products.error} />
         <Button onClick={() => edit(null)}><Plus className="mr-2 h-4 w-4" />Add product</Button>
       </div>}
@@ -111,10 +118,11 @@ export default function Inventory() {
         {warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
       </select>
       {warehouseQuery.isError && <p role="alert" className="text-sm text-destructive">Warehouse names could not load.</p>}
+      {search.trim() && crosswalk.isError && <p role="status" className="text-sm text-muted-foreground">Supplier SKU and manufacturer part search is temporarily unavailable.</p>}
       {warehouseFilter !== "all" && stock.isLoading && <p role="status" className="text-sm text-muted-foreground">Loading warehouse balances…</p>}
       {warehouseFilter !== "all" && stock.isError && <p role="alert" className="text-sm text-destructive">Warehouse balances could not load.</p>}
     </div>}
-    <div className="flex flex-wrap gap-2"><label className="relative min-w-48 flex-1"><span className="sr-only">Search inventory</span><Search className="absolute left-3 top-3.5 h-4 w-4 text-muted-foreground" /><Input className="h-11 pl-9" placeholder="Search name, SKU, supplier, color…" value={search} onChange={e => setSearch(e.target.value)} /></label><select aria-label="Product category" className={selectStyle} value={category} onChange={e => setCategory(e.target.value)}><option value="All">All categories</option>{PRODUCT_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select><select aria-label="Product status" className={selectStyle} value={state} onChange={e => setState(e.target.value)}><option value="active">Active</option><option value="archived">Archived</option></select><select aria-label="Sort products" className={selectStyle} value={sortKey} onChange={e => setSortKey(e.target.value as SortKey)}>{["name", "category", "supplier", "cost", "price", "quantityOnHand"].map(k => <option key={k} value={k}>{k === "quantityOnHand" ? "Stock quantity" : k[0].toUpperCase() + k.slice(1)}</option>)}</select><Button variant="outline" className="h-11" aria-label={`Sort ${sortDir === "asc" ? "descending" : "ascending"}`} onClick={() => setSortDir(sortDir === "asc" ? "desc" : "asc")}><ArrowDownUp className="h-4 w-4" /><span className="ml-2">{sortDir === "asc" ? "Ascending" : "Descending"}</span></Button></div>
+    <div className="flex flex-wrap gap-2"><label className="relative min-w-48 flex-1"><span className="sr-only">Search inventory</span><Search className="absolute left-3 top-3.5 h-4 w-4 text-muted-foreground" /><Input className="h-11 pl-9" placeholder="Search name, SKU, or part number…" value={search} onChange={e => setSearch(e.target.value)} /></label><select aria-label="Product category" className={selectStyle} value={category} onChange={e => setCategory(e.target.value)}><option value="All">All categories</option>{PRODUCT_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select><select aria-label="Product status" className={selectStyle} value={state} onChange={e => setState(e.target.value)}><option value="active">Active</option><option value="archived">Archived</option></select><select aria-label="Sort products" className={selectStyle} value={sortKey} onChange={e => setSortKey(e.target.value as SortKey)}>{["name", "category", "supplier", "cost", "price", "quantityOnHand"].map(k => <option key={k} value={k}>{k === "quantityOnHand" ? "Stock quantity" : k[0].toUpperCase() + k.slice(1)}</option>)}</select><Button variant="outline" className="h-11" aria-label={`Sort ${sortDir === "asc" ? "descending" : "ascending"}`} onClick={() => setSortDir(sortDir === "asc" ? "desc" : "asc")}><ArrowDownUp className="h-4 w-4" /><span className="ml-2">{sortDir === "asc" ? "Ascending" : "Descending"}</span></Button></div>
     <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground"><span>{filtered.length} products{filter !== "all" && ` · ${filter === "low" ? "Reorder attention" : filter === "special" ? "Special orders" : "Stocked inventory"}`}</span>{(search || category !== "All" || filter !== "all" || state !== "active" || warehouseFilter !== "all") && <Button size="sm" variant="ghost" onClick={() => update({ q: null, category: null, stock: null, state: null, warehouse: null })}>Clear filters</Button>}</div>
     {(error || queryState.products.error) && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-900">{error || "The product catalog could not load. Refresh to try again."}</p>}
     {queryState.products.isLoading ? <p role="status" className="p-8 text-center text-muted-foreground">Loading products…</p> : !queryState.products.error && filtered.length === 0 ? <div className="rounded-xl border border-dashed p-10 text-center"><Package className="mx-auto mb-3 h-6 w-6 text-muted-foreground" /><h2 className="font-semibold">No products match this view</h2><p className="mt-1 text-sm text-muted-foreground">Adjust your filters or add a product to the catalog.</p></div> : <>
