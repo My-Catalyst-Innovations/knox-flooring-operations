@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { workspaceEnvironment } from "@workspace/db/workspace";
 import { loadQuickBooksCatalogEntity } from "./quickbooks-catalog";
 import { QuickBooksRequestError } from "./quickbooks";
 
 export const sandboxStockItemEntity = "sandbox_stock_item";
+export const productionStockItemEntity = "production_stock_item";
+export type StockItemEnvironment = "sandbox" | "production";
 const accountId = z.string().regex(/^\d{1,30}$/);
 export const sandboxStockItemInput = z.object({
   productId: z.string().min(1).max(200),
@@ -51,13 +54,21 @@ const itemSchema = z.object({
 
 export function inventorySandboxAvailable(
   connection: Connection | null,
-  environment = process.env.QUICKBOOKS_ENVIRONMENT,
+  environment = workspaceEnvironment().QUICKBOOKS_ENVIRONMENT,
 ) {
   return (
     environment === "sandbox" &&
     connection?.status === "connected" &&
     connection.environment === "sandbox"
   );
+}
+
+export function inventoryProductionAvailable(connection: Connection | null, env = workspaceEnvironment()) {
+  return env.QUICKBOOKS_ENVIRONMENT === "production" && env.DEMO_MODE !== "true" &&
+    env.QUICKBOOKS_PRODUCTION_STOCK_ITEMS_ENABLED === "true" &&
+    Boolean(env.QUICKBOOKS_PRODUCTION_STOCK_ITEMS_REALM_ID) &&
+    connection?.status === "connected" && connection.environment === "production" &&
+    connection.realmId === env.QUICKBOOKS_PRODUCTION_STOCK_ITEMS_REALM_ID;
 }
 
 export async function prepareSandboxStockItem(
@@ -71,6 +82,7 @@ export async function prepareSandboxStockItem(
   realmId: string,
   input: Input,
   provider: Provider,
+  environment: StockItemEnvironment = "sandbox",
 ) {
   const name = product.name.trim();
   const sku = product.sku.trim();
@@ -119,7 +131,7 @@ export async function prepareSandboxStockItem(
         account.AccountType !== type ||
         (subtype && account.AccountSubType !== subtype)
       )
-        throw new Error(`Select an active ${label} account in this sandbox.`);
+        throw new Error(`Select an active ${label} account in this QuickBooks company.`);
       return { id, name: account.Name, label };
     }),
   );
@@ -134,9 +146,9 @@ export async function prepareSandboxStockItem(
     ExpenseAccountRef: reference(input.cogsAccountId),
     AssetAccountRef: reference(input.assetAccountId),
   };
-  const requestId = `cwitem-${fingerprint(["sandbox", realmId, product.id]).slice(0, 43)}`;
+  const requestId = `cwitem-${fingerprint([environment, realmId, product.id]).slice(0, 43)}`;
   return {
-    realmId,
+    realmId, environment,
     document,
     accounts,
     requestId,
@@ -179,7 +191,7 @@ export async function findSandboxStockItem(
     matches.length === 1 ? matchesItem(prepared, matches[0]) : undefined;
   if (!item)
     throw new Error(
-      "A different or inactive sandbox item already uses this SKU or name. Review it in Import & reconcile.",
+      "A different or inactive QuickBooks item already uses this SKU or name. Review it in Import & reconcile.",
     );
   return item;
 }
@@ -188,12 +200,15 @@ export async function exportSandboxStockItem(
   prepared: Prepared,
   provider: Provider,
   linkedId?: string,
+  expectNew = false,
 ) {
   const existing = await findSandboxStockItem(prepared, provider);
   if (linkedId && existing?.Id !== linkedId)
     throw new Error(
-      "The approved sandbox item differs from the saved product link. Reconcile the existing product first.",
+      "The approved item differs from the saved product link. Reconcile the existing product first.",
     );
+  if (expectNew && existing)
+    throw new Error("A matching QuickBooks item appeared after preview. Review its existing link before approving.");
   if (existing) return { item: existing, reconciledExisting: true };
   let response: unknown;
   try {
@@ -216,7 +231,7 @@ export async function exportSandboxStockItem(
     .safeParse(response);
   if (!created.success)
     throw new Error(
-      "QuickBooks returned no inventory item ID. Reconcile the sandbox before retrying.",
+      "QuickBooks returned no inventory item ID. Reconcile the company before retrying.",
     );
   const id = created.data.Item.Id;
   const read = z
@@ -225,7 +240,7 @@ export async function exportSandboxStockItem(
   const item = read.success ? matchesItem(prepared, read.data.Item) : undefined;
   if (!item || item.Id !== id)
     throw new Error(
-      "The returned sandbox item differs from the approved SKU, accounts, date, or zero quantity. Reconcile before retrying.",
+      "The returned QuickBooks item differs from the approved SKU, accounts, date, or zero quantity. Reconcile before retrying.",
     );
   return { item, reconciledExisting: false };
 }

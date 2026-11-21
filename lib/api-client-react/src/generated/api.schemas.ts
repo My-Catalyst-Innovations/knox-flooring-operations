@@ -1743,10 +1743,21 @@ export type StockAuditMetricsWasteItem = {
   quantity: number;
 };
 
+export type StockAuditMetricsWasteByJobItem = {
+  jobId: string | null;
+  jobNumber: string | null;
+  crewId: string | null;
+  crewName: string | null;
+  unit: string;
+  entries: number;
+  quantity: number;
+};
+
 export interface StockAuditMetrics {
   checked: number;
   matched: number;
   waste: StockAuditMetricsWasteItem[];
+  wasteByJob: StockAuditMetricsWasteByJobItem[];
 }
 
 export type CompletedJobMaterialUsageRowsItem = {
@@ -1806,6 +1817,20 @@ export interface CompletionCommitment {
   date: string | null;
   recordedAt: string | null;
   revision: number;
+}
+
+export type StagnantInventoryReportWindowsItem = {
+  days: number;
+  locations: number;
+  receiptValue: number;
+  estimatedValue: number;
+  unvaluedLocations: number;
+};
+
+export interface StagnantInventoryReport {
+  asOfDate: string;
+  unknownMovementLocations: number;
+  windows: StagnantInventoryReportWindowsItem[];
 }
 
 export interface DraftConversion {

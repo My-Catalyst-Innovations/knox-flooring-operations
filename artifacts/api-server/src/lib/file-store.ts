@@ -1,3 +1,4 @@
+import { workspaceEnvironment, workspaceScopeKey } from "@workspace/db/workspace";
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type { AppRole } from "@workspace/db";
@@ -215,14 +216,20 @@ const replitFileStore: FileStore = {
   },
 };
 
-let azureFileStore: FileStore | undefined;
+const azureFileStores = new Map<string, FileStore>();
 function configuredStore(): FileStore {
-  const { AZURE_STORAGE_ACCOUNT_URL, AZURE_STORAGE_CONTAINER, IDENTITY_ENDPOINT, IDENTITY_HEADER, PRIVATE_OBJECT_DIR } = process.env;
+  const { AZURE_STORAGE_ACCOUNT_URL, AZURE_STORAGE_CONTAINER, IDENTITY_ENDPOINT, IDENTITY_HEADER, PRIVATE_OBJECT_DIR } = workspaceEnvironment();
   if (AZURE_STORAGE_ACCOUNT_URL || AZURE_STORAGE_CONTAINER) {
     if (!AZURE_STORAGE_ACCOUNT_URL || !AZURE_STORAGE_CONTAINER || !IDENTITY_ENDPOINT || !IDENTITY_HEADER) {
       throw new DomainError(503, "File storage is waiting for Azure managed identity configuration.");
     }
-    return azureFileStore ??= createAzureFileStore(AZURE_STORAGE_ACCOUNT_URL, AZURE_STORAGE_CONTAINER, IDENTITY_ENDPOINT, IDENTITY_HEADER);
+    const key = workspaceScopeKey();
+    let store = azureFileStores.get(key);
+    if (!store) {
+      store = createAzureFileStore(AZURE_STORAGE_ACCOUNT_URL, AZURE_STORAGE_CONTAINER, IDENTITY_ENDPOINT, IDENTITY_HEADER);
+      azureFileStores.set(key, store);
+    }
+    return store;
   }
   if (PRIVATE_OBJECT_DIR) return replitFileStore;
   throw new DomainError(503, "File storage is not configured.");
@@ -254,7 +261,8 @@ export function isUploaderPreview(metadata: StoredFileMeta, uploader: string): b
 
 export function getFile(path: string): Promise<FileDownload | null> {
   if (filePurpose(path)) return configuredStore().get(path.slice("/objects/".length));
-  if (isLegacyFilePath(path) && (process.env.AZURE_STORAGE_ACCOUNT_URL || process.env.AZURE_STORAGE_CONTAINER || process.env.PRIVATE_OBJECT_DIR)) {
+  const env = workspaceEnvironment();
+  if (isLegacyFilePath(path) && (env.AZURE_STORAGE_ACCOUNT_URL || env.AZURE_STORAGE_CONTAINER || env.PRIVATE_OBJECT_DIR)) {
     return configuredStore().get(path.slice("/objects/".length));
   }
   return Promise.resolve(null);

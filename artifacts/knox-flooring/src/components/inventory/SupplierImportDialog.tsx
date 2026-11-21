@@ -19,7 +19,7 @@ import {
 } from "@/lib/supplier-import";
 
 const template =
-  "supplier,supplier_sku,internal_sku,manufacturer_part_number,unit,unit_cost\r\n";
+  "supplier,supplier_sku,internal_sku,manufacturer_part_number,unit,unit_cost,stock_units_per_buy_unit\r\n";
 const maxFileSize = 2 * 1024 * 1024;
 const maxApprovalRows = 2500;
 const maxApprovalBytes = 1024 * 1024;
@@ -237,6 +237,10 @@ function SupplierImportContent({
         productSku: row.product!.sku,
         unit: row.unit,
         unitCost: row.unitCost,
+        ...(row.unit.trim().toLowerCase() === row.product!.unit.trim().toLowerCase() ? {} : {
+          stockUnit: row.product!.unit,
+          stockUnitsPerBuyUnit: row.stockUnitsPerBuyUnit,
+        }),
       })),
     };
     if (!payload.rows.length) return;
@@ -285,7 +289,7 @@ function SupplierImportContent({
       <DialogHeader className="pr-8">
         <DialogTitle>Preview supplier CSV</DialogTitle>
         <DialogDescription>
-          Review supplier SKUs and negotiated buy costs before approval.
+          Review supplier SKUs and negotiated buy costs before approval. If supplier and stock units differ, enter stock units per supplier unit in the CSV.
         </DialogDescription>
       </DialogHeader>
       <div className="flex flex-wrap items-end gap-2">
@@ -408,6 +412,11 @@ function SupplierImportContent({
                       {row.unitCost && (
                         <p>
                           CSV {row.unitCost} USD{row.unit && ` / ${row.unit}`}
+                        </p>
+                      )}
+                      {row.product && row.stockUnitCost !== undefined && row.unit.trim().toLowerCase() !== row.product.unit.trim().toLowerCase() && (
+                        <p className="text-muted-foreground">
+                          1 {row.unit} = {row.stockUnitsPerBuyUnit} {row.product.unit} · {row.stockUnitCost} USD / {row.product.unit}
                         </p>
                       )}
                       {row.latestPrice ? (

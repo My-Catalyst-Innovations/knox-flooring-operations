@@ -47,6 +47,17 @@ it("shows statement aging, the three ledger windows, and unknown completion data
               entries: 1,
             },
           ],
+          wasteByJob: [
+            {
+              jobId: "job-1",
+              jobNumber: "J-1",
+              crewId: "crew-1",
+              crewName: "Crew One",
+              unit: "box",
+              entries: 1,
+              quantity: 1.5,
+            },
+          ],
         },
       }}
     />,
@@ -78,5 +89,10 @@ it("shows statement aging, the three ledger windows, and unknown completion data
   ).toBeInTheDocument();
   expect(screen.getByText("50%")).toBeInTheDocument();
   expect(screen.getByText("Crew needs confirmation")).toBeInTheDocument();
-  expect(screen.getByText("1.5 box")).toBeInTheDocument();
+  expect(
+    within(
+      screen.getByRole("table", { name: "Posted waste by product and unit" }),
+    ).getByText("1.5 box"),
+  ).toBeInTheDocument();
+  expect(screen.getByText("Waste by job and crew")).toBeInTheDocument();
 });

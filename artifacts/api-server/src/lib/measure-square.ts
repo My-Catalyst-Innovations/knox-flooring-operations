@@ -1,5 +1,6 @@
 import { logger } from "./logger";
 import type { MeasurementRoom, MeasurementProduct } from "@workspace/db";
+import { workspaceEnvironment } from "@workspace/db/workspace";
 
 /**
  * Measure Square's automated data connection is enterprise-only and requires
@@ -8,9 +9,9 @@ import type { MeasurementRoom, MeasurementProduct } from "@workspace/db";
  * integration degrades gracefully to a clear "not connected" state instead of
  * erroring — the app still works with locally-entered and demo measurements.
  */
-const API_KEY = process.env.MEASURE_SQUARE_API_KEY;
-const API_URL = (
-  process.env.MEASURE_SQUARE_API_URL || "https://api.measuresquare.com/v1"
+const apiKey = () => workspaceEnvironment().MEASURE_SQUARE_API_KEY;
+const apiUrl = () => (
+  workspaceEnvironment().MEASURE_SQUARE_API_URL || "https://api.measuresquare.com/v1"
 ).replace(/\/$/, "");
 
 export class MeasureSquareError extends Error {
@@ -23,12 +24,12 @@ export class MeasureSquareError extends Error {
 }
 
 export function isConfigured(): boolean {
-  return Boolean(API_KEY && API_KEY.trim());
+  return Boolean(apiKey()?.trim());
 }
 
 function authHeaders(): Record<string, string> {
   return {
-    Authorization: `Bearer ${API_KEY}`,
+    Authorization: `Bearer ${apiKey()}`,
     "Content-Type": "application/json",
   };
 }
@@ -50,7 +51,7 @@ export async function getStatus(): Promise<MeasureSquareStatus> {
     return { connected: false, configured: false, message: NOT_CONNECTED_MESSAGE };
   }
   try {
-    const res = await fetch(`${API_URL}/ping`, { headers: authHeaders() });
+    const res = await fetch(`${apiUrl()}/ping`, { headers: authHeaders() });
     if (res.ok) {
       return {
         connected: true,
@@ -120,7 +121,7 @@ export async function pullMeasurements(): Promise<ExternalMeasurement[]> {
   }
   let res: Response;
   try {
-    res = await fetch(`${API_URL}/measurements`, { headers: authHeaders() });
+    res = await fetch(`${apiUrl()}/measurements`, { headers: authHeaders() });
   } catch (err) {
     logger.warn({ err }, "Measure Square pull request failed");
     throw new MeasureSquareError(
@@ -153,8 +154,8 @@ export async function pushMeasurement(
   }
   const method = input.externalId ? "PUT" : "POST";
   const path = input.externalId
-    ? `${API_URL}/measurements/${encodeURIComponent(input.externalId)}`
-    : `${API_URL}/measurements`;
+    ? `${apiUrl()}/measurements/${encodeURIComponent(input.externalId)}`
+    : `${apiUrl()}/measurements`;
   let res: Response;
   try {
     res = await fetch(path, {

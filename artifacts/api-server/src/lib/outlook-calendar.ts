@@ -1,3 +1,4 @@
+import { workspaceScopeKey } from "@workspace/db/workspace";
 import { and, asc, eq, gt, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import {
   crewBookingsTable,
@@ -457,10 +458,11 @@ async function syncOneOutlookBooking(bookingId: string) {
   });
 }
 
-let running = false;
+const running = new Set<string>();
 export async function processOutlookBookingQueue() {
-  if (running || !getOutlookConfig()) return;
-  running = true;
+  const key = workspaceScopeKey();
+  if (running.has(key) || !getOutlookConfig()) return;
+  running.add(key);
   try {
     const connection = await getConnection();
     if (connection?.status !== "connected") return;
@@ -488,7 +490,7 @@ export async function processOutlookBookingQueue() {
       .limit(8);
     for (const booking of queued) await syncOneOutlookBooking(booking.id);
   } finally {
-    running = false;
+    running.delete(key);
   }
 }
 
@@ -498,10 +500,12 @@ export function requestOutlookBookingSync() {
   );
 }
 
-let syncTimer: NodeJS.Timeout | undefined;
+const syncTimers = new Map<string, NodeJS.Timeout>();
 export function startOutlookBookingWorker() {
-  if (syncTimer || !getOutlookConfig()) return;
+  const key = workspaceScopeKey();
+  if (syncTimers.has(key) || !getOutlookConfig()) return;
   requestOutlookBookingSync();
-  syncTimer = setInterval(requestOutlookBookingSync, 30_000);
+  const syncTimer = setInterval(requestOutlookBookingSync, 30_000);
+  syncTimers.set(key, syncTimer);
   syncTimer.unref();
 }

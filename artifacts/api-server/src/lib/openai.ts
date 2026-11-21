@@ -1,3 +1,4 @@
+import { workspaceEnvironment } from "@workspace/db/workspace";
 import { createHash } from "node:crypto";
 import { aiRequestAuditsTable, db } from "@workspace/db";
 
@@ -17,14 +18,14 @@ type OpenAIUsage = {
   cachedInputTokens: number;
 };
 
-export const hasOpenAI = () => Boolean(process.env.OPENAI_API_KEY);
-export const getOpenAIModel = () => process.env.OPENAI_ESTIMATOR_MODEL ?? "gpt-5.5";
+export const hasOpenAI = () => Boolean(workspaceEnvironment().OPENAI_API_KEY);
+export const getOpenAIModel = () => workspaceEnvironment().OPENAI_ESTIMATOR_MODEL ?? "gpt-5.5";
 
 export async function getOpenAIUsageToday() {
   const today = new Date().toISOString().slice(0, 10);
   const rows = (await db.select().from(aiRequestAuditsTable)).filter((row) => row.createdAt.startsWith(today));
   const successfulRequests = rows.filter((row) => row.status === "success").length;
-  const limit = Math.max(1, Number(process.env.OPENAI_DAILY_REQUEST_LIMIT ?? 100) || 100);
+  const limit = Math.max(1, Number(workspaceEnvironment().OPENAI_DAILY_REQUEST_LIMIT ?? 100) || 100);
   return {
     successfulRequests,
     attempts: rows.length,
@@ -46,13 +47,13 @@ function outputText(payload: any) {
 }
 
 export async function createStructuredResponse<T>(options: StructuredResponseOptions): Promise<{ value: T; model: string; usage: OpenAIUsage }> {
-  if (!process.env.OPENAI_API_KEY) throw new Error("OpenAI is not configured");
+  if (!workspaceEnvironment().OPENAI_API_KEY) throw new Error("OpenAI is not configured");
   const model = getOpenAIModel();
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     signal: AbortSignal.timeout(30_000),
     headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      Authorization: `Bearer ${workspaceEnvironment().OPENAI_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({

@@ -1,3 +1,4 @@
+import { workspaceEnvironment } from "@workspace/db/workspace";
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
@@ -402,7 +403,8 @@ const saveBooking = (create: boolean) =>
       await trackOutlookBooking(tx, row.id, row.status);
       return row;
     });
-    if (process.env.BACKGROUND_WORKERS_ENABLED !== "false") requestOutlookBookingSync();
+    if (process.env.BACKGROUND_WORKERS_ENABLED !== "false" && workspaceEnvironment().BACKGROUND_WORKERS_ENABLED !== "false")
+      requestOutlookBookingSync();
     await syncBookingTask(result.taskId);
     res.status(create ? 201 : 200).json(result);
   });

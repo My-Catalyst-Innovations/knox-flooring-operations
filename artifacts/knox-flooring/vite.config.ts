@@ -45,6 +45,14 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // The local OCR worker resolves eng.traineddata.gz by its conventional filename.
+        assetFileNames: (asset) => asset.names.includes("eng.traineddata.gz")
+          ? "assets/invoice-ocr/1.0.0/[name][extname]"
+          : "assets/[name]-[hash][extname]",
+      },
+    },
   },
   server: {
     port,

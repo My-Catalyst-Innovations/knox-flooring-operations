@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { WarehouseBinSelect, useWarehouseBins } from "@/components/inventory/WarehouseBinSelect";
 import { StockPieceLabel } from "@/components/inventory/StockPieceLabel";
+import { pieceBarcode } from "@/lib/warehouse-labels";
 import { useStore } from "@/hooks/use-store";
 import { useUnsavedForm } from "@/hooks/use-unsaved-changes";
 import { useQueryControls, useUrlState } from "@/hooks/use-url-state";
@@ -263,8 +264,10 @@ export default function PhysicalPieces() {
       <Button disabled={!locationReady} onClick={() => { setNotice(""); setEditor({ action: "register", piece: null }); }}>{labels.register}</Button>
     </header>
     <div className="grid gap-3 rounded-lg border bg-card p-4 md:grid-cols-3">
-      <label className="space-y-1 text-sm font-medium">Search
-        <Input maxLength={100} placeholder="Label, SKU or dye lot" value={search} onChange={(event) => setSearch(event.target.value)} />
+      <label className="space-y-1 text-sm font-medium">Search or scan a piece label
+        <Input maxLength={100} placeholder="Label, SKU or dye lot" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => {
+          if (event.key === "Enter" && /^piece:/i.test(event.currentTarget.value.trim())) controls.update({ q: event.currentTarget.value.trim(), warehouseId: null, status: null, productId: null });
+        }} />
       </label>
       <label className="space-y-1 text-sm font-medium">Warehouse
         <select className={inventorySelect} value={warehouseId} onChange={(event) => setWarehouse(event.target.value)}>
@@ -311,7 +314,7 @@ export default function PhysicalPieces() {
       setEditor(null); setNotice(message); void refresh();
     }} />}
     {history && <PieceHistory piece={history} warehouses={warehouses.data ?? []} bins={bins.data ?? []} close={() => setHistory(null)} />}
-    {printPiece && <StockPieceLabel label={printPiece.label} fields={[
+    {printPiece && <StockPieceLabel label={printPiece.label} code={pieceBarcode(printPiece.label)} fields={[
       ["SKU", printPiece.sku], ["Piece ID", printPiece.id], ["Dimensions", dimensions(printPiece.widthInches, printPiece.lengthInches)],
       ["Quantity", `${purchaseQuantity(printPiece.quantity)} sq ft`],
       [printPiece.issuedMovementId ? "Last stock location" : "Location", `${warehouseName(warehouses.data ?? [], printPiece.warehouseId)} · ${binName(bins.data ?? [], printPiece.binId)}`],

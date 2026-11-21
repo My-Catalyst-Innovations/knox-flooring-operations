@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./schema": "./src/schema/index.ts"
+    "./schema": "./src/schema/index.ts",
+    "./workspace": "./src/workspace.ts"
   },
   "scripts": {
     "migrate": "node scripts/migrate.mjs",

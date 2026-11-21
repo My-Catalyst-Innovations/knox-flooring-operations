@@ -50,8 +50,7 @@ export function computeCosting(job: Job): JobCosting {
     actualAddOnCost > 0;
 
   const effectiveRevenue = actualRevenue > 0 ? actualRevenue : estRevenue;
-  const hasActualProfit =
-    hasActuals && (actualRevenue > 0 || job.trackedMaterialCost === undefined);
+  const hasActualProfit = actualRevenue > 0;
   const effectiveGrossProfit = hasActualProfit ? actualGrossProfit : estGrossProfit;
   const effectiveMarginPct =
     effectiveRevenue > 0 ? (effectiveGrossProfit / effectiveRevenue) * 100 : 0;
@@ -77,6 +76,14 @@ export function computeCosting(job: Job): JobCosting {
     costVariance: actualCost - estCost,
     profitVariance: actualGrossProfit - estGrossProfit,
   };
+}
+
+export function jobCostingGaps(job: Pick<Job, "actualRevenue" | "actualLaborCost" | "actualMaterialCost" | "trackedMaterialCost">) {
+  return [
+    job.actualRevenue > 0 ? "" : "revenue",
+    job.actualLaborCost > 0 ? "" : "labor cost",
+    job.actualMaterialCost > 0 ? "" : job.trackedMaterialCost === undefined ? "material cost" : "review of inventory-derived material cost",
+  ].filter(Boolean);
 }
 
 /** Effective commission rate (percent) for a rep, falling back to the global default. */

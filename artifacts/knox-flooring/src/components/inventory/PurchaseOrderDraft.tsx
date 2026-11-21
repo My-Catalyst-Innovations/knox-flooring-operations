@@ -1,11 +1,12 @@
 import { useRef, useState, type FormEvent } from "react";
 import { Plus, Trash2 } from "lucide-react";
+import { convertedSupplierLine, purchaseLineCents, supplierBuyQuantity, supplierPurchaseFactor, supplierStockUnitRate } from "@workspace/domain";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useUnsavedForm } from "@/hooks/use-unsaved-changes";
-import { currency, operation, useOperation } from "@/lib/operations";
+import { operation, useOperation } from "@/lib/operations";
 import { inventorySelect, purchaseOrdersPath, useInventoryRequestKey, type PurchaseOrder } from "@/lib/purchasing";
 import { businessDate } from "@/lib/reporting";
 import type { SupplierCrosswalkAlias } from "@/lib/supplier-import";
@@ -56,14 +57,24 @@ export function PurchaseOrderDraft({
     const product = stocked.find((item) => item.id === line.productId);
     const candidates = (supplierPrices.data ?? []).filter((alias) =>
       product && alias.productId === product.id && normalize(alias.supplier) === supplierKey &&
-      alias.latestPrice && normalize(alias.latestPrice.unit) === normalize(product.unit),
+      alias.latestPrice && supplierPurchaseFactor(alias.latestPrice.unit, product.unit, alias.latestPrice.stockUnitsPerBuyUnit) !== null,
     );
     const approved = candidates.length === 1 ? candidates[0] : undefined;
+    const price = approved?.latestPrice;
+    const factor = price && product ? supplierPurchaseFactor(price.unit, product.unit, price.stockUnitsPerBuyUnit) : null;
+    const converted = !!price && !!product && normalize(price.unit) !== normalize(product.unit);
+    const stockUnitRate = price && factor ? (converted ? supplierStockUnitRate(price.unitCost, factor) : price.unitCost) : null;
+    const buyQuantity = converted && factor && line.quantity ? supplierBuyQuantity(line.quantity, factor) : null;
+    const conversionProblem = price && (!factor || stockUnitRate === null ||
+      (converted && !!line.quantity && (!buyQuantity || !convertedSupplierLine(buyQuantity, price.unitCost, factor))))
+      ? "The entered stock quantity cannot preserve the approved supplier amount. Change the quantity or enter an agreed stock unit cost."
+      : null;
     const defaultCost = supplierPrices.isSuccess && candidates.length === 0 && product ? String(product.cost) : "";
-    const cost = line.unitCost ?? approved?.latestPrice?.unitCost ?? defaultCost;
-    return { line, product, approved, ambiguous: candidates.length > 1, cost };
+    const cost = line.unitCost ?? stockUnitRate ?? defaultCost;
+    return { line, product, approved, ambiguous: candidates.length > 1, cost, price, factor, converted, conversionProblem, buyQuantity };
   });
-  const total = lines.reduce((sum, { line, cost }) => sum + Number(line.quantity) * Number(cost), 0);
+  const total = lines.reduce((sum, { line, cost }) => sum + (purchaseLineCents(line.quantity, cost) ?? 0n), 0n);
+  const merchandiseTotal = `$${(total / 100n).toLocaleString("en-US")}.${String(total % 100n).padStart(2, "0")}`;
 
   function changeLine(key: string, update: Partial<DraftLine>) {
     setForm((current) => ({
@@ -86,6 +97,10 @@ export function PurchaseOrderDraft({
     }
     if (lines.some(({ cost }) => !costPattern.test(cost.trim()))) {
       setError("Enter a unit cost with up to six decimal places for each line.");
+      return;
+    }
+    if (lines.some(({ line, conversionProblem }) => line.unitCost === null && conversionProblem)) {
+      setError("Check the supplier unit conversion before saving. Use a quantity that preserves the approved amount or enter an agreed stock unit cost.");
       return;
     }
     const data = {
@@ -156,8 +171,11 @@ export function PurchaseOrderDraft({
             </label>
             <div className="space-y-2">
               <h3 className="text-sm font-semibold">Order lines</h3>
-              {lines.map(({ line, product, approved, ambiguous, cost }, index) => {
-                const priceDescription = line.unitCost !== null || !product ? null
+              <p className="text-xs text-muted-foreground">Enter order quantities and costs in the product’s stock unit.</p>
+              {lines.map(({ line, product, approved, ambiguous, cost, price, factor, converted, conversionProblem, buyQuantity }, index) => {
+                const priceDescription = !product ? null
+                  : converted && price && factor ? `1 ${price.unit} = ${factor} ${product.unit} · Approved ${price.unitCost} USD / ${price.unit}${buyQuantity ? ` · Order equivalent ${buyQuantity} ${price.unit}` : ""}`
+                  : line.unitCost !== null ? null
                   : approved ? `Approved supplier price · ${approved.supplierSku}`
                   : ambiguous ? "Multiple supplier codes match. Enter the agreed unit cost."
                   : supplierPrices.isSuccess ? "Catalog cost · confirm with supplier"
@@ -185,6 +203,7 @@ export function PurchaseOrderDraft({
                       <Trash2 className="h-4 w-4" aria-hidden />
                     </Button>
                     {priceDescription && <p id={`price-${line.key}`} className="text-xs text-muted-foreground md:col-span-4">{priceDescription}</p>}
+                    {line.unitCost === null && conversionProblem && <p className="text-xs text-destructive md:col-span-4">{conversionProblem}</p>}
                   </div>
                 );
               })}
@@ -198,7 +217,7 @@ export function PurchaseOrderDraft({
           </fieldset>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
-            <p className="text-sm text-muted-foreground">Merchandise total <strong className="ml-1 text-foreground">{Number.isFinite(total) ? currency(total) : "—"}</strong></p>
+            <p className="text-sm text-muted-foreground">Merchandise total <strong className="ml-1 text-foreground">{merchandiseTotal}</strong></p>
             <div className="flex gap-2">
               <Button type="button" variant="outline" disabled={saving} onClick={close}>Cancel</Button>
               <Button type="submit" disabled={saving || !form.supplier.trim() || !form.warehouseId || form.lines.some((line) => !stocked.some((item) => item.id === line.productId))}>{saving ? "Saving…" : "Save draft"}</Button>

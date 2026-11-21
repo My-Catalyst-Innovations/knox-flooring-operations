@@ -151,3 +151,4 @@ overrides:
 allowBuilds:
   argon2: true
   esbuild: true
+  tesseract.js: false

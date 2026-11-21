@@ -2529,6 +2529,20 @@ paths:
           description: Job not found
         "409":
           description: Job changed or its commitment is locked after completion
+  /metrics/stagnant-inventory:
+    get:
+      operationId: getStagnantInventory
+      tags: [operations]
+      summary: Value current stock by days since its last stock-changing movement
+      responses:
+        "200":
+          description: Inventory values and aging coverage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StagnantInventoryReport"
+        "403":
+          description: Not authorized
   /metrics:
     get:
       operationId: getOperationalMetrics
@@ -5925,9 +5939,33 @@ components:
           nullable: true
         revision:
           type: integer
+    StagnantInventoryReport:
+      type: object
+      required: [asOfDate, unknownMovementLocations, windows]
+      properties:
+        asOfDate:
+          type: string
+        unknownMovementLocations:
+          type: integer
+        windows:
+          type: array
+          items:
+            type: object
+            required: [days, locations, receiptValue, estimatedValue, unvaluedLocations]
+            properties:
+              days:
+                type: integer
+              locations:
+                type: integer
+              receiptValue:
+                type: number
+              estimatedValue:
+                type: number
+              unvaluedLocations:
+                type: integer
     StockAuditMetrics:
       type: object
-      required: [checked, matched, waste]
+      required: [checked, matched, waste, wasteByJob]
       properties:
         checked:
           type: integer
@@ -5945,6 +5983,30 @@ components:
                 type: string
               productName:
                 type: string
+              unit:
+                type: string
+              entries:
+                type: integer
+              quantity:
+                type: number
+        wasteByJob:
+          type: array
+          items:
+            type: object
+            required: [jobId, jobNumber, crewId, crewName, unit, entries, quantity]
+            properties:
+              jobId:
+                type: string
+                nullable: true
+              jobNumber:
+                type: string
+                nullable: true
+              crewId:
+                type: string
+                nullable: true
+              crewName:
+                type: string
+                nullable: true
               unit:
                 type: string
               entries:

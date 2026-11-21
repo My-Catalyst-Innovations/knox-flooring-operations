@@ -3677,6 +3677,22 @@ export const UpdateCompletionCommitmentResponse = zod.object({
 
 
 /**
+ * @summary Value current stock by days since its last stock-changing movement
+ */
+export const GetStagnantInventoryResponse = zod.object({
+  "asOfDate": zod.string(),
+  "unknownMovementLocations": zod.number(),
+  "windows": zod.array(zod.object({
+  "days": zod.number(),
+  "locations": zod.number(),
+  "receiptValue": zod.number(),
+  "estimatedValue": zod.number(),
+  "unvaluedLocations": zod.number()
+}))
+})
+
+
+/**
  * @summary get Operational Metrics
  */
 export const GetOperationalMetricsQueryParams = zod.object({
@@ -3728,6 +3744,15 @@ export const GetOperationalMetricsResponse = zod.object({
   "productId": zod.string(),
   "sku": zod.string(),
   "productName": zod.string(),
+  "unit": zod.string(),
+  "entries": zod.number(),
+  "quantity": zod.number()
+})),
+  "wasteByJob": zod.array(zod.object({
+  "jobId": zod.string().nullable(),
+  "jobNumber": zod.string().nullable(),
+  "crewId": zod.string().nullable(),
+  "crewName": zod.string().nullable(),
   "unit": zod.string(),
   "entries": zod.number(),
   "quantity": zod.number()

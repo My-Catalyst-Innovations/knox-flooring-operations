@@ -12,6 +12,24 @@ For a temporary evaluation environment, set `DEMO_ACCESS_ENABLED=true` to show a
 
 Use `.env.example` to identify the required settings. Store production values in the Catalyst Works App Service environment variables in Azure and keep real credentials out of Git.
 
+## Shared company onboarding
+
+Set `CATALYST_WORKSPACES` to an array of company keys and canonical HTTPS origins to host multiple companies in one app. Each company has its own PostgreSQL database, application database account, private Azure Blob container, and HTTPS hostname on port 443. Register each hostname with App Service and preserve the incoming `Host` header at the proxy. Keep raw request paths and referrer headers out of proxy and App Service access logs because customer links carry private tokens.
+
+```json
+[
+  { "key": "company-one", "origin": "https://company-one.works.example.com" },
+  { "key": "company-two", "origin": "https://company-two.works.example.com" }
+]
+```
+
+Use a separate environment prefix for each company. For `company-one`, set `CATALYST_COMPANY_ONE_DATABASE_URL`, `CATALYST_COMPANY_ONE_AZURE_STORAGE_ACCOUNT_URL`, and `CATALYST_COMPANY_ONE_AZURE_STORAGE_CONTAINER`. Provider settings such as `CATALYST_COMPANY_ONE_RESEND_API_KEY` use the same prefix. OAuth callbacks and password reset links use the workspace origin. Shared mode ignores unprefixed provider secrets and disables password-free demo sign-in.
+
+1. Migrate each newly provisioned database by running `pnpm --filter @workspace/db migrate` with that database as `DATABASE_URL` and the shared manifest unset.
+2. In the trusted deployment environment, set the manifest and per-company variables, build the API, and run `pnpm --filter @workspace/api-server workspace:prepare --workspace company-one --company "Company One" --owner-name "Owner Name" --owner-email owner@example.com`. The command binds the database and prints a one-use owner set-up link. Deliver it privately. It expires in 48 hours.
+3. For an existing company, migrate the database first and append `--adopt` to the prepare command. It requires the saved company name and an active owner's email. The first binding clears existing sessions so staff establish new sessions on the hosted workspace.
+4. Start the app with the shared manifest. Migrations and startup verify that each database is bound to the configured company. If App Service probes a management hostname, set `CATALYST_WORKSPACE_HEALTH_HOST` to that exact hostname. It serves the health probe. Application routes require a workspace hostname.
+
 ## Email, texts, and password reset
 
 Verify the sending domain in Resend, including its DNS records for SPF and DKIM. Create a send-only key and set `RESEND_API_KEY` and `RESEND_FROM_EMAIL` in App Service. Set `RESEND_REPLY_TO_EMAIL` if replies should go to a different monitored mailbox. [Resend domain verification](https://resend.com/docs/dashboard/domains/introduction)

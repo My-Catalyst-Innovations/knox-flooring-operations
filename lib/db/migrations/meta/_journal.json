@@ -127,6 +127,13 @@
       "when": 1795221587189,
       "tag": "0017_staging_counts_and_operational_kpis",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1795226523801,
+      "tag": "0018_workspace_identity_and_purchase_units",
+      "breakpoints": true
     }
   ]
 }

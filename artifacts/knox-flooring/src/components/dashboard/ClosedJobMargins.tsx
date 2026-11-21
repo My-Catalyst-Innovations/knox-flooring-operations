@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { computeCosting } from "@/lib/costing";
+import { computeCosting, jobCostingGaps } from "@/lib/costing";
 import { recordedJobDate } from "@/lib/reporting";
 import type { Job, Proposal } from "@/lib/types";
 
@@ -71,10 +71,7 @@ export function ClosedJobMargins({
                     ? percent(snapshot.marginPercent)
                     : "Unknown";
                 const current = computeCosting(job);
-                const provisional =
-                  current.actualLaborCost <= 0 ||
-                  (job.actualMaterialCost <= 0 &&
-                    job.trackedMaterialCost === undefined);
+                const gaps = jobCostingGaps(job);
                 return (
                   <tr key={job.id} className="border-t">
                     <th scope="row" className="py-2 pr-2 text-left font-medium">
@@ -90,9 +87,9 @@ export function ClosedJobMargins({
                     </td>
                     <td className="text-right tabular-nums">
                       <span>{percent(current.actualMarginPct)}</span>
-                      {provisional && (
+                      {gaps.length > 0 && (
                         <span className="block text-xs text-muted-foreground">
-                          Provisional
+                          Provisional · {gaps.join(", ")}
                         </span>
                       )}
                     </td>

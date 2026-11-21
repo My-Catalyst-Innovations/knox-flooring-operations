@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router, type IRouter } from "express";
 import { desc, eq, inArray, lte, sql } from "drizzle-orm";
 import { z } from "zod";
+import { supplierDecimalPattern, supplierPurchaseFactor, supplierStockUnitRate } from "@workspace/domain";
 import {
   db,
   productsTable,
@@ -28,7 +29,9 @@ const rateInput = z.object({
   supplierSku: requiredText,
   manufacturerPartNumber: z.string().trim().max(200).optional(),
   unit: requiredText,
-  unitCost: z.string().regex(/^(?:\d{1,12}(?:\.\d{1,6})?|\.\d{1,6})$/),
+  unitCost: z.string().regex(supplierDecimalPattern),
+  stockUnit: requiredText.optional(),
+  stockUnitsPerBuyUnit: z.string().trim().regex(supplierDecimalPattern).optional(),
 });
 const approvalInput = z.object({
   effectiveOn: z.string().date(),
@@ -58,6 +61,7 @@ router.get(
         .selectDistinctOn([supplierBuyPricesTable.aliasId], {
           aliasId: supplierBuyPricesTable.aliasId,
           unit: supplierBuyPricesTable.unit,
+          stockUnitsPerBuyUnit: supplierBuyPricesTable.stockUnitsPerBuyUnit,
           unitCost: supplierBuyPricesTable.unitCost,
           effectiveOn: supplierBuyPricesTable.effectiveOn,
           source: supplierBuyPricesTable.source,
@@ -106,6 +110,7 @@ router.post(
           sku: productsTable.sku,
           unit: productsTable.unit,
           active: productsTable.active,
+          inventoryType: productsTable.inventoryType,
         })
         .from(productsTable)
         .where(inArray(productsTable.id, productIds))
@@ -126,6 +131,7 @@ router.post(
           aliasId: supplierBuyPricesTable.aliasId,
           unit: supplierBuyPricesTable.unit,
           unitCost: supplierBuyPricesTable.unitCost,
+          stockUnitsPerBuyUnit: supplierBuyPricesTable.stockUnitsPerBuyUnit,
         })
         .from(supplierBuyPricesTable)
         .where(sql`${supplierBuyPricesTable.effectiveOn} = ${effectiveOn}`);
@@ -139,10 +145,15 @@ router.post(
       for (const row of rows) {
         const label = `${row.supplier} ${row.supplierSku}`;
         const product = productsById.get(row.productId);
+        const sameUnit = product && normalize(product.unit) === normalize(row.unit);
+        const factor = product ? supplierPurchaseFactor(row.unit, product.unit, row.stockUnitsPerBuyUnit) : null;
         if (
           !product?.active ||
           normalize(product.sku) !== normalize(row.productSku) ||
-          normalize(product.unit) !== normalize(row.unit)
+          !factor ||
+          supplierStockUnitRate(row.unitCost, factor) === null ||
+          (row.stockUnit && normalize(product.unit) !== normalize(row.stockUnit)) ||
+          (!sameUnit && (!row.stockUnit || product.inventoryType !== "Inventory"))
         ) {
           throw new DomainError(
             409,
@@ -182,7 +193,8 @@ router.post(
           if (
             normalizedCost(previous.unitCost) !==
               normalizedCost(row.unitCost) ||
-            normalize(previous.unit) !== normalize(row.unit)
+            normalize(previous.unit) !== normalize(row.unit) ||
+            normalizedCost(previous.stockUnitsPerBuyUnit) !== normalizedCost(factor)
           ) {
             throw new DomainError(
               409,
@@ -207,8 +219,9 @@ router.post(
         newPrices.push({
           id: randomUUID(),
           aliasId,
-          unit: product.unit,
+          unit: sameUnit ? product.unit : row.unit,
           unitCost: row.unitCost,
+          stockUnitsPerBuyUnit: factor,
           effectiveOn,
           source,
           approvedBy,

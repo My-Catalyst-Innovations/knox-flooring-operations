@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import { db, passwordResetTokensTable, sessionsTable, usersTable } from "@workspace/db";
+import { workspaceEnvironment, workspaceScopeKey } from "@workspace/db/workspace";
 import { audit, createSession, hashPassword, hashToken, newToken, normalizeEmail, SESSION_COOKIE, SESSION_TTL_MS, verifyPassword } from "../lib/auth";
 import { requireAuth } from "../middlewares/auth";
 import { availableCommunicationProviders, CommsError, emailAddress, isDemoDeliveryEnvironment, passwordResetLink, sendPasswordResetEmail } from "../lib/comms";
@@ -15,7 +16,7 @@ const resetAttempts = new Map<string, { count: number; resetAt: number }>();
 const resetWindow = 60 * 60_000;
 
 export function isDemoAccessEnabled() {
-  return process.env.DEMO_ACCESS_ENABLED === "true";
+  return workspaceEnvironment().DEMO_ACCESS_ENABLED === "true";
 }
 
 router.post("/auth/demo", async (req, res) => {
@@ -53,7 +54,7 @@ router.post("/auth/demo", async (req, res) => {
 router.post("/auth/login", async (req, res) => {
   const email = normalizeEmail(String(req.body?.email ?? ""));
   const password = String(req.body?.password ?? "");
-  const key = `${req.ip}:${email}`;
+  const key = JSON.stringify([workspaceScopeKey(), req.ip, email]);
   const rate = attempts.get(key);
   if (rate && rate.resetAt > Date.now() && rate.count >= 8) { res.status(429).json({ error: "Too many attempts. Try again later." }); return; }
   const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
@@ -117,10 +118,12 @@ function allowResetRequest(ip: string, now: number) {
 }
 
 async function requestPasswordReset(email: string, ip: string) {
-  const base = process.env.APP_BASE_URL;
+  const env = workspaceEnvironment();
+  const base = env.APP_BASE_URL;
   const now = new Date();
-  if (isDemoDeliveryEnvironment() || process.env.PASSWORD_RESET_EMAIL_ENABLED !== "true" ||
-    !availableCommunicationProviders().email || !passwordResetLink(base, "") || !allowResetRequest(ip, now.getTime())) return;
+  if (isDemoDeliveryEnvironment() || env.PASSWORD_RESET_EMAIL_ENABLED !== "true" ||
+    !availableCommunicationProviders().email || !passwordResetLink(base, "") ||
+    !allowResetRequest(JSON.stringify([workspaceScopeKey(), ip]), now.getTime())) return;
   const reset = await db.transaction(async (tx) => {
     const [user] = await tx.select({ id: usersTable.id }).from(usersTable)
       .where(and(eq(usersTable.email, email), eq(usersTable.active, true))).for("update");

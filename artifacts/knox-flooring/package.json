@@ -84,10 +84,15 @@
     "zod": "catalog:"
   },
   "dependencies": {
+    "@tesseract.js-data/eng": "1.0.0",
     "@uppy/aws-s3": "^5.1.0",
     "@uppy/core": "^5.2.0",
     "@uppy/dashboard": "^5.1.1",
     "@uppy/react": "^5.2.0",
-    "@workspace/domain": "workspace:*"
+    "@workspace/domain": "workspace:*",
+    "jsbarcode": "3.12.3",
+    "pdfjs-dist": "6.5.438",
+    "tesseract.js": "7.0.0",
+    "tesseract.js-core": "7.0.0"
   }
 }

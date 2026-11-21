@@ -50,15 +50,28 @@ type Preview = {
   };
   accounts: Array<{ id: string; name: string; label: string }>;
 };
-const base = "/quickbooks/sandbox-stock-items";
+export function ProductionStockItems({ connectionId, realmId, accounts }: {
+  connectionId: string;
+  realmId?: string;
+  accounts: SandboxAccount[];
+}) {
+  const capabilities = useOperation<{ enabled: boolean; realmId: string; companyName?: string }>("/quickbooks/production-stock-items/capabilities", ["owner"]);
+  if (!capabilities.data?.enabled || capabilities.data.realmId !== realmId) return null;
+  return <SandboxStockItems connectionId={connectionId} accounts={accounts} mode="production" companyName={capabilities.data.companyName || realmId} />;
+}
 
 export function SandboxStockItems({
   connectionId,
   accounts,
+  mode = "sandbox",
+  companyName,
 }: {
   connectionId: string;
   accounts: SandboxAccount[];
+  mode?: "sandbox" | "production";
+  companyName?: string;
 }) {
+  const base = `/quickbooks/${mode}-stock-items`;
   const products = useOperation<Product[]>("/products", ["owner"]);
   const [form, setForm] = useState({
     productId: "",
@@ -104,17 +117,18 @@ export function SandboxStockItems({
         }>(`${base}/approve`, "POST", {
           ...input,
           fingerprint: preview.fingerprint,
+          ...(mode === "production" ? { expectedExistingItemId: preview.existingItemId } : {}),
         });
         setPreview(undefined);
         setMessage(
-          `${result.sku} linked to ${result.reconciledExisting ? "existing" : "new"} sandbox item ${result.itemId}.`,
+          `${result.sku} linked to ${result.reconciledExisting ? "existing" : "new"} ${mode} item ${result.itemId}.`,
         );
       }
     } catch (failure) {
       setError(
         failure instanceof Error
           ? failure.message
-          : "Sandbox item review failed.",
+          : "Inventory item review failed.",
       );
     } finally {
       setBusy(false);
@@ -124,10 +138,9 @@ export function SandboxStockItems({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Sandbox inventory items</CardTitle>
+        <CardTitle>{mode === "sandbox" ? "Sandbox inventory items" : "Production inventory items"}</CardTitle>
         <CardDescription>
-          Review a stocked product and the accounts for creating it in this
-          sandbox. Opening quantity is zero.
+          Review a stocked product and its accounts before linking or creating it in {companyName ?? "this sandbox"}. Opening quantity is zero.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -213,7 +226,7 @@ export function SandboxStockItems({
                 </p>
               ))}
               {preview.existingItemId && (
-                <p>Matching sandbox item {preview.existingItemId}</p>
+                <p>Matching {mode} item {preview.existingItemId}</p>
               )}
             </div>
           )}
@@ -233,9 +246,9 @@ export function SandboxStockItems({
           >
             {preview
               ? preview.existingItemId
-                ? "Approve existing sandbox link"
-                : "Approve sandbox item creation"
-              : "Preview sandbox item"}
+                ? `Approve existing ${mode} link`
+                : `Approve ${mode} item creation`
+              : `Preview ${mode} item`}
           </Button>
         </form>
       </CardContent>

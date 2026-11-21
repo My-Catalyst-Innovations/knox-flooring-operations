@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   exportSandboxStockItem,
   findSandboxStockItem,
+  inventoryProductionAvailable,
   inventorySandboxAvailable,
   prepareSandboxStockItem,
 } from "./quickbooks-stock-item";
@@ -119,6 +120,22 @@ describe("sandbox inventory item creation", () => {
     ).rejects.toThrow(/active Inventory Asset/);
   });
 
+  it("requires a separately configured production realm and keeps the opening stock at zero", async () => {
+    const connection = { id: input.connectionId, realmId: "11111", status: "connected", environment: "production" };
+    const enabled = { QUICKBOOKS_ENVIRONMENT: "production", QUICKBOOKS_PRODUCTION_STOCK_ITEMS_ENABLED: "true", QUICKBOOKS_PRODUCTION_STOCK_ITEMS_REALM_ID: "11111" };
+    expect(inventoryProductionAvailable(connection, {})).toBe(false);
+    expect(inventoryProductionAvailable(connection, enabled)).toBe(true);
+    expect(inventoryProductionAvailable({ ...connection, realmId: "22222" }, enabled)).toBe(false);
+    expect(inventoryProductionAvailable(connection, { ...enabled, DEMO_MODE: "true" })).toBe(false);
+    const provider = { request: vi.fn(chartRequest), query: vi.fn() };
+    const production = await prepareSandboxStockItem(product, connection.realmId, input, provider, "production");
+    const sandbox = await prepareSandboxStockItem(product, connection.realmId, input, provider, "sandbox");
+    expect(production.document).toEqual(sandbox.document);
+    expect(production.document.QtyOnHand).toBe(0);
+    expect(production.requestId).not.toBe(sandbox.requestId);
+    expect(production.fingerprint).not.toBe(sandbox.fingerprint);
+  });
+
   it("reconciles a single exact item and blocks case variants, inactive duplicates, and name collisions", async () => {
     const provider = { request: vi.fn(chartRequest), query: vi.fn() };
     const prepared = await prepareSandboxStockItem(
@@ -218,6 +235,6 @@ describe("sandbox inventory item creation", () => {
       });
     await expect(
       exportSandboxStockItem(prepared, { query, request }),
-    ).rejects.toThrow(/returned sandbox item differs/);
+    ).rejects.toThrow(/returned QuickBooks item differs/);
   });
 });

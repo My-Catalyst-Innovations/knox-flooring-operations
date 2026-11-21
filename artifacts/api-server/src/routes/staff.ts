@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import { Router } from "express";
 import { z } from "zod";
-import { db, passwordResetTokensTable, sessionsTable, usersTable } from "@workspace/db";
+import { db, passwordResetTokensTable, sessionsTable, settingsTable, usersTable, workspaceIdentityTable } from "@workspace/db";
+import { currentWorkspace, workspaceEnvironment } from "@workspace/db/workspace";
 import { audit, hashPassword, hashToken, newToken, normalizeEmail } from "../lib/auth";
 import { domainRoute, id, parse } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
@@ -61,6 +62,67 @@ async function saveInvitation(tx: StaffTransaction, userId: string, now: Date) {
   return { token, expiresAt };
 }
 
+export async function prepareWorkspaceOwner(input: { company: string; email: string; name: string; adopt: boolean }) {
+  const workspace = currentWorkspace();
+  if (!workspace) throw new Error("Select a configured shared workspace.");
+  const company = z.string().trim().min(1).max(150).parse(input.company);
+  const owner = invitationInput.parse({ email: input.email, name: input.name, role: "owner" });
+  return db.transaction(async (tx) => {
+    await tx.execute(managedStaffLock);
+    const [identity] = await tx.select().from(workspaceIdentityTable).where(eq(workspaceIdentityTable.id, 1)).for("update");
+    if (identity && identity.workspaceKey !== workspace.key)
+      throw new Error("This database already belongs to another workspace.");
+    const accounts = await tx.select(rosterFields).from(usersTable).limit(2);
+    const [brand] = await tx.select({ companyName: settingsTable.companyName }).from(settingsTable).where(eq(settingsTable.id, 1));
+    const now = new Date();
+    if (input.adopt) {
+      if (brand?.companyName !== company || !accounts.length)
+        throw new Error("Existing company and owner do not match. No binding was written.");
+      // A company can already have many staff. Require the exact active owner.
+      const [activeOwner] = await tx.select({ id: usersTable.id }).from(usersTable).where(and(
+        eq(usersTable.active, true), eq(usersTable.role, "owner"), eq(usersTable.email, owner.email),
+      ));
+      if (!activeOwner) throw new Error("The named account is not an active owner of this company.");
+      if (!identity) {
+        await tx.insert(workspaceIdentityTable).values({ workspaceKey: workspace.key, createdAt: now.toISOString() });
+        await tx.delete(sessionsTable);
+        await audit("workspace.bound", { userId: activeOwner.id, entityType: "workspace", entityId: workspace.key }, tx);
+      }
+      return { adopted: true } as const;
+    }
+    if (!identity) {
+      const tables = await tx.execute<{ tablename: string }>(sql`
+        select tablename from pg_catalog.pg_tables
+        where schemaname = 'public' and tablename <> 'catalyst_schema_migrations'
+      `);
+      const dataQueries = tables.rows.map(({ tablename }) => sql`select 1 from public.${sql.identifier(tablename)}`);
+      const occupied = await tx.execute<{ used: boolean }>(sql`
+        select exists (${sql.join(dataQueries, sql` union all `)}) as used
+      `);
+      if (occupied.rows[0]?.used)
+        throw new Error("This database has company records. Use the explicit adoption path for an existing workspace.");
+      await tx.insert(workspaceIdentityTable).values({ workspaceKey: workspace.key, createdAt: now.toISOString() });
+      await tx.insert(settingsTable).values({ id: 1, companyName: company }).onConflictDoNothing();
+    }
+    const pending = accounts[0];
+    if (brand && brand.companyName !== company)
+      throw new Error("The supplied company name does not match the bound workspace.");
+    if (accounts.length && (accounts.length !== 1 || pending.role !== "owner" ||
+      pending.active || !pending.invitationPending || pending.email !== owner.email))
+      throw new Error("This workspace already has an owner or an invitation for another owner.");
+    const ownerId = pending?.id ?? randomUUID();
+    if (!pending) {
+      const timestamp = now.toISOString();
+      await tx.insert(usersTable).values({
+        ...owner, id: ownerId, active: false, passwordHash: pendingPassword, createdAt: timestamp, updatedAt: timestamp,
+      });
+    } else await invalidateAccess(tx, ownerId, now.toISOString());
+    const invite = await saveInvitation(tx, ownerId, now);
+    await audit("workspace.owner_invited", { entityType: "workspace", entityId: workspace.key }, tx);
+    return { adopted: false, url: `${workspace.origin}/welcome#invite=${invite.token}`, expiresAt: invite.expiresAt } as const;
+  });
+}
+
 const liveInvitation = (hash: string, now: string) => and(
   eq(passwords.tokenHash, hash),
   gt(passwords.expiresAt, now),
@@ -70,7 +132,7 @@ const liveInvitation = (hash: string, now: string) => and(
 router.use(path, (_req, res, next) => {
   res.set("Cache-Control", "no-store");
   // A public evaluation owner session must never mint or accept durable login credentials.
-  if (process.env.DEMO_ACCESS_ENABLED === "true") {
+  if (workspaceEnvironment().DEMO_ACCESS_ENABLED === "true") {
     res.status(403).json({ error: "Staff access is unavailable while public demo sign-in is enabled." });
     return;
   }

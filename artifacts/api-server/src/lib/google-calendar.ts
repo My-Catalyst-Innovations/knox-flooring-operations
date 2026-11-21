@@ -1,3 +1,4 @@
+import { workspaceEnvironment } from "@workspace/db/workspace";
 import { logger } from "./logger";
 
 // Two-way Google Calendar sync.
@@ -34,15 +35,12 @@ interface CachedToken {
 let cachedToken: CachedToken | null = null;
 
 async function getAccessToken(): Promise<string> {
-  if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) {
-    return cachedToken.accessToken;
-  }
-
-  const hostname = process.env.REPLIT_CONNECTORS_HOSTNAME;
-  const xReplitToken = process.env.REPL_IDENTITY
-    ? "repl " + process.env.REPL_IDENTITY
-    : process.env.WEB_REPL_RENEWAL
-      ? "depl " + process.env.WEB_REPL_RENEWAL
+  const env = workspaceEnvironment();
+  const hostname = env.REPLIT_CONNECTORS_HOSTNAME;
+  const xReplitToken = env.REPL_IDENTITY
+    ? "repl " + env.REPL_IDENTITY
+    : env.WEB_REPL_RENEWAL
+      ? "depl " + env.WEB_REPL_RENEWAL
       : null;
 
   if (!hostname || !xReplitToken) {
@@ -50,6 +48,9 @@ async function getAccessToken(): Promise<string> {
       "Google Calendar is not connected. Connect it in the integrations panel to enable sync.",
       503,
     );
+  }
+  if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) {
+    return cachedToken.accessToken;
   }
 
   let data: {

@@ -44,6 +44,7 @@ export const supplierBuyPricesTable = pgTable(
     id: text("id").primaryKey(),
     aliasId: text("alias_id").notNull(),
     unit: text("unit").notNull(),
+    stockUnitsPerBuyUnit: numeric("stock_units_per_buy_unit", { precision: 18, scale: 6 }).notNull().default("1"),
     unitCost: numeric("unit_cost", { precision: 18, scale: 6 }).notNull(),
     effectiveOn: date("effective_on").notNull(),
     source: text("source").notNull(),
@@ -63,6 +64,10 @@ export const supplierBuyPricesTable = pgTable(
     check(
       "supplier_buy_prices_cost_valid",
       sql`${table.unitCost} >= 0 AND ${table.unitCost} <> 'NaN'::numeric`,
+    ),
+    check(
+      "supplier_buy_prices_stock_factor_valid",
+      sql`${table.stockUnitsPerBuyUnit} > 0 AND ${table.stockUnitsPerBuyUnit} <= 1000000`,
     ),
   ],
 );

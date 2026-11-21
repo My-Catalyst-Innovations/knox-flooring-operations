@@ -22,7 +22,17 @@ describe("operational report metrics", () => {
       stockAuditSummary([
         { ...product, reason: "count", entries: 3, matches: 2, quantity: 20 },
         { ...product, reason: "damage", entries: 30, matches: 0, quantity: 60 },
-        { ...product, reason: "waste", entries: 2, matches: 0, quantity: 3 },
+        {
+          ...product,
+          reason: "waste",
+          entries: 2,
+          matches: 0,
+          quantity: 3,
+          jobId: "job-1",
+          jobNumber: "J-1",
+          crewId: "crew-1",
+          crewName: "Crew One",
+        },
         {
           ...product,
           unit: "sqft",
@@ -38,6 +48,26 @@ describe("operational report metrics", () => {
       waste: [
         { ...product, entries: 2, quantity: 3 },
         { ...product, unit: "sqft", entries: 1, quantity: 12.5 },
+      ],
+      wasteByJob: [
+        {
+          jobId: "job-1",
+          jobNumber: "J-1",
+          crewId: "crew-1",
+          crewName: "Crew One",
+          unit: "box",
+          entries: 2,
+          quantity: 3,
+        },
+        {
+          jobId: null,
+          jobNumber: null,
+          crewId: null,
+          crewName: null,
+          unit: "sqft",
+          entries: 1,
+          quantity: 12.5,
+        },
       ],
     });
   });

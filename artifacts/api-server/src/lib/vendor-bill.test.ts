@@ -4,6 +4,7 @@ import {
   confirmProductionVendorBill,
   matchesPostedBill,
   productionVendorBillsAvailable,
+  readQuickBooksBillChargeAccounts,
   reconcileQuickBooksVendorBill,
   reviewVendorBill,
   vendorBillInput,
@@ -197,7 +198,7 @@ describe("supplier bill purchase reconciliation", () => {
           {
             ...posted.Line[0],
             ItemBasedExpenseLineDetail: {
-              ...posted.Line[0].ItemBasedExpenseLineDetail,
+              ...(posted.Line[0].DetailType === "ItemBasedExpenseLineDetail" ? posted.Line[0].ItemBasedExpenseLineDetail : {}),
               UnitPrice: 48,
             },
           },
@@ -347,5 +348,35 @@ describe("supplier bill purchase reconciliation", () => {
         { method: "POST", body: JSON.stringify(prepared) },
       ],
     ]);
+  });
+
+  it("uses the exact acknowledged freight line and supports a charge-only source bill", async () => {
+    const freight = { kind: "freight" as const, description: "Inbound freight", accountId: "75", amount: "25.00" };
+    const source = vendorBillInput.parse({ ...input, billTotal: "524.25", charges: [freight] });
+    const prepared = buildVendorBill(source, mapping, "0087").quickBooksBill;
+    const posted = { ...prepared, Id: "200", TotalAmt: 524.25 };
+    expect(prepared.Line[1]).toEqual({ DetailType: "AccountBasedExpenseLineDetail", Description: "Inbound freight", Amount: 25, AccountBasedExpenseLineDetail: { AccountRef: { value: "75" } } });
+    expect(matchesPostedBill(prepared, posted)).toBe(true);
+    expect(matchesPostedBill(prepared, { ...posted, TxnTaxDetail: { TotalTax: 1 } })).toBe(false);
+    expect(matchesPostedBill(prepared, { ...posted, Line: [prepared.Line[0], { ...prepared.Line[1], Description: "Other charge" }] })).toBe(false);
+    expect(() => buildVendorBill({ ...source, billTotal: "524.26" }, mapping, "0087")).toThrow(/source bill total/);
+    expect(buildVendorBill({ ...source, lines: [], billTotal: "25" }, [], "0087").quickBooksBill.Line).toHaveLength(1);
+    expect(() => buildVendorBill({ ...source, charges: [{ ...freight, accountId: undefined }] }, mapping, "0087")).toThrow(/expense account/);
+
+    const request = vi.fn(async (path: string, _init?: RequestInit) => {
+      if (path === "/vendor/0087") return { Vendor: { Id: "0087", Active: true } };
+      if (path === "/preferences") return { Preferences: { CurrencyPrefs: { HomeCurrency: { value: "USD" } } } };
+      if (path.startsWith("/item/")) return { Item: { Id: mapping[0].quickBooksItemId, Active: true, Type: "Inventory" } };
+      if (path === "/account/75") return { Account: { Id: "75", Active: true, Name: "Freight cost", AccountType: "Expense" } };
+      if (path.startsWith("/bill")) return { Bill: posted };
+      throw new Error(`Unexpected provider request ${path}`);
+    });
+    const query = vi.fn().mockResolvedValue({ QueryResponse: {} });
+    const approved = await readQuickBooksBillChargeAccounts(["75"], request);
+    await expect(reconcileQuickBooksVendorBill(prepared, "expense-request", { request, query }, undefined, [{ ...approved[0], name: "Changed name" }])).rejects.toThrow(/changed after review/);
+    expect(request.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    await expect(reconcileQuickBooksVendorBill(prepared, "expense-request", { request, query }, undefined, approved)).resolves.toEqual({ postedId: "200", reconciledExisting: false });
+    expect(request).toHaveBeenCalledWith("/bill?requestid=expense-request", { method: "POST", body: JSON.stringify(prepared) });
+    await expect(readQuickBooksBillChargeAccounts(["75"], async () => ({ Account: { Id: "75", Active: true, Name: "Cash", AccountType: "Bank" } }))).rejects.toThrow(/active expense/);
   });
 });

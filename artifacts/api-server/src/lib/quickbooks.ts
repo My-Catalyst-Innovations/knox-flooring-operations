@@ -1,9 +1,10 @@
+import { workspaceEnvironment } from "@workspace/db/workspace";
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { db, quickbooksConnectionsTable } from "@workspace/db";
 
 const getKey = () => {
-  const value = process.env.QUICKBOOKS_ENCRYPTION_KEY;
+  const value = workspaceEnvironment().QUICKBOOKS_ENCRYPTION_KEY;
   if (!value) throw new Error("QUICKBOOKS_ENCRYPTION_KEY is not configured");
   return createHash("sha256").update(value).digest();
 };
@@ -25,10 +26,10 @@ export function decryptSecret(value: string) {
 export function signOAuthState(value: string) { return `${value}.${createHmac("sha256", getKey()).update(value).digest("base64url")}`; }
 export function verifyOAuthState(signed: string) { const pos = signed.lastIndexOf("."); if (pos < 1) return null; const value = signed.slice(0, pos); return signOAuthState(value) === signed ? value : null; }
 
-const apiBase = () => process.env.QUICKBOOKS_ENVIRONMENT === "production" ? "https://quickbooks.api.intuit.com" : "https://sandbox-quickbooks.api.intuit.com";
+const apiBase = () => workspaceEnvironment().QUICKBOOKS_ENVIRONMENT === "production" ? "https://quickbooks.api.intuit.com" : "https://sandbox-quickbooks.api.intuit.com";
 
 async function refresh(connection: typeof quickbooksConnectionsTable.$inferSelect) {
-  const auth = Buffer.from(`${process.env.QUICKBOOKS_CLIENT_ID}:${process.env.QUICKBOOKS_CLIENT_SECRET}`).toString("base64");
+  const auth = Buffer.from(`${workspaceEnvironment().QUICKBOOKS_CLIENT_ID}:${workspaceEnvironment().QUICKBOOKS_CLIENT_SECRET}`).toString("base64");
   const response = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", { method: "POST", headers: { Authorization: `Basic ${auth}`, Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: decryptSecret(connection.encryptedRefreshToken) }) });
   if (!response.ok) { await db.update(quickbooksConnectionsTable).set({ status: "reconnect_required", updatedAt: new Date().toISOString() }).where(eq(quickbooksConnectionsTable.id, connection.id)); throw new Error("QuickBooks authorization expired; reconnect required"); }
   const tokens = await response.json() as { access_token: string; refresh_token: string; expires_in: number; x_refresh_token_expires_in: number };

@@ -72,7 +72,7 @@ describe("QuickBooks invoice lines", () => {
     });
     expect(() => quickBooksInvoiceLines({ ...invoice, total: 65.12 }, links, services, true)).toThrow(/total does not match/);
     expect(() => quickBooksInvoiceLines({ ...invoice, discountAmount: 5.243 }, links, services, true)).toThrow(/exact currency amount/);
-    expect(() => quickBooksInvoiceLines(invoice, links, services)).toThrow(/sandbox/);
+    expect(() => quickBooksInvoiceLines(invoice, links, services)).toThrow(/accounting settings/);
   });
 
   it.each([
@@ -142,6 +142,15 @@ describe("QuickBooks invoice payment import", () => {
       .toMatchObject({ status: "Partial", paidAt: null, paidAmount: 70, balanceAmount: 30 });
     expect(quickBooksInvoicePaymentState(paid, { TotalAmt: 100, Balance: 0 }, now))
       .toMatchObject({ status: "Paid", paidAt });
+  });
+
+  it("does not count the already recorded invoice deposit a second time as payments", () => {
+    const local = { ...paid, depositAmount: 20 };
+    expect(quickBooksInvoicePaymentState(local, { TotalAmt: 100, Balance: 65, Deposit: 20 }, now))
+      .toMatchObject({ status: "Partial", paidAmount: 15, balanceAmount: 65 });
+    expect(quickBooksInvoicePaymentState(local, { TotalAmt: 100, Balance: 80, Deposit: 20 }, now))
+      .toMatchObject({ status: "Partial", paidAmount: 0, balanceAmount: 80 });
+    expect(quickBooksInvoicePaymentState(local, { TotalAmt: 100, Balance: 80, Deposit: 19 }, now)).toBeUndefined();
   });
 
   it.each([

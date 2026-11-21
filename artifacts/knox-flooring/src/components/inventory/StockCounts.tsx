@@ -7,7 +7,7 @@ import { useAuth } from "@/contexts/auth";
 import { useUnsavedForm } from "@/hooks/use-unsaved-changes";
 import { operation, useOperation, useRefreshOperations } from "@/lib/operations";
 import { binName, inventorySelect, purchaseQuantity, useInventoryRequestKey, type WarehouseBin } from "@/lib/purchasing";
-import type { Product } from "@/lib/types";
+import type { Job, Product } from "@/lib/types";
 import { inventoryRoles, type Warehouse } from "@/lib/warehouse-inventory";
 
 const path = "/inventory/stock-counts";
@@ -119,13 +119,16 @@ function CountForm({ warehouse, bins, products, onClose, onDone }: {
   </Dialog>;
 }
 
-function ReviewCount({ count, bins, onClose, onDone }: {
-  count: Count; bins: readonly WarehouseBin[]; onClose(): void; onDone(action: "reconcile" | "dismiss"): void;
+function ReviewCount({ count, bins, jobs, onClose, onDone }: {
+  count: Count; bins: readonly WarehouseBin[]; jobs: readonly Job[]; onClose(): void; onDone(action: "reconcile" | "dismiss"): void;
 }) {
   const [action, setAction] = useState<"reconcile" | "dismiss">("reconcile");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [jobId, setJobId] = useState("");
+  const [crewId, setCrewId] = useState("");
+  const crews = useOperation<{ id: string; name: string }[]>(`${path}/waste-crews?jobId=${encodeURIComponent(jobId)}`, count.reason === "waste" && jobId ? ["owner"] : []);
   const inFlight = useRef(false);
 
   async function resolve(event: FormEvent) {
@@ -135,7 +138,9 @@ function ReviewCount({ count, bins, onClose, onDone }: {
     setBusy(true);
     setError("");
     try {
-      await operation(`${path}/${encodeURIComponent(count.id)}/${action}`, "POST", action === "dismiss" ? { note: note.trim() } : {});
+      await operation(`${path}/${encodeURIComponent(count.id)}/${action}`, "POST", action === "dismiss" ? { note: note.trim() } : {
+        ...(count.reason === "waste" && jobId ? { jobId, ...(crewId ? { crewId } : {}) } : {}),
+      });
       onDone(action);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Could not resolve this count.");
@@ -158,6 +163,21 @@ function ReviewCount({ count, bins, onClose, onDone }: {
       </dl>
       <p className="text-sm">{reasons[count.reason]}{count.note && ` · ${count.note}`}</p>
       <form onSubmit={resolve} className="space-y-3">
+        {action === "reconcile" && count.reason === "waste" && jobs.length > 0 && <fieldset disabled={busy} className="space-y-3">
+          <label className="block space-y-1 text-sm font-medium">Waste job (optional)
+            <select className={inventorySelect} value={jobId} onChange={(event) => { setJobId(event.target.value); setCrewId(""); }}>
+              <option value="">Unassigned job</option>
+              {jobs.map((job) => <option key={job.id} value={job.id}>{job.jobNumber} · {job.customerName}</option>)}
+            </select>
+          </label>
+          {jobId && <label className="block space-y-1 text-sm font-medium">Waste crew (optional)
+            <select className={inventorySelect} value={crewId} disabled={crews.isLoading || crews.isError} onChange={(event) => setCrewId(event.target.value)}>
+              <option value="">Unassigned crew</option>
+              {(crews.data ?? []).map((crew) => <option key={crew.id} value={crew.id}>{crew.name}</option>)}
+            </select>
+          </label>}
+          {jobId && crews.isError && <p role="alert" className="text-sm text-destructive">Could not load crews for this job. <button type="button" className="underline" onClick={() => void crews.refetch()}>Retry</button></p>}
+        </fieldset>}
         {action === "dismiss" && <label className="block space-y-1 text-sm font-medium">Dismissal reason
           <Textarea required maxLength={500} rows={2} value={note} disabled={busy} onChange={(event) => setNote(event.target.value)} />
         </label>}
@@ -174,8 +194,8 @@ function ReviewCount({ count, bins, onClose, onDone }: {
   </Dialog>;
 }
 
-function CountHistory({ warehouse, bins, products, productsUnavailable }: {
-  warehouse: Warehouse; bins: readonly WarehouseBin[]; products: readonly Product[]; productsUnavailable: boolean;
+function CountHistory({ warehouse, bins, products, productsUnavailable, jobs = [] }: {
+  warehouse: Warehouse; bins: readonly WarehouseBin[]; products: readonly Product[]; productsUnavailable: boolean; jobs?: readonly Job[];
 }) {
   const { user } = useAuth();
   const query = useOperation<Count[]>(`${path}?warehouseId=${encodeURIComponent(warehouse.id)}`, inventoryRoles);
@@ -205,7 +225,7 @@ function CountHistory({ warehouse, bins, products, productsUnavailable }: {
     {recording && <CountForm warehouse={warehouse} bins={bins} products={stocked} onClose={() => setRecording(false)} onDone={() => {
       setRecording(false); setNotice("Count recorded for owner review."); void refresh();
     }} />}
-    {reviewing && <ReviewCount count={reviewing} bins={bins} onClose={() => setReviewing(undefined)} onDone={(action) => {
+    {reviewing && <ReviewCount count={reviewing} bins={bins} jobs={jobs} onClose={() => setReviewing(undefined)} onDone={(action) => {
       setReviewing(undefined); setNotice(action === "dismiss" ? "Count dismissed." : "Stock count reconciled."); void refresh();
     }} />}
   </div>;

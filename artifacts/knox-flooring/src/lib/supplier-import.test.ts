@@ -17,6 +17,16 @@ const product: SupplierImportProduct = {
 const supplier = '"Good, ""Better"" Flooring"';
 
 describe("supplier CSV preview", () => {
+  it("requires an explicit stock-unit factor for mismatched units and reports a stock-unit rate", () => {
+    const csv = `${headers},internal_sku,stock_units_per_buy_unit\nFactory,BOX-A,box,37.99,00042,24\nFactory,BOX-B,box,37.99,00042,\nFactory,AREA-A,sqft,3,00042,24`;
+    const { rows } = previewSupplierImport(csv, [product]);
+    expect(rows).toMatchObject([
+      { status: "matched", stockUnitsPerBuyUnit: "24", stockUnitCost: "1.582917" },
+      { status: "unit-mismatch" },
+      { status: "unit-mismatch" },
+    ]);
+  });
+
   it("reads a BOM, CRLF, quoted commas and escapes without losing SKU or price precision", () => {
     const csv = `\uFEFF${headers},manufacturer_part_number\r\n${supplier},"00042",SQFT,1.8750,"000,9"\r\n`;
 

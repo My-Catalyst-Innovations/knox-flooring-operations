@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeCosting } from "./costing";
+import { computeCosting, jobCostingGaps } from "./costing";
 import type { Job } from "./types";
 
 const job = {
@@ -27,5 +27,11 @@ describe("tracked material costing", () => {
     expect(computeCosting({ ...actuals, actualMaterialCost: 175 }).actualGrossProfit).toBe(225);
     expect(computeCosting({ ...job, trackedMaterialCost: 0 }).hasActuals).toBe(true);
     expect(computeCosting(job).hasActuals).toBe(false);
+  });
+
+  it("keeps profit unavailable without revenue and flags provisional material cost", () => {
+    expect(computeCosting({ ...job, actualLaborCost: 75, actualMaterialCost: 20 }).hasActualProfit).toBe(false);
+    expect(jobCostingGaps({ ...job, actualRevenue: 500, trackedMaterialCost: 193 })).toEqual(["labor cost", "review of inventory-derived material cost"]);
+    expect(jobCostingGaps({ ...job, actualRevenue: 500, actualLaborCost: 100, actualMaterialCost: 150 })).toEqual([]);
   });
 });

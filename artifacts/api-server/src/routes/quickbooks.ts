@@ -1,24 +1,26 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, like, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, like, notInArray, sql } from "drizzle-orm";
 import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
 import { db, invoicesTable, jobsTable, materialsTable, productsTable, proposalsTable, quickbooksAccountingMappingsTable, quickbooksConflictsTable, quickbooksConnectionsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable } from "@workspace/db";
+import { workspaceEnvironment } from "@workspace/db/workspace";
 import { audit } from "../lib/auth";
 import { encryptSecret, getConnection, qboQuery, qboRequest, signOAuthState, verifyOAuthState } from "../lib/quickbooks";
 import { loadQuickBooksCatalogEntity, quickBooksCatalogEntities } from "../lib/quickbooks-catalog";
-import { processQuickBooksQueue } from "../lib/quickbooks-worker";
+import { prepareReviewedInvoice, processQuickBooksQueue } from "../lib/quickbooks-worker";
 import { requireOwner } from "../middlewares/auth";
 import { vendorBillEntity } from "../lib/vendor-bill";
-import { sandboxStockItemEntity } from "../lib/quickbooks-stock-item";
+import { productionStockItemEntity, sandboxStockItemEntity } from "../lib/quickbooks-stock-item";
 import { invoiceServiceCategories, invoiceServiceEntity, invoiceServiceMappingKey, isActiveQuickBooksServiceItem } from "../lib/quickbooks-invoice";
 import { domainRoute, parse } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
 import { quickBooksWebhookEntries, verifyQuickBooksWebhookSignature } from "../lib/quickbooks-webhooks";
 import { invoiceCreateRecord } from "../lib/quickbooks-invoice-create";
+import { invoiceReviewInput, requiresInvoiceReview, reviewedInvoiceApproval, reviewedInvoiceRecord, reviewedInvoicesAvailable } from "../lib/quickbooks-invoice-review";
 
 const router: IRouter = Router();
-const configured = () => Boolean(process.env.QUICKBOOKS_CLIENT_ID && process.env.QUICKBOOKS_CLIENT_SECRET && process.env.QUICKBOOKS_REDIRECT_URI && process.env.QUICKBOOKS_ENCRYPTION_KEY);
-const demoAvailable = () => process.env.DEMO_MODE === "true";
+const configured = () => Boolean(workspaceEnvironment().QUICKBOOKS_CLIENT_ID && workspaceEnvironment().QUICKBOOKS_CLIENT_SECRET && workspaceEnvironment().QUICKBOOKS_REDIRECT_URI && workspaceEnvironment().QUICKBOOKS_ENCRYPTION_KEY);
+const demoAvailable = () => workspaceEnvironment().DEMO_MODE === "true";
 const publicConnection = (c: Awaited<ReturnType<typeof getConnection>>) => c ? ({ connected: c.status === "connected", status: c.status, realmId: c.realmId, companyName: c.companyName, environment: c.environment, readinessStatus: c.readinessStatus, lastSyncAt: c.lastSyncAt, lastCdcAt: c.lastCdcAt, refreshTokenExpiresAt: c.refreshTokenExpiresAt }) : ({ connected: false, status: configured() ? "not_connected" : "not_configured", readinessStatus: "configuration_required" });
 
 router.get("/quickbooks/status", async (_req, res) => res.json({ configured: configured(), demoAvailable: demoAvailable(), demoCompany: demoAvailable() ? { name: "Knoxville Flooring Demo Company", environment: "simulated", lastFour: "1982" } : null, connection: publicConnection(await getConnection()) }));
@@ -93,19 +95,19 @@ router.get("/quickbooks/connect", async (req, res) => {
   const state = signOAuthState(`${req.auth!.userId}:${Date.now()}:${randomUUID()}`);
   res.cookie("qbo_oauth_state", state, { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", maxAge: 10 * 60_000, path: "/" });
   const url = new URL("https://appcenter.intuit.com/connect/oauth2");
-  url.searchParams.set("client_id", process.env.QUICKBOOKS_CLIENT_ID!); url.searchParams.set("response_type", "code"); url.searchParams.set("scope", "com.intuit.quickbooks.accounting"); url.searchParams.set("redirect_uri", process.env.QUICKBOOKS_REDIRECT_URI!); url.searchParams.set("state", state);
+  url.searchParams.set("client_id", workspaceEnvironment().QUICKBOOKS_CLIENT_ID!); url.searchParams.set("response_type", "code"); url.searchParams.set("scope", "com.intuit.quickbooks.accounting"); url.searchParams.set("redirect_uri", workspaceEnvironment().QUICKBOOKS_REDIRECT_URI!); url.searchParams.set("state", state);
   res.json({ authorizationUrl: url.toString() });
 });
 
 router.get("/quickbooks/callback", async (req, res) => {
   const state = String(req.query.state ?? ""); const cookieState = String(req.cookies?.qbo_oauth_state ?? "");
   if (!verifyOAuthState(state) || state !== cookieState || !req.query.code || !req.query.realmId) { res.status(400).send("Invalid QuickBooks authorization response"); return; }
-  const auth = Buffer.from(`${process.env.QUICKBOOKS_CLIENT_ID}:${process.env.QUICKBOOKS_CLIENT_SECRET}`).toString("base64");
-  const response = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", { method: "POST", headers: { Authorization: `Basic ${auth}`, Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code: String(req.query.code), redirect_uri: process.env.QUICKBOOKS_REDIRECT_URI! }) });
+  const auth = Buffer.from(`${workspaceEnvironment().QUICKBOOKS_CLIENT_ID}:${workspaceEnvironment().QUICKBOOKS_CLIENT_SECRET}`).toString("base64");
+  const response = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", { method: "POST", headers: { Authorization: `Basic ${auth}`, Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code: String(req.query.code), redirect_uri: workspaceEnvironment().QUICKBOOKS_REDIRECT_URI! }) });
   if (!response.ok) { res.status(502).send("QuickBooks token exchange failed"); return; }
   const token = await response.json() as any; const now = new Date(); const realmId = String(req.query.realmId);
   await db.delete(quickbooksConnectionsTable);
-  await db.insert(quickbooksConnectionsTable).values({ id: randomUUID(), realmId, environment: process.env.QUICKBOOKS_ENVIRONMENT === "production" ? "production" : "sandbox", encryptedAccessToken: encryptSecret(token.access_token), encryptedRefreshToken: encryptSecret(token.refresh_token), accessTokenExpiresAt: new Date(now.getTime() + token.expires_in * 1000).toISOString(), refreshTokenExpiresAt: new Date(now.getTime() + token.x_refresh_token_expires_in * 1000).toISOString(), status: "connected", readinessStatus: "reconciliation_required", createdAt: now.toISOString(), updatedAt: now.toISOString() });
+  await db.insert(quickbooksConnectionsTable).values({ id: randomUUID(), realmId, environment: workspaceEnvironment().QUICKBOOKS_ENVIRONMENT === "production" ? "production" : "sandbox", encryptedAccessToken: encryptSecret(token.access_token), encryptedRefreshToken: encryptSecret(token.refresh_token), accessTokenExpiresAt: new Date(now.getTime() + token.expires_in * 1000).toISOString(), refreshTokenExpiresAt: new Date(now.getTime() + token.x_refresh_token_expires_in * 1000).toISOString(), status: "connected", readinessStatus: "reconciliation_required", createdAt: now.toISOString(), updatedAt: now.toISOString() });
   res.clearCookie("qbo_oauth_state", { path: "/" }); await audit("quickbooks.connected", { userId: req.auth!.userId, entityType: "quickbooks_company", entityId: realmId, ip: req.ip }); res.redirect("/settings?quickbooks=connected");
 });
 
@@ -230,20 +232,84 @@ router.put("/quickbooks/mappings/:type/:key", async (req, res) => {
   await audit("quickbooks.mapping_saved", { userId: req.auth!.userId, entityType: mappingType, entityId: localKey }); res.json(saved);
 });
 
-router.get("/quickbooks/queue", async (_req, res) => res.json(await db.select().from(quickbooksSyncJobsTable).orderBy(desc(quickbooksSyncJobsTable.createdAt)).limit(250)));
+const accountingQueue = quickbooksSyncJobsTable;
+const accountingSource = invoicesTable;
+const invoiceNeedsAccountingReview = () => sql<boolean>`(${accountingQueue.entityType} = 'invoice' and exists (
+  select 1 from ${accountingSource} where ${accountingSource.id} = ${accountingQueue.localId}
+  and (${accountingSource.taxAmount} <> 0 or ${accountingSource.discountAmount} <> 0 or ${accountingSource.depositAmount} <> 0)
+))`;
+router.get("/quickbooks/queue", async (_req, res) => res.json(await db.select({ ...getTableColumns(accountingQueue), accountingReviewRequired: invoiceNeedsAccountingReview() }).from(accountingQueue).orderBy(desc(accountingQueue.createdAt)).limit(250)));
+
+const reviewPath = "/quickbooks/queue/:id/accounting";
+const reviewableStates = ["pending_approval", "failed"];
+router.get("/quickbooks/invoice-accounting/capabilities", requireOwner, domainRoute(async (_req, res) => {
+  const company = await getConnection();
+  res.json({ enabled: reviewedInvoicesAvailable(company), realmId: company?.realmId ?? null });
+}));
+
+async function reviewContext(queueId: string) {
+  const company = await getConnection();
+  if (!company || !reviewedInvoicesAvailable(company)) throw new DomainError(409, "Reviewed invoice accounting is disabled for this QuickBooks company.");
+  const [job] = await db.select().from(accountingQueue).where(and(eq(accountingQueue.id, queueId), eq(accountingQueue.entityType, "invoice"), inArray(accountingQueue.status, reviewableStates))).limit(1);
+  if (!job || !["create", "upsert", "update"].includes(job.action) || job.payload.demoSimulation) throw new DomainError(404, "Invoice accounting review not found.");
+  const [source] = await db.select().from(accountingSource).where(eq(accountingSource.id, job.localId)).limit(1);
+  if (!source || !requiresInvoiceReview(source)) throw new DomainError(404, "This invoice does not require an accounting review.");
+  return { company, job, source };
+}
+
+router.get(reviewPath, requireOwner, domainRoute(async (req, res) => {
+  const { source, company } = await reviewContext(String(req.params.id));
+  res.json({ invoiceNumber: source.invoiceNumber, company: company.companyName || company.realmId,
+    tax: source.taxAmount, discount: source.discountAmount, deposit: source.depositAmount, paid: source.paidAmount,
+    lines: source.lineItems.map(({ id, description }) => ({ id, description })) });
+}));
+
+async function previewAccounting(queueId: string, choice: z.infer<typeof invoiceReviewInput>) {
+  const { source, job, company } = await reviewContext(queueId);
+  try {
+    const preview = await prepareReviewedInvoice(source, company, choice);
+    return { preview, job };
+  } catch (failure) {
+    throw new DomainError(409, failure instanceof Error ? failure.message : "Could not verify the QuickBooks accounting details.");
+  }
+}
+
+router.post(`${reviewPath}/preview`, requireOwner, domainRoute(async (req, res) => {
+  const { preview } = await previewAccounting(String(req.params.id), parse(invoiceReviewInput, req.body));
+  res.json(preview);
+}));
+
+router.post(`${reviewPath}/approve`, requireOwner, domainRoute(async (req, res) => {
+  const review = parse(reviewedInvoiceApproval.strict(), req.body);
+  const { preview, job } = await previewAccounting(String(req.params.id), review.request);
+  if (preview.fingerprint !== review.fingerprint) throw new DomainError(409, "The invoice or accounting details changed. Preview them again before approving.");
+  const now = new Date().toISOString();
+  const [accepted] = await db.update(accountingQueue).set({ payload: { ...job.payload, [reviewedInvoiceRecord]: review },
+    status: "approved", approvedBy: req.auth!.userId, approvedAt: now, nextAttemptAt: now, updatedAt: now, lastError: null,
+  }).where(and(eq(accountingQueue.id, job.id), eq(accountingQueue.updatedAt, job.updatedAt), inArray(accountingQueue.status, reviewableStates))).returning();
+  if (!accepted) throw new DomainError(409, "This invoice approval is already being processed. Refresh the queue.");
+  await audit("quickbooks.invoice_accounting_approved", { userId: req.auth!.userId, entityType: "invoice", entityId: job.localId,
+    details: { realmId: preview.realmId, fingerprint: review.fingerprint, existingInvoiceId: review.request.existingInvoiceId } });
+  void processQuickBooksQueue();
+  res.json(accepted);
+}));
 router.post("/quickbooks/queue", async (req, res) => {
   const entityType = String(req.body?.entityType ?? ""); const localId = String(req.body?.localId ?? ""); const action = String(req.body?.action ?? "upsert"); if (!entityType || !localId || !["customer", "project", "estimate", "invoice", "item", "labor", "expense"].includes(entityType)) { res.status(400).json({ error: "Valid entityType and localId are required" }); return; }
-  if (req.body?.payload && Object.hasOwn(req.body.payload, invoiceCreateRecord)) { res.status(400).json({ error: "The QuickBooks invoice creation record is reserved." }); return; }
+  if (req.body?.payload && [invoiceCreateRecord, reviewedInvoiceRecord].some((key) => Object.hasOwn(req.body.payload, key))) { res.status(400).json({ error: "The QuickBooks invoice accounting record is reserved." }); return; }
   const now = new Date().toISOString(); const version = createHash("sha256").update(JSON.stringify(req.body?.payload ?? {})).digest("hex").slice(0, 16); const [created] = await db.insert(quickbooksSyncJobsTable).values({ id: randomUUID(), idempotencyKey: `${entityType}:${localId}:${action}:${version}`, entityType, localId, action, payload: req.body?.payload ?? {}, warnings: req.body?.warnings ?? [], status: "pending_approval", nextAttemptAt: now, createdAt: now, updatedAt: now }).onConflictDoNothing().returning(); res.status(created ? 201 : 200).json(created ?? { duplicate: true });
 });
-router.post("/quickbooks/queue/approve", async (req, res) => { const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : []; if (!ids.length) { res.status(400).json({ error: "ids are required" }); return; } const now = new Date().toISOString(); const changed = await db.update(quickbooksSyncJobsTable).set({ status: "approved", approvedBy: req.auth!.userId, approvedAt: now, nextAttemptAt: now, updatedAt: now }).where(and(inArray(quickbooksSyncJobsTable.id, ids), eq(quickbooksSyncJobsTable.status, "pending_approval"), notInArray(quickbooksSyncJobsTable.entityType, [vendorBillEntity, sandboxStockItemEntity]))).returning(); await audit("quickbooks.sync_approved", { userId: req.auth!.userId, details: { ids } }); void processQuickBooksQueue(); res.json(changed); });
-router.post("/quickbooks/queue/:id/retry", async (req, res) => { const now = new Date().toISOString(); const [row] = await db.update(quickbooksSyncJobsTable).set({ status: "retry", nextAttemptAt: now, lastError: null, updatedAt: now }).where(and(eq(quickbooksSyncJobsTable.id, String(req.params.id)), notInArray(quickbooksSyncJobsTable.entityType, [vendorBillEntity, sandboxStockItemEntity]))).returning(); if (!row) { res.status(404).json({ error: "Sync job not found" }); return; } void processQuickBooksQueue(); res.json(row); });
+const dedicatedApprovalEntities = [vendorBillEntity, sandboxStockItemEntity, productionStockItemEntity];
+const genericApproval = () => and(notInArray(accountingQueue.entityType, dedicatedApprovalEntities),
+  workspaceEnvironment().QUICKBOOKS_ENVIRONMENT === "production" ? sql`not ${invoiceNeedsAccountingReview()}` : undefined,
+  sql`not (${accountingQueue.payload} ? ${reviewedInvoiceRecord})`);
+router.post("/quickbooks/queue/approve", async (req, res) => { const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : []; if (!ids.length) { res.status(400).json({ error: "ids are required" }); return; } const now = new Date().toISOString(); const changed = await db.update(quickbooksSyncJobsTable).set({ status: "approved", approvedBy: req.auth!.userId, approvedAt: now, nextAttemptAt: now, updatedAt: now }).where(and(inArray(quickbooksSyncJobsTable.id, ids), eq(quickbooksSyncJobsTable.status, "pending_approval"), genericApproval())).returning(); await audit("quickbooks.sync_approved", { userId: req.auth!.userId, details: { ids: changed.map((entry) => entry.id) } }); void processQuickBooksQueue(); res.json(changed); });
+router.post("/quickbooks/queue/:id/retry", async (req, res) => { const now = new Date().toISOString(); const [row] = await db.update(quickbooksSyncJobsTable).set({ status: "retry", nextAttemptAt: now, lastError: null, updatedAt: now }).where(and(eq(quickbooksSyncJobsTable.id, String(req.params.id)), inArray(quickbooksSyncJobsTable.status, ["failed", "retry"]), genericApproval())).returning(); if (!row) { res.status(404).json({ error: "Sync job not found" }); return; } void processQuickBooksQueue(); res.json(row); });
 
 router.get("/quickbooks/conflicts", async (_req, res) => res.json(await db.select().from(quickbooksConflictsTable).orderBy(desc(quickbooksConflictsTable.createdAt))));
 router.post("/quickbooks/conflicts/:id/resolve", async (req, res) => { const resolution = String(req.body?.resolution ?? ""); if (!["keep_knox", "accept_quickbooks"].includes(resolution)) { res.status(400).json({ error: "Invalid resolution" }); return; } const now = new Date().toISOString(); const [row] = await db.update(quickbooksConflictsTable).set({ status: "resolved", resolution, resolvedBy: req.auth!.userId, resolvedAt: now }).where(eq(quickbooksConflictsTable.id, String(req.params.id))).returning(); await audit("quickbooks.conflict_resolved", { userId: req.auth!.userId, entityType: row?.entityType, entityId: row?.localId, details: { resolution } }); res.json(row); });
 
 export async function quickBooksWebhook(req: Request, res: Response) {
-  const verifier = process.env.QUICKBOOKS_WEBHOOK_VERIFIER;
+  const verifier = workspaceEnvironment().QUICKBOOKS_WEBHOOK_VERIFIER;
   if (!verifier) { res.status(503).end(); return; }
   const signature = req.get("intuit-signature");
   if (!signature || !req.rawBody || !verifyQuickBooksWebhookSignature(req.rawBody, signature, verifier)) {

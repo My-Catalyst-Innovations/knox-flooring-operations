@@ -1,3 +1,4 @@
+import { workspaceEnvironment } from "@workspace/db/workspace";
 type FetchLike = typeof fetch;
 
 type ElevenLabsVoice = {
@@ -85,7 +86,7 @@ function hasOpenAI(env: NodeJS.ProcessEnv) {
   return Boolean(value(env, "OPENAI_API_KEY"));
 }
 
-export function getTutorialNarrationStatus(env: NodeJS.ProcessEnv = process.env): TutorialNarrationStatus {
+export function getTutorialNarrationStatus(env: NodeJS.ProcessEnv = workspaceEnvironment()): TutorialNarrationStatus {
   const preferred = value(env, "TUTORIAL_TTS_PROVIDER").toLowerCase() || "elevenlabs";
   if ((preferred === "elevenlabs" && hasElevenLabs(env)) || (!hasOpenAI(env) && hasElevenLabs(env))) {
     return {
@@ -186,7 +187,7 @@ export async function generateTutorialNarration(
   options: { fetchImpl?: FetchLike; env?: NodeJS.ProcessEnv; waitImpl?: (ms: number) => Promise<void> } = {},
 ): Promise<TutorialNarrationResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const env = options.env ?? process.env;
+  const env = options.env ?? workspaceEnvironment();
   const preferred = value(env, "TUTORIAL_TTS_PROVIDER").toLowerCase() || "elevenlabs";
   const wait = options.waitImpl ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 

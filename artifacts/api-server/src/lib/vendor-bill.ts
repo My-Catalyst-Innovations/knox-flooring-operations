@@ -1,4 +1,6 @@
+import { workspaceEnvironment } from "@workspace/db/workspace";
 import { z } from "zod";
+import { convertedSupplierLine, supplierDecimalPattern } from "@workspace/domain";
 import { DomainError } from "./operations-rules";
 
 export const vendorBillEntity = "vendor_bill";
@@ -14,6 +16,12 @@ const line = z.object({
     .refine((value) => Number(value) > 0),
   unitCost: z.string().regex(decimal),
 });
+const charge = z.object({
+  kind: z.enum(["freight", "supplier_tax", "fee"]),
+  description: text(200),
+  accountId: z.string().regex(/^\d{1,30}$/).optional(),
+  amount: z.string().regex(amount).refine((value) => Number(value) > 0),
+}).strict();
 export const vendorBillMode = z.enum([
   "review",
   "simulated",
@@ -21,7 +29,7 @@ export const vendorBillMode = z.enum([
   "production",
 ]);
 export const vendorBillFingerprint = z.string().regex(/^[a-f\d]{64}$/);
-export const vendorBillInput = z.object({
+const vendorBillFields = z.object({
   mode: vendorBillMode,
   supplier: text(200),
   vendorId: z
@@ -34,8 +42,16 @@ export const vendorBillInput = z.object({
     .regex(/^[\w./-]{1,21}$/),
   billDate: z.string().date(),
   billTotal: z.string().regex(amount),
-  lines: z.array(line).min(1).max(50),
+  lines: z.array(line).max(50),
+  charges: z.array(charge).max(20).optional(),
 });
+function hasBillLineCount(value: z.infer<typeof vendorBillFields>) {
+  const count = value.lines.length + (value.charges?.length ?? 0);
+  return count > 0 && count <= 50;
+}
+const lineCountError = { message: "Enter 1–50 merchandise and account charge lines in total.", path: ["lines"] };
+export const vendorBillInput = vendorBillFields.refine(hasBillLineCount, lineCountError);
+export const queuedVendorBillInput = vendorBillFields.extend({ fingerprint: vendorBillFingerprint }).refine(hasBillLineCount, lineCountError);
 
 export type VendorBillInput = z.infer<typeof vendorBillInput>;
 
@@ -47,7 +63,7 @@ type ProductionBillConnection = {
 
 export function productionVendorBillsAvailable(
   connection: ProductionBillConnection | null,
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv = workspaceEnvironment(),
 ) {
   return (
     env.QUICKBOOKS_PRODUCTION_VENDOR_BILLS_ENABLED === "true" &&
@@ -82,6 +98,7 @@ interface SupplierBillLineMapping {
   expectedUnitCost: string;
   priceEffectiveOn: string;
   priceSource: string;
+  stockConversion?: { unit: string; unitsPerBuyUnit: string };
 }
 
 export interface VendorBillLineMapping extends SupplierBillLineMapping {
@@ -108,19 +125,26 @@ export function reviewVendorBill<Mapping extends SupplierBillLineMapping>(
     const totalCents =
       (scaled(requested.quantity, 6) * billedCost + 5_000_000_000n) /
       10_000_000_000n;
+    const conversion = mapping.stockConversion;
+    const stock = conversion ? convertedSupplierLine(requested.quantity, requested.unitCost, conversion.unitsPerBuyUnit) : undefined;
+    if (conversion && !stock) {
+      throw new DomainError(409, `The approved unit conversion for ${requested.supplierSku} cannot preserve this quantity and bill line amount.`);
+    }
     return {
       ...mapping,
       quantity: requested.quantity,
       billedUnitCost: requested.unitCost,
       totalCents: Number(totalCents),
       priceDiffers: billedCost !== expectedCost,
+      ...(conversion && stock ? { stockLine: { ...stock, unit: conversion.unit } } : {}),
     };
   });
-  const totalCents = lines.reduce((sum, item) => sum + item.totalCents, 0);
+  const charges = input.charges?.map((charge) => ({ ...charge, totalCents: Number(scaled(charge.amount, 2)) })) ?? [];
+  const totalCents = [...lines, ...charges].reduce((sum, item) => sum + item.totalCents, 0);
   if (totalCents <= 0 || totalCents !== Number(scaled(input.billTotal, 2))) {
     throw new DomainError(
       409,
-      "The matched merchandise lines must equal the source bill total. Review units, quantities, and prices before approval.",
+      "The matched merchandise lines and account charges must equal the source bill total. Review units, quantities, prices, and charges before approval.",
     );
   }
   return {
@@ -128,7 +152,16 @@ export function reviewVendorBill<Mapping extends SupplierBillLineMapping>(
     totalCents,
     priceDiffers: lines.some((item) => item.priceDiffers),
     lines,
+    ...(charges.length ? { charges } : {}),
   };
+}
+
+function quickBooksDecimal(text: string) {
+  const value = Number(text);
+  const serialized = String(value);
+  if (!supplierDecimalPattern.test(serialized) || scaled(serialized, 6) !== scaled(text, 6))
+    throw new DomainError(409, "This converted stock unit quantity or price cannot be represented exactly in QuickBooks.");
+  return value;
 }
 
 export function buildVendorBill(
@@ -137,22 +170,31 @@ export function buildVendorBill(
   vendorId: string,
 ) {
   const reviewed = reviewVendorBill(input, mappings);
+  const chargeLines = (reviewed.charges ?? []).map((charge) => {
+    if (!charge.accountId) throw new DomainError(409, `Choose a QuickBooks expense account for ${charge.description}.`);
+    return {
+      Amount: charge.totalCents / 100,
+      DetailType: "AccountBasedExpenseLineDetail" as const,
+      Description: charge.description,
+      AccountBasedExpenseLineDetail: { AccountRef: { value: charge.accountId } },
+    };
+  });
   return {
     ...reviewed,
     quickBooksBill: {
       VendorRef: { value: vendorId },
       DocNumber: input.billNumber,
       TxnDate: input.billDate,
-      Line: reviewed.lines.map((item) => ({
+      Line: [...reviewed.lines.map((item) => ({
         Amount: item.totalCents / 100,
-        DetailType: "ItemBasedExpenseLineDetail",
+        DetailType: "ItemBasedExpenseLineDetail" as const,
         Description: `${item.productName} (${item.supplierSku})`,
         ItemBasedExpenseLineDetail: {
           ItemRef: { value: item.quickBooksItemId },
-          Qty: Number(item.quantity),
-          UnitPrice: Number(item.billedUnitCost),
+          Qty: item.stockLine ? quickBooksDecimal(item.stockLine.quantity) : Number(item.quantity),
+          UnitPrice: item.stockLine ? quickBooksDecimal(item.stockLine.unitCost) : Number(item.billedUnitCost),
         },
-      })),
+      })), ...chargeLines],
     },
   };
 }
@@ -178,6 +220,8 @@ export function matchesPostedBill(prepared: PreparedBill, posted: unknown) {
         z.object({
           DetailType: z.string(),
           Amount: z.number().optional(),
+          Description: z.string().optional(),
+          AccountBasedExpenseLineDetail: z.object({ AccountRef: z.object({ value: z.string() }) }).optional(),
           ItemBasedExpenseLineDetail: z
             .object({
               ItemRef: z.object({ value: z.string() }),
@@ -191,33 +235,35 @@ export function matchesPostedBill(prepared: PreparedBill, posted: unknown) {
     .safeParse(posted);
   if (!parsed.success) return false;
   const bill = parsed.data;
-  const itemLines = bill.Line.filter(
-    (item) => item.DetailType === "ItemBasedExpenseLineDetail",
-  );
+  const financialLines = bill.Line.filter((line) => line.DetailType !== "SubTotalLineDetail");
   const totalCents = prepared.Line.reduce(
     (sum, item) => sum + Math.round(item.Amount * 100),
     0,
   );
-  const lineKey = (
+  const itemKey = (
     amount: number,
     detail: { ItemRef: { value: string }; Qty: number; UnitPrice: number },
   ) =>
     JSON.stringify([
+      "item",
       detail.ItemRef.value,
       detail.Qty,
       detail.UnitPrice,
       Math.round(amount * 100),
     ]);
-  const expected = prepared.Line.map((line) =>
-    lineKey(line.Amount, line.ItemBasedExpenseLineDetail),
-  ).sort();
-  const received = itemLines
-    .flatMap((line) =>
-      line.Amount !== undefined && line.ItemBasedExpenseLineDetail
-        ? [lineKey(line.Amount, line.ItemBasedExpenseLineDetail)]
-        : [],
-    )
-    .sort();
+  const accountKey = (amount: number, account: string, description: string) =>
+    JSON.stringify(["account", account, description, Math.round(amount * 100)]);
+  const expected = prepared.Line.map((line) => line.DetailType === "ItemBasedExpenseLineDetail"
+    ? itemKey(line.Amount, line.ItemBasedExpenseLineDetail)
+    : accountKey(line.Amount, line.AccountBasedExpenseLineDetail.AccountRef.value, line.Description)).sort();
+  const received = financialLines.flatMap((line) => {
+    if (line.Amount === undefined) return [];
+    if (line.DetailType === "ItemBasedExpenseLineDetail" && line.ItemBasedExpenseLineDetail)
+      return [itemKey(line.Amount, line.ItemBasedExpenseLineDetail)];
+    if (line.DetailType === "AccountBasedExpenseLineDetail" && line.AccountBasedExpenseLineDetail && line.Description)
+      return [accountKey(line.Amount, line.AccountBasedExpenseLineDetail.AccountRef.value, line.Description)];
+    return [];
+  }).sort();
   return (
     bill.DocNumber === prepared.DocNumber &&
     bill.TxnDate === prepared.TxnDate &&
@@ -225,12 +271,7 @@ export function matchesPostedBill(prepared: PreparedBill, posted: unknown) {
     (!bill.CurrencyRef || bill.CurrencyRef.value === "USD") &&
     !bill.TxnTaxDetail?.TotalTax &&
     Math.round(bill.TotalAmt * 100) === totalCents &&
-    bill.Line.every((line) =>
-      ["ItemBasedExpenseLineDetail", "SubTotalLineDetail"].includes(
-        line.DetailType,
-      ),
-    ) &&
-    itemLines.length === expected.length &&
+    financialLines.length === expected.length &&
     received.length === expected.length &&
     expected.every((key, index) => key === received[index])
   );
@@ -254,9 +295,24 @@ interface QuickBooksBillProvider {
       };
     };
     Item?: { Id: string; Active?: boolean; Type: string };
+    Account?: { Id: string; Name?: string; Active?: boolean; AccountType?: string };
     Bill?: unknown;
   }>;
   query(statement: string): Promise<{ QueryResponse?: { Bill?: unknown[] } }>;
+}
+
+export async function readQuickBooksBillChargeAccounts(
+  ids: string[],
+  request: QuickBooksBillProvider["request"],
+) {
+  return Promise.all([...new Set(ids)].map(async (id) => {
+    const { Account: account } = await request(`/account/${id}`);
+    const name = account?.Name?.trim();
+    if (account?.Id !== id || !name || account.Active !== true ||
+      !account.AccountType || !["Expense", "Other Expense", "Cost of Goods Sold"].includes(account.AccountType))
+      throw new Error(`QuickBooks account ${id} must be an active expense or cost of goods sold account.`);
+    return { id, name, type: account.AccountType };
+  }));
 }
 
 export async function readQuickBooksVendorBillTarget(
@@ -287,6 +343,7 @@ export async function reconcileQuickBooksVendorBill(
   requestId: string,
   provider: QuickBooksBillProvider,
   reviewedTarget?: Awaited<ReturnType<typeof readQuickBooksVendorBillTarget>>,
+  reviewedAccounts?: Awaited<ReturnType<typeof readQuickBooksBillChargeAccounts>>,
 ) {
   const vendorId = approved.VendorRef.value;
   const { QueryResponse } = await provider.query(
@@ -322,7 +379,7 @@ export async function reconcileQuickBooksVendorBill(
     );
   }
   for (const itemId of new Set(
-    approved.Line.map((line) => line.ItemBasedExpenseLineDetail.ItemRef.value),
+    approved.Line.flatMap((line) => line.DetailType === "ItemBasedExpenseLineDetail" ? [line.ItemBasedExpenseLineDetail.ItemRef.value] : []),
   )) {
     const { Item: item } = await provider.request(`/item/${itemId}`);
     if (
@@ -331,6 +388,12 @@ export async function reconcileQuickBooksVendorBill(
       !["Inventory", "NonInventory", "Service"].includes(item.Type)
     )
       throw new Error(`QuickBooks item ${itemId} cannot receive this bill.`);
+  }
+  const accountIds = approved.Line.flatMap((line) => line.DetailType === "AccountBasedExpenseLineDetail" ? [line.AccountBasedExpenseLineDetail.AccountRef.value] : []);
+  if (accountIds.length) {
+    const currentAccounts = await readQuickBooksBillChargeAccounts(accountIds, (path) => provider.request(path));
+    if (!reviewedAccounts || JSON.stringify(currentAccounts) !== JSON.stringify(reviewedAccounts))
+      throw new Error("The QuickBooks expense accounts changed after review. Review the bill before posting.");
   }
   const document = target.includeCurrency
     ? { ...approved, CurrencyRef: { value: "USD" } }

@@ -6,8 +6,11 @@ import cookieParser from "cookie-parser";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { recoveryReadOnly } from "./middlewares/recovery";
+import { workspaceBoundary } from "./middlewares/workspace";
+import { workspaceEnvironment } from "@workspace/db/workspace";
 
 const app: Express = express();
+const customerLinkPath = /^\/(?:api\/public\/(?:jobs|quotes)|p|q)\/[^/]+/i;
 
 app.use(
   pinoHttp({
@@ -17,7 +20,7 @@ app.use(
         return {
           id: req.id,
           method: req.method,
-          url: req.url?.split("?")[0].replace(/(\/api\/public\/(?:jobs|quotes)\/)[^/]+/, "$1[redacted]"),
+          url: req.url?.split("?")[0].replace(customerLinkPath, "/[customer-link]"),
         };
       },
       res(res) {
@@ -29,7 +32,14 @@ app.use(
   }),
 );
 app.set("trust proxy", 1);
-app.use(cors({ origin: process.env.APP_BASE_URL || true, credentials: true }));
+app.use(workspaceBoundary);
+app.use((req, res, next) => {
+  if (customerLinkPath.test(req.path)) {
+    res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
+  }
+  next();
+});
+app.use(cors((_req, done) => done(null, { origin: workspaceEnvironment().APP_BASE_URL || true, credentials: true })));
 app.use(express.json({
   limit: "1mb",
   type: ["application/json", "application/cloudevents-batch+json"],

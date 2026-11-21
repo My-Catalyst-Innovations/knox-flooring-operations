@@ -29,6 +29,7 @@ router.get(path, stockAccess, domainRoute(async (req, res) => {
     status: z.enum(["available", "issued", "all"]).default("all"),
   }), req.query);
   const query = filters.q?.toLowerCase();
+  const exactLabel = query?.startsWith("piece:") ? query.slice("piece:".length) : undefined;
   const rows = await db.select({
     piece: pieces,
     productName: productsTable.name,
@@ -43,7 +44,7 @@ router.get(path, stockAccess, domainRoute(async (req, res) => {
       filters.productId ? eq(pieces.productId, filters.productId) : undefined,
       filters.warehouseId ? eq(pieces.warehouseId, filters.warehouseId) : undefined,
       filters.status === "available" ? isNull(pieces.issuedMovementId) : filters.status === "issued" ? isNotNull(pieces.issuedMovementId) : undefined,
-      query ? or(
+      exactLabel !== undefined ? sql`lower(${pieces.label}) = ${exactLabel}` : query ? or(
         sql`strpos(lower(${pieces.label}), ${query}) > 0`,
         sql`strpos(lower(${pieces.lot}), ${query}) > 0`,
         sql`strpos(lower(${productsTable.sku}), ${query}) > 0`,

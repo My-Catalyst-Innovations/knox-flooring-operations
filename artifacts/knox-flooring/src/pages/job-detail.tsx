@@ -52,6 +52,7 @@ import { JobCompletionCommitment } from "@/components/jobs/JobCompletionCommitme
 import { STAGE_ORDER } from "@/lib/stages";
 import {
   computeCosting,
+  jobCostingGaps,
   computeCommission,
   commissionRateFor,
   fmtMoney,
@@ -118,6 +119,7 @@ export default function JobDetail() {
   const paidTotal = Math.max(0, invoicedTotal - outstanding);
 
   const costing = computeCosting(job);
+  const costingGaps = jobCostingGaps(job);
   const salesperson =
     salespeople.find((s) => s.id === job.salespersonId) ?? null;
   const commission = computeCommission(job, salesperson, settings);
@@ -525,6 +527,9 @@ export default function JobDetail() {
                     <p className="text-xs text-muted-foreground">
                       Record actual revenue to calculate gross profit and margin.
                     </p>
+                  )}
+                  {costing.hasActualProfit && costingGaps.length > 0 && (
+                    <p className="text-xs text-muted-foreground">Gross profit and margin are provisional pending {costingGaps.join(", ")}.</p>
                   )}
                   {!costing.hasActuals && (
                     <p className="text-xs text-muted-foreground">

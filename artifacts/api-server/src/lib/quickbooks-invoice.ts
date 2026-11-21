@@ -35,19 +35,22 @@ export function quickBooksInvoiceLines(
   itemIds: ReadonlyMap<string, string>,
   serviceIds: ReadonlyMap<InvoiceLineCategory, string>,
   allowFixedDiscount = false,
+  taxSelection?: ReadonlySet<string> | "existing",
+  allowExistingDeposit = false,
 ) {
   if (invoice.discountAmount !== 0 && !allowFixedDiscount)
-    throw new Error("Automatic QuickBooks export of invoice discounts is available for first-time exports in the sandbox. Reconcile this invoice manually.");
-  if (invoice.taxAmount !== 0)
-    throw new Error("Automatic QuickBooks export does not support invoice tax. Reconcile this invoice manually.");
-  if (invoice.depositAmount !== 0)
+    throw new Error("Review fixed invoice discounts in QuickBooks accounting settings before exporting this invoice.");
+  if (invoice.taxAmount !== 0 && !taxSelection)
+    throw new Error("Review the invoice tax amount and tax code in QuickBooks accounting settings before exporting this invoice.");
+  if (invoice.depositAmount !== 0 && !allowExistingDeposit)
     throw new Error("Reconcile the applied deposit in QuickBooks before exporting this invoice. No payment was created.");
   const subtotal = Math.round(invoiceSubtotal(invoice.lineItems) * 100);
   const discount = Math.round(invoice.discountAmount * 100);
+  const tax = Math.round(invoice.taxAmount * 100);
   if (!Number.isSafeInteger(discount) || discount < 0 || discount > subtotal ||
-    Math.abs(invoice.discountAmount - discount / 100) > 0.000001)
+    (invoice.discountAmount !== discount / 100 && invoice.discountAmount !== Math.fround(discount / 100)))
     throw new Error("The invoice discount must be an exact currency amount up to the sales subtotal.");
-  if (!invoice.lineItems.length || Math.round(invoice.total * 100) !== subtotal - discount)
+  if (!invoice.lineItems.length || !Number.isSafeInteger(tax) || tax < 0 || Math.round(invoice.total * 100) !== subtotal - discount + tax)
     throw new Error("The invoice total does not match its sales lines. Review the invoice before exporting to QuickBooks.");
 
   const sales = invoice.lineItems.map((line) => {
@@ -68,6 +71,7 @@ export function quickBooksInvoiceLines(
         ItemRef: { value: itemId },
         Qty: line.quantity,
         UnitPrice: line.unitPrice,
+        ...(taxSelection && taxSelection !== "existing" ? { TaxCodeRef: { value: taxSelection.has(line.id) ? "TAX" as const : "NON" as const } } : {}),
       },
     };
   });
@@ -91,7 +95,7 @@ function invoiceCents(value: unknown) {
 
 export function quickBooksInvoicePaymentState(
   local: Pick<InvoiceRow, "status" | "dueDate" | "paidAt" | "depositAmount" | "refundedAmount">,
-  remote: { TotalAmt?: unknown; Balance?: unknown; PrivateNote?: unknown; LinkedTxn?: unknown },
+  remote: { TotalAmt?: unknown; Balance?: unknown; Deposit?: unknown; PrivateNote?: unknown; LinkedTxn?: unknown },
   now: Date,
 ) {
   if (manuallySettled.has(local.status) || local.refundedAmount > 0) return;
@@ -106,7 +110,9 @@ export function quickBooksInvoicePaymentState(
     entry?.TxnType === "CreditMemo" || entry?.TxnType === "RefundReceipt",
   ))) return;
 
-  const paid = total - balance;
+  const deposit = invoiceCents(local.depositAmount) ?? 0;
+  if (deposit > 0 && (invoiceCents(remote.Deposit) !== deposit || deposit > total - balance)) return;
+  const paid = total - balance - deposit;
   let status = local.status;
   if (balance === 0) status = "Paid";
   else if (paid > 0 || local.depositAmount > 0) status = "Partial";

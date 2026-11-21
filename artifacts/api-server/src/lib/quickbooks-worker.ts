@@ -1,3 +1,4 @@
+import { workspaceScopeKey } from "@workspace/db/workspace";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, lte, or, sql } from "drizzle-orm";
 import { db, invoicesTable, jobsTable, productsTable, proposalsTable, quickbooksConnectionsTable, quickbooksConflictsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable, type InvoiceLineCategory } from "@workspace/db";
@@ -8,6 +9,7 @@ import { assertQuickBooksCompanyLink, invoiceServiceEntity, invoiceServiceMappin
 import { quickBooksWebhookChanges } from "./quickbooks-webhooks";
 import { invoiceCreateAttempt, invoiceCreateRecord, prepareQuickBooksInvoiceCreate, QuickBooksInvoiceValidationError, reconcileQuickBooksInvoiceCreate } from "./quickbooks-invoice-create";
 import { quickBooksCdcInvoiceIds, quickBooksPaymentInvoiceIds } from "./quickbooks-cdc";
+import { invoiceReviewFingerprint, isReviewedInvoiceAmount, requiresInvoiceReview, reviewedInvoiceApproval, reviewedInvoiceRecord, reviewedInvoicesAvailable, verifyClassicInvoiceTax, verifyExistingInvoice, verifyInvoiceDiscountAccount, verifyInvoiceReviewCompany, type InvoiceReviewInput } from "./quickbooks-invoice-review";
 
 const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 async function mapping(entityType: string, localId: string) { const [row] = await db.select().from(quickbooksEntityMappingsTable).where(and(eq(quickbooksEntityMappingsTable.entityType, entityType), eq(quickbooksEntityMappingsTable.localId, localId))).limit(1); return row; }
@@ -59,6 +61,133 @@ async function saveCreatedInvoiceMapping(localId: string, entity: any, company: 
   assertQuickBooksCompanyLink("invoice", current, company);
 }
 
+type InvoiceSource = typeof invoicesTable.$inferSelect;
+type ConnectedCompany = NonNullable<Awaited<ReturnType<typeof getConnection>>>;
+
+async function compileInvoice(
+  source: InvoiceSource,
+  connection: ConnectedCompany,
+  allowDiscount: boolean,
+  taxSelection?: ReadonlySet<string> | "existing",
+  allowExistingDeposit = false,
+) {
+  const productIds = [...new Set(source.lineItems.flatMap(({ productId }) => productId ? [productId] : []))];
+  const categories = [...new Set(source.lineItems.flatMap(({ productId, category }) => productId ? [] : [category]))];
+  const categoriesByKey = new Map(categories.map((category) => [invoiceServiceMappingKey(connection, category), category]));
+  const items = quickbooksEntityMappingsTable;
+  const links = await db.select({ entityType: items.entityType, localId: items.localId, itemId: items.quickbooksId })
+    .from(items).where(and(
+      eq(items.status, "linked"), eq(items.realmId, connection.realmId), eq(items.environment, connection.environment),
+      or(and(eq(items.entityType, "item"), inArray(items.localId, productIds)),
+        and(eq(items.entityType, invoiceServiceEntity), inArray(items.localId, [...categoriesByKey.keys()]))),
+    ));
+  const itemIds = new Map<string, string>();
+  const serviceIds = new Map<InvoiceLineCategory, string>();
+  for (const link of links) {
+    if (link.entityType === "item") itemIds.set(link.localId, link.itemId);
+    const category = categoriesByKey.get(link.localId);
+    if (link.entityType === invoiceServiceEntity && category) serviceIds.set(category, link.itemId);
+  }
+  const customer = await mapping("customer", source.jobId);
+  if (!customer) throw new Error("Customer mapping is required");
+  assertQuickBooksCompanyLink("customer", customer, connection);
+  return {
+    CustomerRef: { value: customer.quickbooksId }, DocNumber: source.invoiceNumber,
+    TxnDate: source.issueDate || undefined, DueDate: source.dueDate || undefined, PrivateNote: source.notes || undefined,
+    Line: quickBooksInvoiceLines(source, itemIds, serviceIds, allowDiscount, taxSelection, allowExistingDeposit),
+  };
+}
+
+export async function prepareReviewedInvoice(
+  source: InvoiceSource,
+  connection: ConnectedCompany,
+  choice: InvoiceReviewInput,
+) {
+  if (!reviewedInvoicesAvailable(connection) || !requiresInvoiceReview(source))
+    throw new Error("Reviewed invoice accounting is unavailable for this invoice and QuickBooks company.");
+  if (["Credited", "Refunded", "Voided"].includes(source.status) || source.refundedAmount !== 0 ||
+    !source.issueDate || !source.dueDate)
+    throw new Error("Review an active invoice with an issue date and a due date.");
+  if (![source.taxAmount, source.discountAmount, source.depositAmount, source.paidAmount, source.total, source.balanceAmount].every(isReviewedInvoiceAmount) ||
+    Math.round(source.total * 100) - Math.round(source.depositAmount * 100) - Math.round(source.paidAmount * 100) !== Math.round(source.balanceAmount * 100))
+    throw new Error("Review the exact invoice amounts. The invoice, deposit, payments, and open balance must reconcile to the cent.");
+  if ((choice.existingInvoiceId || !source.taxAmount) && (choice.taxCodeId || choice.taxableLineIds.length))
+    throw new Error("Select taxable lines and a tax code only when creating a new taxed invoice.");
+  if (choice.discountAccountId && (choice.existingInvoiceId || !source.discountAmount))
+    throw new Error("Select a sales discount account only when creating a new discounted invoice.");
+  if (!choice.existingInvoiceId && (source.depositAmount || source.paidAmount))
+    throw new Error("A paid invoice or deposit needs an existing matching QuickBooks invoice. No cash entry is created.");
+  const existing = await mapping("invoice", source.id);
+  if (existing) {
+    assertQuickBooksCompanyLink("invoice", existing, connection);
+    if (choice.existingInvoiceId !== existing.quickbooksId)
+      throw new Error("Review the existing QuickBooks invoice ID attached to this invoice.");
+  }
+
+  const selection = choice.existingInvoiceId ? "existing" : new Set(choice.taxableLineIds);
+  const local = await compileInvoice(source, connection, true, selection, !!choice.existingInvoiceId);
+  if (!/^\d{1,30}$/.test(local.CustomerRef.value)) throw new Error("Reconcile the mapped QuickBooks customer before reviewing the invoice.");
+  const request = (path: string) => qboRequest(path, {}, connection.id);
+  const company = await verifyInvoiceReviewCompany(local.CustomerRef.value, request);
+  if (!choice.existingInvoiceId && (company.preferences.SalesFormsPrefs?.CustomTxnNumbers !== true ||
+    (source.discountAmount > 0 && company.preferences.SalesFormsPrefs.AllowDiscount !== true)))
+    throw new Error("Enable custom transaction numbers and the applicable discount preference in QuickBooks before exporting.");
+  if (!choice.existingInvoiceId) {
+    const products = new Map<string, boolean>();
+    local.Line.forEach((line, index) => {
+      if (line.DetailType !== "SalesItemLineDetail") return;
+      const id = line.SalesItemLineDetail.ItemRef.value;
+      products.set(id, products.get(id) === true || !source.lineItems[index].productId);
+    });
+    await Promise.all([...products].map(async ([id, forService]) => {
+      const { Item: item } = await qboRequest(`/item/${id}`, {}, connection.id);
+      if (item?.Id !== id || item.Active !== true || !(forService ? item.Type === "Service" : ["Inventory", "NonInventory", "Service"].includes(item.Type)))
+        throw new Error(`QuickBooks sales item ${id} no longer matches its active mapping.`);
+    }));
+  }
+
+  const tax = source.taxAmount && !choice.existingInvoiceId
+    ? await verifyClassicInvoiceTax(source, choice, connection.realmId, company, request) : undefined;
+  const discountAccount = source.discountAmount && !choice.existingInvoiceId
+    ? await verifyInvoiceDiscountAccount(choice.discountAccountId, request) : undefined;
+  const attempt = prepareQuickBooksInvoiceCreate(connection, source.id, {
+    ...local,
+    Line: local.Line.map((line) => line.DetailType === "DiscountLineDetail" && discountAccount
+      ? { ...line, DiscountLineDetail: { ...line.DiscountLineDetail, DiscountAccountRef: { value: discountAccount.id } } } : line),
+    ...(!choice.existingInvoiceId && company.preferences.CurrencyPrefs.MultiCurrencyEnabled === true ? { CurrencyRef: { value: "USD" as const } } : {}),
+    ...(tax ? { TxnTaxDetail: { TxnTaxCodeRef: { value: tax.id }, TotalTax: Math.round(source.taxAmount * 100) / 100 },
+      ...(source.discountAmount > 0 ? { ApplyTaxAfterDiscount: true as const } : {}) } : {}),
+  });
+  const reconciliation = choice.existingInvoiceId ? await verifyExistingInvoice(source, choice.existingInvoiceId, attempt.document, request) : undefined;
+  const evidence = { customer: company.customer, discountAccount, tax, reconciliation };
+  const fingerprint = invoiceReviewFingerprint(connection, source, choice, attempt.document, evidence);
+  return { fingerprint, attempt, evidence, companyName: connection.companyName, realmId: connection.realmId,
+    total: source.total, discount: source.discountAmount, tax: source.taxAmount, deposit: source.depositAmount, balance: source.balanceAmount };
+}
+
+async function reconcileReviewedInvoice(source: InvoiceSource, company: ConnectedCompany, invoice: { invoiceId: string; syncToken: string }) {
+  await db.transaction(async (tx) => {
+    const [current] = await tx.select({ updatedAt: invoicesTable.updatedAt }).from(invoicesTable).where(eq(invoicesTable.id, source.id)).for("update");
+    if (current?.updatedAt !== source.updatedAt) throw new Error("The local invoice changed before linking. Review it again.");
+    const key = JSON.stringify(["invoice", company.environment, company.realmId, invoice.invoiceId]);
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+    const links = quickbooksEntityMappingsTable;
+    const matches = await tx.select().from(links).where(and(eq(links.entityType, "invoice"), or(
+      eq(links.localId, source.id),
+      and(eq(links.environment, company.environment), eq(links.realmId, company.realmId), eq(links.quickbooksId, invoice.invoiceId)),
+    )));
+    if (matches.some((link) => link.localId !== source.id || link.quickbooksId !== invoice.invoiceId))
+      throw new Error("The QuickBooks invoice has a conflicting local link. Reconcile the conflicting mapping first.");
+    const currentLink = matches[0];
+    if (currentLink) assertQuickBooksCompanyLink("invoice", currentLink, company);
+    const now = new Date().toISOString();
+    const values = { quickbooksId: invoice.invoiceId, syncToken: invoice.syncToken, realmId: company.realmId,
+      environment: company.environment, status: "linked", lastSyncedAt: now, updatedAt: now };
+    if (currentLink) await tx.update(links).set(values).where(eq(links.id, currentLink.id));
+    else await tx.insert(links).values({ id: randomUUID(), localId: source.id, entityType: "invoice", createdAt: now, ...values });
+  });
+}
+
 async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
   if (job.entityType === "customer" || job.entityType === "project") {
     const [source] = await db.select().from(jobsTable).where(eq(jobsTable.id, job.localId)).limit(1); if (!source) throw new Error("Local job not found");
@@ -81,49 +210,38 @@ async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
     const connection = await getConnection();
     if (connection?.status !== "connected") throw new Error("QuickBooks is not connected");
     const existing = await mapping("invoice", source.id);
+    const accountingReview = reviewedInvoiceApproval.safeParse(job.payload[reviewedInvoiceRecord]);
+    if (job.payload[reviewedInvoiceRecord] && !accountingReview.success)
+      throw new Error("The invoice needs an updated owner accounting review.");
+    if (existing && accountingReview.success && !accountingReview.data.request.existingInvoiceId) {
+      if (!reviewedInvoicesAvailable(connection)) throw new Error("Reviewed invoice accounting is disabled for this QuickBooks company.");
+      assertQuickBooksCompanyLink("invoice", existing, connection);
+      const savedAttempt = invoiceCreateAttempt.safeParse(job.payload[invoiceCreateRecord]);
+      if (!savedAttempt.success) throw new Error("The invoice already has a QuickBooks link. Review that existing invoice.");
+      const recovered = await reconcileQuickBooksInvoiceCreate(savedAttempt.data, {
+        query: (statement) => qboQuery(statement, connection.id), request: (path, init) => qboRequest(path, init, connection.id),
+      }, false);
+      if (!recovered || typeof recovered !== "object" || !("Id" in recovered) || recovered.Id !== existing.quickbooksId)
+        throw new Error("The saved QuickBooks invoice differs from the approved export. Reconcile it before retrying.");
+      return;
+    }
+    const reviewed = accountingReview.success ? await prepareReviewedInvoice(source, connection, accountingReview.data.request) : undefined;
+    if (accountingReview.success && reviewed?.fingerprint !== accountingReview.data.fingerprint)
+      throw new Error("The invoice or QuickBooks accounting details changed after approval. Review them again.");
+    if (reviewed?.evidence.reconciliation) {
+      await reconcileReviewedInvoice(source, connection, reviewed.evidence.reconciliation);
+      return;
+    }
     if (existing) {
       assertQuickBooksCompanyLink("invoice", existing, connection);
       if (job.action === "create") return;
     }
-    const productIds = [...new Set(source.lineItems.flatMap(({ productId }) => productId ? [productId] : []))];
-    const serviceCategories = [...new Set(source.lineItems.flatMap(({ productId, category }) => productId ? [] : [category]))];
-    const categoriesByKey = new Map(serviceCategories.map((category) => [invoiceServiceMappingKey(connection, category), category]));
-    const items = quickbooksEntityMappingsTable;
-    const links = await db.select({ entityType: items.entityType, localId: items.localId, itemId: items.quickbooksId })
-      .from(items).where(and(
-        eq(items.status, "linked"),
-        eq(items.realmId, connection.realmId),
-        eq(items.environment, connection.environment),
-        or(
-          and(eq(items.entityType, "item"), inArray(items.localId, productIds)),
-          and(eq(items.entityType, invoiceServiceEntity), inArray(items.localId, [...categoriesByKey.keys()])),
-        ),
-      ));
-    const itemIds = new Map<string, string>();
-    const serviceIds = new Map<InvoiceLineCategory, string>();
-    for (const link of links) {
-      if (link.entityType === "item") itemIds.set(link.localId, link.itemId);
-      const category = categoriesByKey.get(link.localId);
-      if (link.entityType === invoiceServiceEntity && category) serviceIds.set(category, link.itemId);
-    }
-    const lines = quickBooksInvoiceLines(source, itemIds, serviceIds, connection.environment === "sandbox" && !existing);
-    const customer = await mapping("customer", source.jobId);
-    if (!customer) throw new Error("Customer mapping is required");
-    assertQuickBooksCompanyLink("customer", customer, connection);
-    const payload = {
-      CustomerRef: { value: customer.quickbooksId },
-      DocNumber: source.invoiceNumber,
-      TxnDate: source.issueDate || undefined,
-      DueDate: source.dueDate || undefined,
-      PrivateNote: source.notes || undefined,
-      Line: lines,
-      ...(existing ? { Id: existing.quickbooksId, SyncToken: existing.syncToken, sparse: false } : {}),
-    };
     if (existing) {
+      const payload = { ...await compileInvoice(source, connection, false), Id: existing.quickbooksId, SyncToken: existing.syncToken, sparse: false };
       const result = await qboRequest("/invoice", { method: "POST", body: JSON.stringify(payload) }, connection.id);
       await saveMapping("invoice", source.id, result.Invoice, connection);
     } else {
-      const desired = prepareQuickBooksInvoiceCreate(connection, source.id, payload);
+      const desired = reviewed?.attempt ?? prepareQuickBooksInvoiceCreate(connection, source.id, await compileInvoice(source, connection, connection.environment === "sandbox"));
       const attempt = await holdInvoiceCreateAttempt(job, source, desired);
       const matchesApproval = JSON.stringify(attempt.document) === JSON.stringify(desired.document);
       let posted: unknown;
@@ -219,13 +337,15 @@ async function processWebhookInbox() {
   }
 }
 
-let lastCdcRun: { connectionId: string; startedAt: number } | undefined;
+const lastCdcRuns = new Map<string, { connectionId: string; startedAt: number }>();
 async function pollChanges() {
   const connection = await getConnection();
   if (connection?.status !== "connected") return;
   const startedAt = Date.now();
+  const scope = workspaceScopeKey();
+  const lastCdcRun = lastCdcRuns.get(scope);
   if (lastCdcRun?.connectionId === connection.id && startedAt - lastCdcRun.startedAt < 5 * 60_000) return;
-  lastCdcRun = { connectionId: connection.id, startedAt };
+  lastCdcRuns.set(scope, { connectionId: connection.id, startedAt });
   const changedSince = connection.lastCdcAt ?? new Date(startedAt - 24 * 60 * 60_000).toISOString();
   const result = await qboRequest(`/cdc?entities=Invoice,Payment&changedSince=${encodeURIComponent(changedSince)}`, {}, connection.id);
   for (const invoiceId of quickBooksCdcInvoiceIds(result)) await importInvoice(invoiceId, connection);
@@ -236,5 +356,13 @@ async function pollChanges() {
     ));
 }
 
-let timer: NodeJS.Timeout | undefined;
-export function startQuickBooksWorker() { if (timer) return; timer = setInterval(() => Promise.all([processQuickBooksQueue(), processWebhookInbox(), pollChanges()]).catch((error) => logger.error({ error }, "QuickBooks worker failed")), 30_000); timer.unref(); }
+const timers = new Map<string, NodeJS.Timeout>();
+export function startQuickBooksWorker() {
+  const key = workspaceScopeKey();
+  if (timers.has(key)) return;
+  const timer = setInterval(() =>
+    Promise.all([processQuickBooksQueue(), processWebhookInbox(), pollChanges()])
+      .catch((error) => logger.error({ error }, "QuickBooks worker failed")), 30_000);
+  timers.set(key, timer);
+  timer.unref();
+}

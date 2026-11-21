@@ -1,4 +1,4 @@
-import { readCsv } from "@workspace/domain";
+import { readCsv, supplierDecimalPattern, supplierPurchaseFactor, supplierStockUnitRate } from "@workspace/domain";
 
 export interface SupplierImportProduct {
   id: string;
@@ -8,6 +8,7 @@ export interface SupplierImportProduct {
   cost: number;
   name: string;
   active: boolean;
+  inventoryType?: string;
 }
 
 export interface SupplierCrosswalkAlias {
@@ -18,6 +19,7 @@ export interface SupplierCrosswalkAlias {
   manufacturerPartNumber: string | null;
   latestPrice: {
     unit: string;
+    stockUnitsPerBuyUnit?: string;
     unitCost: string;
     effectiveOn: string;
     source: string;
@@ -32,6 +34,8 @@ export interface SupplierImportRow {
   manufacturerPartNumber: string;
   unit: string;
   unitCost: string;
+  stockUnitsPerBuyUnit: string;
+  stockUnitCost?: string;
   product?: SupplierImportProduct;
   latestPrice?: NonNullable<SupplierCrosswalkAlias["latestPrice"]>;
   canChooseProduct?: boolean;
@@ -113,6 +117,7 @@ export function previewSupplierImport(
       manufacturerPartNumber: get("manufacturer_part_number"),
       unit: get("unit"),
       unitCost: get("unit_cost"),
+      stockUnitsPerBuyUnit: get("stock_units_per_buy_unit"),
     };
   });
 
@@ -153,8 +158,7 @@ export function previewSupplierImport(
         message: "Supplier, supplier SKU, unit, and unit cost are required.",
       };
     }
-    const proposedCost = Number(row.unitCost);
-    if (!/^(?:\d{1,12}(?:\.\d{1,6})?|\.\d{1,6})$/.test(row.unitCost)) {
+    if (!supplierDecimalPattern.test(row.unitCost)) {
       return {
         ...row,
         status: "invalid",
@@ -255,27 +259,33 @@ export function previewSupplierImport(
           "Assign an internal SKU in the catalog before approving a supplier crosswalk.",
       };
     }
-    if (normalize(product.unit) !== normalize(row.unit)) {
+    const differentUnits = normalize(product.unit) !== normalize(row.unit);
+    const factor = supplierPurchaseFactor(row.unit, product.unit, row.stockUnitsPerBuyUnit);
+    if (!factor || (differentUnits && product.inventoryType && product.inventoryType !== "Inventory")) {
       return {
         ...row,
         product,
         chosenSku,
         status: "unit-mismatch",
-        message: `The catalog uses ${product.unit}; confirm the supplier unit before comparing costs.`,
+        message: differentUnits
+          ? `The catalog uses ${product.unit}. Enter the positive number of stock units per supplier unit for a stocked product.`
+          : "Use a factor of 1 when the supplier and stock units are the same.",
       };
     }
-    const latestPrice =
-      alias?.latestPrice &&
-      normalize(alias.latestPrice.unit) === normalize(row.unit)
-        ? alias.latestPrice
-        : undefined;
-    const proposed = latestPrice ? scaledPrice(row.unitCost) : proposedCost;
-    const reference = latestPrice
-      ? scaledPrice(latestPrice.unitCost)
-      : product.cost;
+    const stockUnitCost = supplierStockUnitRate(row.unitCost, factor);
+    if (stockUnitCost === null) {
+      return { ...row, product, chosenSku, status: "invalid", message: "The converted stock unit cost is outside the supported range." };
+    }
+    const latestPrice = alias?.latestPrice ?? undefined;
+    const latestFactor = latestPrice && supplierPurchaseFactor(latestPrice.unit, product.unit, latestPrice.stockUnitsPerBuyUnit);
+    const priorStockCost = latestPrice && latestFactor ? supplierStockUnitRate(latestPrice.unitCost, latestFactor) : null;
+    const proposed = priorStockCost === null ? Number(stockUnitCost) : scaledPrice(stockUnitCost);
+    const reference = priorStockCost === null ? product.cost : scaledPrice(priorStockCost);
     return {
       ...row,
       product,
+      stockUnitsPerBuyUnit: factor,
+      stockUnitCost,
       chosenSku,
       canChooseProduct: !!chosenSku && canChooseProduct,
       status: "matched",

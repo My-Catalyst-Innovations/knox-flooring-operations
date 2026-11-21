@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { QuickBooksSettings } from "./QuickBooksSettings";
 import { VendorBillSandbox } from "./VendorBillSandbox";
 
@@ -10,6 +10,8 @@ const { customFetch, operation, useOperation } = vi.hoisted(() => ({
 }));
 vi.mock("@workspace/api-client-react", () => ({ customFetch }));
 vi.mock("@/lib/operations", () => ({ operation, useOperation }));
+
+beforeEach(() => useOperation.mockReturnValue({ data: undefined }));
 
 afterEach(() => {
   cleanup();

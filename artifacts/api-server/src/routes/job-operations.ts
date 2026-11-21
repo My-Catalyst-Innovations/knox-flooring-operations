@@ -15,6 +15,7 @@ import {
   usersTable,
   inventoryMovementsTable,
   inventoryStockCountsTable,
+  auditEventsTable,
 } from "@workspace/db";
 import { requireRole } from "../middlewares/auth";
 import { domainRoute, parse, revision, id } from "../lib/domain-http";
@@ -26,6 +27,7 @@ import {
 } from "../lib/operations-rules";
 import { audit } from "../lib/auth";
 import { reportMaterialUsage } from "../lib/report-material-usage";
+import { stagnantInventory } from "../lib/stagnant-inventory";
 import {
   completionTimeliness,
   inventoryActivity,
@@ -300,6 +302,10 @@ function boundary(value: string) {
     throw new DomainError(400, "Use valid from/to dates.");
   return new Date(value).toISOString();
 }
+router.get("/metrics/stagnant-inventory", requireRole("owner"), domainRoute(async (_req, res) => {
+  res.json(await stagnantInventory());
+}));
+
 router.get(
   "/metrics",
   requireRole("owner"),
@@ -320,6 +326,10 @@ router.get(
         Number,
       );
     const counts = inventoryStockCountsTable;
+    const jobId = sql<string | null>`${auditEventsTable.details}->>'jobId'`;
+    const jobNumber = sql<string | null>`${auditEventsTable.details}->>'jobNumber'`;
+    const crewId = sql<string | null>`${auditEventsTable.details}->>'crewId'`;
+    const crewName = sql<string | null>`${auditEventsTable.details}->>'crewName'`;
     const [
       jobs,
       invoices,
@@ -380,6 +390,7 @@ router.get(
           sku: counts.sku,
           productName: counts.productName,
           unit: counts.unit,
+          jobId, jobNumber, crewId, crewName,
           entries: sql<number>`count(*)`.mapWith(Number),
           matches:
             sql<number>`count(*) filter (where ${counts.bookedQuantity} = ${counts.countedQuantity})`.mapWith(
@@ -391,6 +402,7 @@ router.get(
             ),
         })
         .from(counts)
+        .leftJoin(auditEventsTable, and(eq(auditEventsTable.entityId, counts.id), eq(auditEventsTable.entityType, "stock_count"), eq(auditEventsTable.action, "inventory.waste_attributed")))
         .where(
           and(
             eq(counts.status, "Reconciled"),
@@ -398,7 +410,7 @@ router.get(
             lt(counts.resolvedAt, to),
           ),
         )
-          .groupBy(counts.reason, counts.productId, counts.sku, counts.productName, counts.unit)
+        .groupBy(counts.reason, counts.productId, counts.sku, counts.productName, counts.unit, jobId, jobNumber, crewId, crewName)
         .orderBy(asc(counts.productName), asc(counts.sku), asc(counts.unit)),
     ]);
     const installationUntil = shiftReportDate(businessToday, 14);

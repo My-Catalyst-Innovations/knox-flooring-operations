@@ -8,6 +8,12 @@ const document = z.object({
   TxnDate: z.string().optional(),
   DueDate: z.string().optional(),
   PrivateNote: z.string(),
+  CurrencyRef: z.object({ value: z.literal("USD") }).optional(),
+  ApplyTaxAfterDiscount: z.literal(true).optional(),
+  TxnTaxDetail: z.object({
+    TxnTaxCodeRef: z.object({ value: z.string().regex(/^\d{1,30}$/) }),
+    TotalTax: z.number().positive(),
+  }).optional(),
   Line: z.array(z.discriminatedUnion("DetailType", [
     z.object({
       Amount: z.number(),
@@ -17,12 +23,13 @@ const document = z.object({
         ItemRef: z.object({ value: z.string() }),
         Qty: z.number(),
         UnitPrice: z.number(),
+        TaxCodeRef: z.object({ value: z.enum(["TAX", "NON"]) }).optional(),
       }),
     }),
     z.object({
       Amount: z.number().positive(),
       DetailType: z.literal("DiscountLineDetail"),
-      DiscountLineDetail: z.object({ PercentBased: z.literal(false).default(false) }),
+      DiscountLineDetail: z.object({ PercentBased: z.literal(false).default(false), DiscountAccountRef: z.object({ value: z.string().regex(/^\d{1,30}$/) }).optional() }),
     }),
   ])).min(1),
 });
@@ -50,21 +57,53 @@ export function prepareQuickBooksInvoiceCreate(
   return { requestId, document: parsed.data };
 }
 
-function sameInvoice(expected: QuickBooksInvoiceDocument, posted: unknown) {
+type ExistingInvoiceEvidence = { id: string; taxAmount: number; depositAmount: number; balanceAmount: number };
+
+export function sameInvoice(expected: QuickBooksInvoiceDocument, posted: unknown, existing?: ExistingInvoiceEvidence) {
   const result = document.extend({
     Id: z.string().regex(/^\d{1,30}$/),
     TotalAmt: z.number(),
+    Balance: z.number().optional(),
+    Deposit: z.number().optional(),
+    CurrencyRef: z.object({ value: z.string() }).optional(),
+    LinkedTxn: z.array(z.object({ TxnType: z.string() })).optional(),
+    PrivateNote: z.string().default(""),
     Line: z.array(z.unknown()),
+    ApplyTaxAfterDiscount: z.boolean().optional(),
+    TxnTaxDetail: z.object({ TxnTaxCodeRef: z.object({ value: z.string() }).optional(), TotalTax: z.number().optional() }).optional(),
   }).safeParse(posted);
   if (!result.success) return false;
   const invoice = result.data;
-  const postedLines = invoice.Line.filter((line) => (line as { DetailType?: string } | null)?.DetailType !== "SubTotalLineDetail");
+  const postedLines = invoice.Line.filter((line) => (line as { DetailType?: string } | null)?.DetailType !== "SubTotalLineDetail")
+    .map((line, index) => {
+      const approved = expected.Line[index];
+      if (approved?.DetailType === "DiscountLineDetail" && !approved.DiscountLineDetail.DiscountAccountRef &&
+        line && typeof line === "object" && "DiscountLineDetail" in line && line.DiscountLineDetail && typeof line.DiscountLineDetail === "object") {
+        const { DiscountAccountRef: _unreviewedDefault, ...detail } = line.DiscountLineDetail as { DiscountAccountRef?: unknown };
+        return { ...line, DiscountLineDetail: detail };
+      }
+      if (approved?.DetailType !== "SalesItemLineDetail" || approved.SalesItemLineDetail.TaxCodeRef ||
+        !line || typeof line !== "object" || !("SalesItemLineDetail" in line) ||
+        !line.SalesItemLineDetail || typeof line.SalesItemLineDetail !== "object") return line;
+      const { TaxCodeRef: _unreviewedDefault, ...detail } = line.SalesItemLineDetail as { TaxCodeRef?: unknown };
+      return { ...line, SalesItemLineDetail: detail };
+    });
   const lines = document.shape.Line.safeParse(postedLines);
+  const tax = Math.round((existing?.taxAmount ?? expected.TxnTaxDetail?.TotalTax ?? 0) * 100);
   const totalInCents = expected.Line.reduce((total, line) =>
-    total + Math.round(line.Amount * 100) * (line.DetailType === "DiscountLineDetail" ? -1 : 1), 0);
+    total + Math.round(line.Amount * 100) * (line.DetailType === "DiscountLineDetail" ? -1 : 1), tax);
+  const money = (amount: number | undefined) => Math.round((amount ?? 0) * 100);
+  if (existing && (invoice.Id !== existing.id || invoice.Balance === undefined ||
+    money(invoice.Balance) !== money(existing.balanceAmount) || money(invoice.Deposit) !== money(existing.depositAmount) ||
+    (invoice.CurrencyRef && invoice.CurrencyRef.value !== "USD") || /^Voided\b/i.test(invoice.PrivateNote) ||
+    invoice.LinkedTxn?.some(({ TxnType }) => ["CreditMemo", "RefundReceipt"].includes(TxnType)))) return false;
   return invoice.DocNumber === expected.DocNumber && invoice.CustomerRef.value === expected.CustomerRef.value &&
     (!expected.TxnDate || invoice.TxnDate === expected.TxnDate) && (!expected.DueDate || invoice.DueDate === expected.DueDate) &&
-    invoice.PrivateNote === expected.PrivateNote && Math.round(invoice.TotalAmt * 100) === totalInCents &&
+    (existing || invoice.PrivateNote === expected.PrivateNote) && Math.round(invoice.TotalAmt * 100) === totalInCents &&
+    (!expected.CurrencyRef || invoice.CurrencyRef?.value === expected.CurrencyRef.value) &&
+    Math.round((invoice.TxnTaxDetail?.TotalTax ?? 0) * 100) === tax &&
+    (!expected.TxnTaxDetail || invoice.TxnTaxDetail?.TxnTaxCodeRef?.value === expected.TxnTaxDetail.TxnTaxCodeRef.value) &&
+    (!expected.ApplyTaxAfterDiscount || invoice.ApplyTaxAfterDiscount === true) &&
     lines.success && JSON.stringify(lines.data) === JSON.stringify(expected.Line);
 }
 

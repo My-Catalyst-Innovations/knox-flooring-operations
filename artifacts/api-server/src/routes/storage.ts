@@ -1,3 +1,4 @@
+import { workspaceEnvironment } from "@workspace/db/workspace";
 import { raw, Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import { pipeline } from "node:stream/promises";
 import { and, eq, sql } from "drizzle-orm";
@@ -137,7 +138,7 @@ router.get("/storage/objects/*path", domainRoute(async (req, res) => {
 router.get("/storage/public-objects/*filePath", domainRoute(async (req, res) => {
   const raw = req.params.filePath;
   const key = Array.isArray(raw) ? raw.join("/") : String(raw);
-  if (!process.env.PUBLIC_OBJECT_SEARCH_PATHS || !key.split("/").every((part) => /^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*$/.test(part))) {
+  if (!workspaceEnvironment().PUBLIC_OBJECT_SEARCH_PATHS || !key.split("/").every((part) => /^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*$/.test(part))) {
     throw new DomainError(404, "File not found.");
   }
   const legacy = await legacyStorage.searchPublicObject(key);

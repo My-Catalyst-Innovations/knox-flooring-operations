@@ -23,3 +23,4 @@ export * from "./supplier-catalog";
 export * from "./purchase-orders";
 export * from "./physical-pieces";
 export * from "./stock-counts";
+export * from "./workspace-identity";

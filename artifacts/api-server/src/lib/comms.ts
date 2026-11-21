@@ -1,3 +1,4 @@
+import { workspaceEnvironment } from "@workspace/db/workspace";
 import { logger } from "./logger";
 
 type Channel = "email" | "sms";
@@ -37,12 +38,12 @@ export function smsNumber(value: string) {
   return /^\+[1-9]\d{7,14}$/.test(number) ? number : null;
 }
 
-export function isDemoDeliveryEnvironment(env = process.env) {
+export function isDemoDeliveryEnvironment(env = workspaceEnvironment()) {
   return env.DEMO_MODE !== "false" || env.DEMO_ACCESS_ENABLED === "true";
 }
 
 export function communicationMode(
-  env = process.env,
+  env = workspaceEnvironment(),
 ): "capture" | "allowlist" | "live" {
   if (isDemoDeliveryEnvironment(env)) return "capture";
   const mode = env.COMMS_DELIVERY_MODE;
@@ -53,7 +54,7 @@ export function communicationMode(
 export function canSendCommunication(
   channel: Channel,
   recipient: string,
-  env = process.env,
+  env = workspaceEnvironment(),
 ) {
   const mode = communicationMode(env);
   if (mode !== "allowlist") return mode === "live";
@@ -63,7 +64,7 @@ export function canSendCommunication(
     .some((value) => normalize(value) === recipient);
 }
 
-function emailConfig(env = process.env) {
+function emailConfig(env = workspaceEnvironment()) {
   const key = env.RESEND_API_KEY?.trim();
   const from = env.RESEND_FROM_EMAIL?.trim();
   if (!key || !from || from.length > 320 || /[\r\n]/.test(from)) return null;
@@ -73,7 +74,7 @@ function emailConfig(env = process.env) {
   return { key, from, replyTo };
 }
 
-function smsConfig(env = process.env) {
+function smsConfig(env = workspaceEnvironment()) {
   const account = env.TWILIO_ACCOUNT_SID?.trim() ?? "";
   const key = env.TWILIO_API_KEY_SID?.trim() ?? "";
   const secret = env.TWILIO_API_KEY_SECRET?.trim();
@@ -95,7 +96,7 @@ function smsConfig(env = process.env) {
   return { account, key, secret, service, from };
 }
 
-export function availableCommunicationProviders(env = process.env) {
+export function availableCommunicationProviders(env = workspaceEnvironment()) {
   return { email: !!emailConfig(env), sms: !!smsConfig(env) };
 }
 
@@ -172,7 +173,7 @@ export async function sendEmail(
     idempotencyKey: string;
     html?: string;
   },
-  env = process.env,
+  env = workspaceEnvironment(),
   fetchImpl = fetch,
 ): Promise<Delivery> {
   const to = emailAddress(input.to);
@@ -237,7 +238,7 @@ export async function sendEmail(
 
 export async function sendSms(
   input: { to: string; body: string },
-  env = process.env,
+  env = workspaceEnvironment(),
   fetchImpl = fetch,
 ): Promise<Delivery> {
   const to = smsNumber(input.to);
@@ -340,7 +341,7 @@ export async function sendPasswordResetEmail(
   to: string,
   resetUrl: string,
   id: string,
-  env = process.env,
+  env = workspaceEnvironment(),
   fetchImpl = fetch,
 ) {
   const introduction = "Use this link to reset your Catalyst Works password.";

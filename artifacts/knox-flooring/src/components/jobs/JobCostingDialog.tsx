@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { fmtMoney } from "@/lib/costing";
+import { computeCosting, fmtMoney, jobCostingGaps } from "@/lib/costing";
 import type { Job } from "@/lib/types";
 
 interface Props {
@@ -57,12 +57,9 @@ export function JobCostingDialog({ open, onOpenChange, job }: Props) {
     setActualAddOnCost(job.actualAddOnCost || 0);
   }, [open, job.id]);
 
-  const materialTotal = actualMaterialCost || job.trackedMaterialCost || 0;
-  const actualCost = actualLaborCost + materialTotal + actualAddOnCost;
-  const actualProfit = actualRevenue - actualCost;
-  const showProfit = actualRevenue > 0 || job.trackedMaterialCost === undefined;
-  const actualMargin =
-    actualRevenue > 0 ? (actualProfit / actualRevenue) * 100 : 0;
+  const previewJob = { ...job, actualRevenue, actualLaborCost, actualMaterialCost, actualAddOnCost };
+  const { actualCost, actualGrossProfit: actualProfit, hasActualProfit: showProfit, actualMarginPct: actualMargin } = computeCosting(previewJob);
+  const gaps = jobCostingGaps(previewJob);
 
   const handleSave = async () => {
     if (saving) return;
@@ -170,6 +167,9 @@ export function JobCostingDialog({ open, onOpenChange, job }: Props) {
               </div>
             </div>
           </div>
+          {gaps.length > 0 && <p className="text-xs text-muted-foreground">
+            {showProfit ? `Gross profit and margin are provisional pending ${gaps.join(", ")}.` : "Record revenue to calculate gross profit and margin."}
+          </p>}
 
           <Button
             type="button"

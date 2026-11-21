@@ -5,10 +5,12 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { StockAuditMetricsWasteByJobItem } from './stockAuditMetricsWasteByJobItem';
 import type { StockAuditMetricsWasteItem } from './stockAuditMetricsWasteItem';
 
 export interface StockAuditMetrics {
   checked: number;
   matched: number;
   waste: StockAuditMetricsWasteItem[];
+  wasteByJob: StockAuditMetricsWasteByJobItem[];
 }

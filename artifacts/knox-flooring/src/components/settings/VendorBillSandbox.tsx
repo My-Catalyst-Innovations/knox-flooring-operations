@@ -11,8 +11,13 @@ import { Input } from "@/components/ui/input";
 import { operation, useOperation } from "@/lib/operations";
 import { billLineFields, billLineLimit, validBillTotal, validateBillLine, type VendorBillLine } from "@/lib/vendor-bill-intake";
 import { VendorBillLineIntake } from "./VendorBillLineIntake";
+import type { SandboxAccount } from "./SandboxStockItems";
+import { inventorySelect } from "@/lib/purchasing";
 
 type Mode = "review" | "simulated" | "sandbox" | "production";
+const chargeLabels = { freight: "Freight", supplier_tax: "Supplier tax", fee: "Fee" };
+type Charge = { kind: keyof typeof chargeLabels; description: string; amount: string; accountId: string };
+const blankCharge: Charge = { kind: "freight", description: "", amount: "", accountId: "" };
 type ReviewedLine = {
   supplierSku: string;
   internalSku: string;
@@ -25,12 +30,15 @@ type ReviewedLine = {
   priceSource: string;
   priceDiffers: boolean;
   quickBooksItemId?: string;
+  stockLine?: { unit: string; quantity: string; unitCost: string };
 };
 type Prepared = {
   fingerprint: string;
   supplier: string;
   totalCents: number;
   lines: ReviewedLine[];
+  charges?: Array<Omit<Charge, "accountId"> & { accountId?: string; totalCents: number }>;
+  chargeAccounts?: Array<{ id: string; name: string; type: string }>;
   priceDiffers: boolean;
 } & (
   | { mode: "review"; billNumber: string; billDate: string }
@@ -92,6 +100,17 @@ function billNumberFor(bill: Prepared) {
     : bill.quickBooksBill.DocNumber;
 }
 
+function ReviewedCharges({ bill }: { bill: Prepared }) {
+  if (!bill.charges?.length) return null;
+  return <ul className="divide-y text-sm">{bill.charges.map((charge, index) => {
+    const account = bill.chargeAccounts?.find(({ id }) => id === charge.accountId);
+    return <li className="py-2" key={index}>
+      <p className="font-medium">{chargeLabels[charge.kind]} · {charge.description} · {dollars(charge.totalCents)}</p>
+      {account && <p className="text-muted-foreground">{account.name} ({account.id}) · {account.type}</p>}
+    </li>;
+  })}</ul>;
+}
+
 function ReviewedLines({
   lines,
   showQuickBooksItem = false,
@@ -111,6 +130,9 @@ function ReviewedLines({
             {line.unit} · billed {line.billedUnitCost} / {line.unit}
             {line.priceDiffers && " · Price differs"}
           </p>
+          {line.stockLine && <p className="text-muted-foreground">
+            Stock equivalent {line.stockLine.quantity} {line.stockLine.unit} · {line.stockLine.unitCost} USD / {line.stockLine.unit}
+          </p>}
           <p className="text-muted-foreground">
             {line.priceEffectiveOn} · {line.priceSource}
             {showQuickBooksItem &&
@@ -132,9 +154,11 @@ type BillCapabilities = {
 export function ProductionVendorBills({
   vendors,
   realmId,
+  accounts,
 }: {
   vendors: SandboxVendor[];
   realmId?: string;
+  accounts?: SandboxAccount[];
 }) {
   const capabilities = useOperation<BillCapabilities>(`${path}/capabilities`, [
     "owner",
@@ -151,6 +175,7 @@ export function ProductionVendorBills({
     <VendorBillSandbox
       mode="production"
       vendors={vendors}
+      accounts={accounts}
       company={company.companyName || `Company ${company.companyId}`}
     />
   );
@@ -160,10 +185,12 @@ export function VendorBillSandbox({
   mode,
   vendors,
   company,
+  accounts = [],
 }: {
   mode: Mode;
   vendors: SandboxVendor[];
   company?: string;
+  accounts?: SandboxAccount[];
 }) {
   const [supplier, setSupplier] = useState("");
   const [vendorId, setVendorId] = useState("");
@@ -171,6 +198,7 @@ export function VendorBillSandbox({
   const [billDate, setBillDate] = useState("");
   const [billTotal, setBillTotal] = useState("");
   const [lines, setLines] = useState<VendorBillLine[]>([blankLine]);
+  const [charges, setCharges] = useState<Charge[]>([]);
   const [preview, setPreview] = useState<Prepared>();
   const [bills, setBills] = useState<Bill[]>([]);
   const [busy, setBusy] = useState(false);
@@ -182,6 +210,7 @@ export function VendorBillSandbox({
   } | null>(null);
   const historyPath = `${path}?mode=${mode}`;
   const usesQuickBooksVendor = mode === "sandbox" || mode === "production";
+  const chargeAccounts = accounts.filter((account) => account.Active === true && ["Expense", "Other Expense", "Cost of Goods Sold"].includes(account.AccountType ?? ""));
 
   useEffect(() => {
     let disposed = false;
@@ -222,6 +251,11 @@ export function VendorBillSandbox({
     }
   }
 
+  function editCharge(index: number, update: Partial<Charge>) {
+    edit(() => setCharges((current) => current.map((charge, position) => position === index ? { ...charge, ...update } : charge)));
+  }
+
+  const merchandise = charges.length && lines.length === 1 && billLineFields.every(([field]) => lines[0][field] === blankLine[field]) ? [] : lines;
   const input = {
     mode,
     supplier,
@@ -229,7 +263,8 @@ export function VendorBillSandbox({
     billNumber,
     billDate,
     billTotal,
-    lines,
+    lines: merchandise,
+    ...(charges.length ? { charges: charges.map((charge) => ({ ...charge, accountId: charge.accountId || undefined })) } : {}),
   };
   const lineIssues = lines.map(validateBillLine);
   const totalProblem = billTotal.trim() && !validBillTotal(billTotal);
@@ -239,7 +274,10 @@ export function VendorBillSandbox({
     billNumber.trim() &&
     billDate &&
     validBillTotal(billTotal) &&
-    lineIssues.every((issues) => Object.keys(issues).length === 0);
+    merchandise.length + charges.length > 0 &&
+    merchandise.length + charges.length <= billLineLimit &&
+    merchandise.every((line) => Object.keys(validateBillLine(line)).length === 0) &&
+    charges.every((charge) => charge.description.trim() && validBillTotal(charge.amount) && (!usesQuickBooksVendor || chargeAccounts.some(({ Id }) => Id === charge.accountId)));
   const visibleBills = bills.filter((bill) => bill.payload.mode === mode);
 
   return (
@@ -252,7 +290,7 @@ export function VendorBillSandbox({
           {mode === "review" &&
             " Owner reviews are recorded in Catalyst Works."}
           {mode === "production" &&
-            ` Approved bills post to ${company || "the connected QuickBooks company"}. Enter USD merchandise lines from the supplier bill.`}
+            ` Approved bills post to ${company || "the connected QuickBooks company"}. Enter USD merchandise and charges from the supplier bill.`}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -376,7 +414,7 @@ export function VendorBillSandbox({
                     </div>
                   );
                 })}
-                {lines.length > 1 && (
+                {(lines.length > 1 || charges.length > 0) && (
                   <Button
                     variant="ghost"
                     className="self-end"
@@ -394,6 +432,27 @@ export function VendorBillSandbox({
                 )}
               </div>
             ))}
+            {charges.map((charge, index) => <div key={index} className="grid gap-2 rounded-md border p-2 sm:grid-cols-2 xl:grid-cols-5">
+              <label className="space-y-1 text-sm font-medium">Charge type
+                <select className={inventorySelect} value={charge.kind} onChange={(event) => editCharge(index, { kind: event.target.value as Charge["kind"] })}>
+                  {Object.entries(chargeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </label>
+              <label className="space-y-1 text-sm font-medium">Description
+                <Input maxLength={200} value={charge.description} onChange={(event) => editCharge(index, { description: event.target.value })} />
+              </label>
+              <label className="space-y-1 text-sm font-medium">Charge amount (USD)
+                <Input value={charge.amount} inputMode="decimal" aria-invalid={!!charge.amount && !validBillTotal(charge.amount)} onChange={(event) => editCharge(index, { amount: event.target.value })} />
+              </label>
+              {usesQuickBooksVendor && <label className="space-y-1 text-sm font-medium">QuickBooks expense account
+                <select className={inventorySelect} value={charge.accountId} onChange={(event) => editCharge(index, { accountId: event.target.value })}>
+                  <option value="">Choose an account</option>
+                  {chargeAccounts.map((account) => <option key={account.Id} value={account.Id}>{account.Name || account.Id} · {account.AccountType}</option>)}
+                </select>
+              </label>}
+              <Button type="button" variant="ghost" className="self-end" onClick={() => edit(() => setCharges((current) => current.filter((_, position) => position !== index)))}>Remove charge {index + 1}</Button>
+            </div>)}
+            {charges.length > 0 && usesQuickBooksVendor && !chargeAccounts.length && <p className="text-sm text-muted-foreground">Use Import & reconcile to load active QuickBooks expense accounts.</p>}
             <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
@@ -401,10 +460,11 @@ export function VendorBillSandbox({
                 onClick={() =>
                   edit(() => setLines((current) => [...current, blankLine]))
                 }
-                disabled={lines.length >= billLineLimit}
+                disabled={lines.length + charges.length >= billLineLimit}
               >
                 Add line
               </Button>
+              {mode !== "simulated" && <Button variant="outline" type="button" onClick={() => edit(() => setCharges((current) => [...current, blankCharge]))} disabled={charges.length >= 20 || merchandise.length + charges.length >= billLineLimit}>Add account charge</Button>}
               <Button type="submit" disabled={!canPreview || busy}>
                 Preview supplier bill
               </Button>
@@ -431,6 +491,7 @@ export function VendorBillSandbox({
               lines={preview.lines}
               showQuickBooksItem={preview.mode === "production"}
             />
+            <ReviewedCharges bill={preview} />
             <Button
               disabled={busy}
               onClick={() =>
@@ -487,6 +548,7 @@ export function VendorBillSandbox({
                         Bill date {bill.payload.billDate}
                       </p>
                       <ReviewedLines lines={bill.payload.lines} />
+                      <ReviewedCharges bill={bill.payload} />
                     </details>
                   )}
                   {bill.payload.mode === "production" && (
@@ -501,6 +563,7 @@ export function VendorBillSandbox({
                         lines={bill.payload.lines}
                         showQuickBooksItem
                       />
+                      <ReviewedCharges bill={bill.payload} />
                       {reviewing && (
                         <label className="flex items-start gap-2 font-medium">
                           <input
@@ -519,12 +582,13 @@ export function VendorBillSandbox({
                               )
                             }
                           />
-                          I approve this vendor, these items, and this amount
+                          I approve this vendor, these lines, and this amount
                           for posting to {company || "QuickBooks Online"}.
                         </label>
                       )}
                     </div>
                   )}
+                  {bill.payload.mode === "sandbox" && <ReviewedCharges bill={bill.payload} />}
                   {bill.status === "reviewed" && (
                     <p className="text-sm text-muted-foreground">
                       Reviewed in Catalyst Works

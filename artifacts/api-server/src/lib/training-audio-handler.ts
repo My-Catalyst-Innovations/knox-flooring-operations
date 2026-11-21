@@ -1,3 +1,4 @@
+import { workspaceEnvironment, workspaceScopeKey } from "@workspace/db/workspace";
 import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import type { TutorialNarrationResult, TutorialNarrationStatus } from "./tutorial-narration";
@@ -60,7 +61,7 @@ export function createTrainingAudioHandler(dependencies: AudioDependencies): Req
     const stepId = String(req.params.stepId);
     const script = dependencies.findScript(stepId);
     if (script === undefined) { res.status(404).json({ error: "Narration script not found" }); return; }
-    const env = { ...(dependencies.env?.() ?? process.env) };
+    const env = { ...(dependencies.env?.() ?? workspaceEnvironment()) };
     const status = dependencies.getStatus(env);
     if (status.provider === "Unavailable") { res.status(503).json({ error: "Voice narration is unavailable. Captions remain available." }); return; }
     const provider = status.provider === "OpenAI fallback" ? "OpenAI" : status.provider;
@@ -68,7 +69,8 @@ export function createTrainingAudioHandler(dependencies: AudioDependencies): Req
     const desiredHash = audioHash(dependencies.manifestVersion, script, desired, env);
 
     try {
-      let pending = inFlight.get(desiredHash);
+      const flightKey = JSON.stringify([workspaceScopeKey(), desiredHash]);
+      let pending = inFlight.get(flightKey);
       if (!pending) {
         pending = (async () => {
           let cached = await dependencies.readCache(desiredHash);
@@ -111,9 +113,9 @@ export function createTrainingAudioHandler(dependencies: AudioDependencies): Req
           });
           return { ...generated, ...fallback };
         })();
-        inFlight.set(desiredHash, pending);
+        inFlight.set(flightKey, pending);
         // Register both settlements without creating an unhandled rejected promise.
-        void pending.then(() => inFlight.delete(desiredHash), () => inFlight.delete(desiredHash));
+        void pending.then(() => inFlight.delete(flightKey), () => inFlight.delete(flightKey));
       }
       const audio = await pending;
       res.setHeader("X-AI-Generated-Voice", "true");

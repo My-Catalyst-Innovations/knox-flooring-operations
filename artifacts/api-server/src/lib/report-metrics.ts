@@ -185,27 +185,84 @@ export function stockAuditSummary(
     entries: number;
     matches: number;
     quantity: number;
+    jobId?: string | null;
+    jobNumber?: string | null;
+    crewId?: string | null;
+    crewName?: string | null;
   }>,
 ) {
   let checked = 0;
   let matched = 0;
-  const waste = [];
+  type Waste = {
+    productId: string;
+    sku: string;
+    productName: string;
+    unit: string;
+    entries: number;
+    quantity: number;
+  };
+  type Assignment = {
+    jobId: string | null;
+    jobNumber: string | null;
+    crewId: string | null;
+    crewName: string | null;
+    unit: string;
+    entries: number;
+    quantity: number;
+  };
+  const waste = new Map<string, Waste>();
+  const wasteByJob = new Map<string, Assignment>();
   for (const row of rows) {
     if (row.reason === "count") {
       checked += row.entries;
       matched += row.matches;
     } else if (row.reason === "waste") {
-      waste.push({
+      const productKey = JSON.stringify([
+        row.productId,
+        row.sku,
+        row.productName,
+        row.unit,
+      ]);
+      const product = waste.get(productKey) ?? {
         productId: row.productId,
         sku: row.sku,
         productName: row.productName,
         unit: row.unit,
-        entries: row.entries,
-        quantity: row.quantity,
-      });
+        entries: 0,
+        quantity: 0,
+      };
+      product.entries += row.entries;
+      product.quantity += row.quantity;
+      waste.set(productKey, product);
+      const jobKey = JSON.stringify([
+        row.jobId ?? null,
+        row.crewId ?? null,
+        row.unit,
+      ]);
+      const assignment = wasteByJob.get(jobKey) ?? {
+        jobId: row.jobId ?? null,
+        jobNumber: row.jobNumber ?? null,
+        crewId: row.crewId ?? null,
+        crewName: row.crewName ?? null,
+        unit: row.unit,
+        entries: 0,
+        quantity: 0,
+      };
+      assignment.entries += row.entries;
+      assignment.quantity += row.quantity;
+      wasteByJob.set(jobKey, assignment);
     }
   }
-  return { checked, matched, waste };
+  const roundQuantity = <T extends { quantity: number }>(row: T) => ({
+    ...row,
+    quantity: Math.round(row.quantity * 1e6) / 1e6,
+  });
+  return {
+    checked,
+    matched,
+    waste: [...waste.values()].map(roundQuantity),
+    wasteByJob: [...wasteByJob.values()].map(roundQuantity),
+  };
 }
 
 export function upcomingInstallationJobs(

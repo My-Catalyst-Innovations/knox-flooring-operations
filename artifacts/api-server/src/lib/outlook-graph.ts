@@ -1,3 +1,4 @@
+import { workspaceEnvironment } from "@workspace/db/workspace";
 import {
   createCipheriv,
   createDecipheriv,
@@ -21,7 +22,7 @@ export interface OutlookConfig {
   encryptionKey: Buffer;
 }
 
-export function getOutlookConfig(env = process.env): OutlookConfig | null {
+export function getOutlookConfig(env = workspaceEnvironment()): OutlookConfig | null {
   const {
     OUTLOOK_CLIENT_ID: clientId,
     OUTLOOK_CLIENT_SECRET: clientSecret,

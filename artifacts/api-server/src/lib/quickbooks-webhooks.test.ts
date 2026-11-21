@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({ getConnection: vi.fn(), values: vi.fn() }));
 vi.mock("@workspace/db", () => ({
   db: { insert: () => ({ values: mocks.values }) },
   quickbooksWebhookEventsTable: {},
+  quickbooksSyncJobsTable: {},
+  invoicesTable: {},
 }));
 vi.mock("./quickbooks", () => ({ getConnection: mocks.getConnection }));
 vi.mock("../routes", async () => {

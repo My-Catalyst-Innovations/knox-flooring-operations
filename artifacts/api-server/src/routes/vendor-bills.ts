@@ -1,7 +1,9 @@
+import { workspaceEnvironment } from "@workspace/db/workspace";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type IRouter } from "express";
 import { and, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import { z } from "zod";
+import { supplierPurchaseFactor } from "@workspace/domain";
 import {
   db,
   productsTable,
@@ -17,11 +19,12 @@ import {
   buildVendorBill,
   confirmProductionVendorBill,
   productionVendorBillsAvailable,
+  readQuickBooksBillChargeAccounts,
   readQuickBooksVendorBillTarget,
   reviewVendorBill,
   reconcileQuickBooksVendorBill,
   vendorBillEntity,
-  vendorBillFingerprint,
+  queuedVendorBillInput,
   vendorBillInput,
   vendorBillMode,
   type VendorBillInput,
@@ -45,7 +48,7 @@ async function billContext(
   realmId?: string,
 ): Promise<Context> {
   if (mode === "review") {
-    if (process.env.DEMO_MODE === "true") {
+    if (workspaceEnvironment().DEMO_MODE === "true") {
       throw new DomainError(
         409,
         "Local supplier bill reviews are available outside demo mode.",
@@ -69,13 +72,13 @@ async function billContext(
   }
   if (
     mode === "simulated" &&
-    process.env.DEMO_MODE === "true" &&
+    workspaceEnvironment().DEMO_MODE === "true" &&
     connection?.status !== "connected"
   )
     return { mode };
   if (
     mode === "sandbox" &&
-    process.env.QUICKBOOKS_ENVIRONMENT === "sandbox" &&
+    workspaceEnvironment().QUICKBOOKS_ENVIRONMENT === "sandbox" &&
     connection?.environment === "sandbox" &&
     connection.status === "connected" &&
     (!realmId || realmId === connection.realmId)
@@ -89,7 +92,7 @@ async function billContext(
 }
 
 async function prepare(input: VendorBillInput, context: Context) {
-  const catalog = await db
+  const catalog = !input.lines.length ? [] : await db
     .select({ alias: supplierProductAliasesTable, product: productsTable })
     .from(supplierProductAliasesTable)
     .innerJoin(
@@ -105,12 +108,12 @@ async function prepare(input: VendorBillInput, context: Context) {
         ),
       ),
     );
-  if (!catalog.length)
+  if (input.lines.length && !catalog.length)
     throw new DomainError(
       409,
       "Approve the supplier SKUs in Inventory before reviewing this bill.",
     );
-  const rates = await db
+  const rates = !catalog.length ? [] : await db
     .selectDistinctOn([supplierBuyPricesTable.aliasId])
     .from(supplierBuyPricesTable)
     .where(
@@ -132,7 +135,7 @@ async function prepare(input: VendorBillInput, context: Context) {
   );
   const itemMapping = quickbooksEntityMappingsTable;
   const itemLinks =
-    context.mode === "sandbox" || context.mode === "production"
+    catalog.length && (context.mode === "sandbox" || context.mode === "production")
       ? await db
           .select()
           .from(itemMapping)
@@ -155,10 +158,11 @@ async function prepare(input: VendorBillInput, context: Context) {
   const reviewedMappings = input.lines.map((line) => {
     const row = aliases.get(normalized(line.supplierSku));
     const price = row && prices.get(row.alias.id);
+    const factor = row && price ? supplierPurchaseFactor(price.unit, row.product.unit, price.stockUnitsPerBuyUnit) : null;
     if (
       !row?.product.active ||
       !price ||
-      normalized(row.product.unit) !== normalized(price.unit)
+      !factor
     ) {
       throw new DomainError(
         409,
@@ -175,6 +179,9 @@ async function prepare(input: VendorBillInput, context: Context) {
         expectedUnitCost: price.unitCost,
         priceEffectiveOn: price.effectiveOn,
         priceSource: price.source,
+        ...(normalized(row.product.unit) === normalized(price.unit) ? {} : {
+          stockConversion: { unit: row.product.unit, unitsPerBuyUnit: factor },
+        }),
       },
     };
   });
@@ -208,6 +215,8 @@ async function prepare(input: VendorBillInput, context: Context) {
       400,
       "Enter the vendor ID from the connected QuickBooks company.",
     );
+  if (context.mode === "simulated" && input.charges?.length)
+    throw new DomainError(409, "Account charges are reviewed locally or verified in a connected QuickBooks company.");
   const prepared = buildVendorBill(
     input,
     mappings,
@@ -215,30 +224,30 @@ async function prepare(input: VendorBillInput, context: Context) {
   );
   if (context.mode === "simulated")
     return { ...prepared, mode: context.mode } as const;
-  if (context.mode === "production") {
-    try {
-      const target = await readQuickBooksVendorBillTarget(
-        input.vendorId!,
-        (path) => qboRequest(path, {}, context.connectionId),
-      );
+  try {
+    const request = (path: string) => qboRequest(path, {}, context.connectionId);
+    const accountIds = prepared.quickBooksBill.Line.flatMap((line) => line.DetailType === "AccountBasedExpenseLineDetail" ? [line.AccountBasedExpenseLineDetail.AccountRef.value] : []);
+    const chargeAccounts = accountIds.length ? await readQuickBooksBillChargeAccounts(accountIds, request) : undefined;
+    const details = chargeAccounts ? { chargeAccounts } : {};
+    if (context.mode === "production") {
+      const target = await readQuickBooksVendorBillTarget(input.vendorId!, request);
       if (!target.vendorName)
         throw new Error("QuickBooks did not return a vendor name to review.");
       return {
         ...prepared,
+        ...details,
         mode: context.mode,
         realmId: context.realmId,
         quickBooksTarget: target,
       } as const;
-    } catch (error) {
-      throw new DomainError(
-        409,
-        error instanceof Error
-          ? error.message
-          : "QuickBooks vendor verification failed.",
-      );
     }
+    return { ...prepared, ...details, mode: context.mode, realmId: context.realmId } as const;
+  } catch (error) {
+    throw new DomainError(
+      409,
+      error instanceof Error ? error.message : "QuickBooks vendor or expense account verification failed.",
+    );
   }
-  return { ...prepared, mode: context.mode, realmId: context.realmId } as const;
 }
 
 type BillPayload = Awaited<ReturnType<typeof prepare>> & {
@@ -303,12 +312,7 @@ router.post(
   basePath,
   requireOwner,
   domainRoute(async (req, res) => {
-    const input = parse(
-      vendorBillInput.extend({
-        fingerprint: vendorBillFingerprint,
-      }),
-      req.body,
-    );
+    const input = parse(queuedVendorBillInput, req.body);
     const context = await billContext(input.mode);
     const prepared = await prepare(input, context);
     if (input.fingerprint !== hash(prepared))
@@ -477,6 +481,7 @@ router.post(
               payload.mode === "production"
                 ? payload.quickBooksTarget
                 : undefined,
+              "chargeAccounts" in payload ? payload.chargeAccounts : undefined,
             );
       const completedAt = new Date().toISOString();
       const [completed] = await db

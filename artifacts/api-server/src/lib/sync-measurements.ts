@@ -1,3 +1,4 @@
+import { workspaceEnvironment, workspaceScopeKey } from "@workspace/db/workspace";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { db, measurementsTable, leadsTable, jobsTable } from "@workspace/db";
@@ -232,8 +233,7 @@ async function resolveRefs(
   return { leadId, jobId };
 }
 
-let timer: NodeJS.Timeout | null = null;
-let running = false;
+const timers = new Map<string, NodeJS.Timeout>();
 
 /**
  * Start the automatic background sync loop. Runs on an interval and no-ops
@@ -242,17 +242,21 @@ let running = false;
  * "Sync now" route remains available as an on-demand override.
  */
 export function startAutoSync(): void {
+  const key = workspaceScopeKey();
+  if (timers.has(key)) return;
+  const env = workspaceEnvironment();
   const enabled =
-    (process.env.MEASURE_SQUARE_AUTO_SYNC ?? "true").toLowerCase() !== "false";
+    (env.MEASURE_SQUARE_AUTO_SYNC ?? "true").toLowerCase() !== "false";
   if (!enabled) {
     logger.info("Measure Square auto-sync disabled via MEASURE_SQUARE_AUTO_SYNC");
     return;
   }
   const intervalMs = Math.max(
     60_000,
-    Number(process.env.MEASURE_SQUARE_SYNC_INTERVAL_MS) || 5 * 60_000,
+    Number(env.MEASURE_SQUARE_SYNC_INTERVAL_MS) || 5 * 60_000,
   );
 
+  let running = false;
   const tick = async (): Promise<void> => {
     if (running) return;
     // Skip the work entirely when there are no credentials.
@@ -271,9 +275,10 @@ export function startAutoSync(): void {
     }
   };
 
-  timer = setInterval(() => {
+  const timer = setInterval(() => {
     void tick();
   }, intervalMs);
+  timers.set(key, timer);
   // Don't keep the event loop alive solely for the sync timer.
   if (typeof timer.unref === "function") timer.unref();
 
@@ -283,8 +288,10 @@ export function startAutoSync(): void {
 }
 
 export function stopAutoSync(): void {
+  const key = workspaceScopeKey();
+  const timer = timers.get(key);
   if (timer) {
     clearInterval(timer);
-    timer = null;
+    timers.delete(key);
   }
 }

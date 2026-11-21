@@ -51,6 +51,7 @@ it("creates an order and retries a split partial receipt with the original idemp
         alias,
         { ...alias, supplier: "Different Supply", supplierSku: "D-008", latestPrice: { unit: "box", unitCost: "30" } },
         { ...alias, supplierSku: "V-AREA", latestPrice: { unit: "sqft", unitCost: "1" } },
+        { ...alias, supplier: "Case Supply", supplierSku: "CASE-008", latestPrice: { unit: "case", unitCost: "37.99", stockUnitsPerBuyUnit: "24" } },
       ];
     }
     if (path === `${purchasePath}/po-1/receipts`) return receipt ? [receipt] : [];
@@ -87,6 +88,15 @@ it("creates an order and retries a split partial receipt with the original idemp
   expect(screen.getByLabelText("Unit cost 1")).toHaveValue("17.324125");
   change("Supplier", "Different Supply");
   expect(screen.getByLabelText("Unit cost 1")).toHaveValue("30");
+  change("Supplier", "Case Supply");
+  expect(screen.getByLabelText("Unit cost 1")).toHaveValue("1.582917");
+  fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Check the supplier unit conversion");
+  expect(customFetch.mock.calls.some(([path, init]) => path === purchasePath && init.method === "POST")).toBe(false);
+  change(/Quantity 1/, "48");
+  expect(screen.getByText(/1 case = 24 box.*Order equivalent 2 case/)).toBeVisible();
+  expect(screen.getByText("$75.98")).toBeVisible();
+  change(/Quantity 1/, "10");
   change("Supplier", "Example Supply");
   fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
   expect(await screen.findByRole("heading", { name: "PO-1001" })).toBeVisible();

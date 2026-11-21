@@ -89,9 +89,11 @@ describe("labeled stock jobs", () => {
     })));
   });
 
-  it("previews the human-readable stock label before invoking print", () => {
+  it("prints a Code 128 symbol and the exact scoped piece label", () => {
     render(<PhysicalPieces />);
-    const open = vi.spyOn(window, "open");
+    const print = vi.fn();
+    const printDocument = document.implementation.createHTMLDocument("Test print");
+    const open = vi.spyOn(window, "open").mockReturnValue({ document: printDocument, focus: vi.fn(), print } as unknown as Window);
     try {
       fireEvent.click(screen.getByRole("button", { name: "Print label" }));
       const preview = within(screen.getByRole("dialog", { name: "Stock label" }));
@@ -100,7 +102,13 @@ describe("labeled stock jobs", () => {
       expect(preview.getByText("piece-1")).toBeTruthy();
       expect(preview.getByText("120 × 30 in")).toBeTruthy();
       expect(preview.getByText("Main warehouse · A-1")).toBeTruthy();
+      expect(preview.getByRole("img", { name: "Code 128 barcode for PIECE:CARPET-CUT-1" })).toBeVisible();
       expect(open).not.toHaveBeenCalled();
+      fireEvent.click(preview.getByRole("button", { name: "Print" }));
+      expect(print).toHaveBeenCalledOnce();
+      expect(printDocument.querySelector("svg path")?.getAttribute("d")).toMatch(/^M12 0/);
+      expect(printDocument.querySelector("svg")?.getAttribute("width")).toMatch(/mm$/);
+      expect(printDocument.querySelector("code")?.textContent).toBe("PIECE:CARPET-CUT-1");
     } finally {
       open.mockRestore();
     }

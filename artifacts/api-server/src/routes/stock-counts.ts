@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, exists, or, sql } from "drizzle-orm";
 import { Router } from "express";
 import { z } from "zod";
 import {
-  db, inventoryMovementsTable, inventoryReservationsTable, inventoryStockCountsTable,
-  productsTable, type InventoryStockCount,
+  auditEventsTable, crewBookingsTable, crewsTable, db, inventoryMovementsTable, inventoryReservationsTable, inventoryStockCountsTable,
+  jobsTable, laborEntriesTable, productsTable, type InventoryStockCount,
 } from "@workspace/db";
 import { requireOwner, requireRole } from "../middlewares/auth";
 import { domainRoute, id, parse } from "../lib/domain-http";
@@ -14,6 +14,7 @@ import {
   updateStockTotal, verifyBin, verifyWarehouse, type StockTransaction,
 } from "../lib/inventory-stock";
 import { DomainError } from "../lib/operations-rules";
+import { audit } from "../lib/auth";
 
 const router = Router();
 const path = "/inventory/stock-counts";
@@ -28,12 +29,29 @@ const submit = location.extend({
   note: z.string().trim().max(500),
 }).strict();
 const dismiss = z.object({ note: z.string().trim().min(1).max(500) }).strict();
+const reconcile = z.object({ jobId: identifier.optional(), crewId: identifier.optional() }).strict();
+const wasteAttributionAction = "inventory.waste_attributed";
 type Location = z.infer<typeof location>;
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 function presentCount({ requestHash: _hash, requestKey: _request, snapshotKey: _snapshot, ...row }: InventoryStockCount) {
   return { ...row, variance: roundStock(row.countedQuantity - row.bookedQuantity) };
 }
+
+function wasteCrews(reader: Pick<StockTransaction, "select">, jobId: string) {
+  const crew = crewsTable;
+  const booking = crewBookingsTable;
+  const labor = laborEntriesTable;
+  return reader.select({ id: crew.id, name: crew.name }).from(crew).where(or(
+    exists(reader.select({ id: booking.id }).from(booking).where(and(eq(booking.jobId, jobId), eq(booking.crewId, crew.id), eq(booking.status, "Confirmed")))),
+    exists(reader.select({ id: labor.id }).from(labor).where(and(eq(labor.jobId, jobId), eq(labor.crewId, crew.id)))),
+  )).orderBy(asc(crew.name), asc(crew.id));
+}
+
+router.get(`${path}/waste-crews`, requireOwner, domainRoute(async (req, res) => {
+  const { jobId } = parse(z.object({ jobId: identifier }), req.query);
+  res.json(await wasteCrews(db, jobId));
+}));
 
 async function snapshot(tx: StockTransaction, subject: Location) {
   const [product] = await tx.select().from(productsTable).where(eq(productsTable.id, subject.productId)).for("update");
@@ -115,13 +133,29 @@ router.post(path, domainRoute(async (req, res) => {
 }));
 
 router.post(`${path}/:id/reconcile`, requireOwner, domainRoute(async (req, res) => {
+  const { jobId, crewId } = parse(reconcile, req.body ?? {});
+  if (crewId && !jobId) throw new DomainError(400, "Choose a job before attributing waste to a crew.");
   const table = inventoryStockCountsTable;
   const actor = req.auth!;
   const row = await db.transaction(async (tx) => {
     const [count] = await tx.select().from(table).where(eq(table.id, id(req))).for("update");
     if (!count) throw new DomainError(404, "Stock count not found.");
-    if (count.status === "Reconciled") return count;
+    if (jobId && count.reason !== "waste") throw new DomainError(400, "Only waste adjustments can be attributed to a job.");
+    if (count.status === "Reconciled") {
+      if (jobId) {
+        const [previous] = await tx.select({ details: auditEventsTable.details }).from(auditEventsTable).where(and(
+          eq(auditEventsTable.entityId, count.id), eq(auditEventsTable.action, wasteAttributionAction),
+        )).limit(1);
+        if (previous?.details.jobId !== jobId || previous?.details.crewId !== (crewId ?? null))
+          throw new DomainError(409, "This waste adjustment has already been posted with different attribution.");
+      }
+      return count;
+    }
     if (count.status !== "Pending") throw new DomainError(409, "This count was dismissed. Record a new count to adjust stock.");
+    const [job] = jobId ? await tx.select({ id: jobsTable.id, jobNumber: jobsTable.jobNumber }).from(jobsTable).where(eq(jobsTable.id, jobId)).for("key share") : [];
+    if (jobId && !job) throw new DomainError(404, "The waste job was not found.");
+    const crew = jobId && crewId ? (await wasteCrews(tx, jobId)).find(({ id }) => id === crewId) : undefined;
+    if (crewId && !crew) throw new DomainError(400, "Choose a crew with a confirmed booking or recorded labor for this job.");
     await lockStockProduct(tx, count.productId);
     const current = await snapshot(tx, count);
     if (count.snapshotKey !== current.snapshotKey)
@@ -141,11 +175,15 @@ router.post(`${path}/:id/reconcile`, requireOwner, domainRoute(async (req, res) 
       movementId = randomUUID();
       await ensureOpeningMovement(tx, current.product, now);
       await tx.insert(inventoryMovementsTable).values({
-        id: movementId, productId: count.productId, warehouseId: count.warehouseId, binId: count.binId,
+        id: movementId, productId: count.productId, warehouseId: count.warehouseId, binId: count.binId, jobId: job?.id,
         quantity: delta, kind: "adjustment", reason: `Stock count (${count.reason}) · ${count.note}`,
         costAllocations, actorUserId: actor.userId, idempotencyKey: `stock-count:${count.id}`, createdAt: now,
       });
       await updateStockTotal(tx, current.product, delta, now);
+      if (job) await audit(wasteAttributionAction, {
+        userId: actor.userId, entityType: "stock_count", entityId: count.id, ip: req.ip,
+        details: { jobId: job.id, jobNumber: job.jobNumber, crewId: crew?.id ?? null, crewName: crew?.name ?? null },
+      }, tx);
     }
     const [saved] = await tx.update(table).set({
       status: "Reconciled", movementId, resolvedAt: now, resolvedBy: actor.userId, reviewerName: actor.name,

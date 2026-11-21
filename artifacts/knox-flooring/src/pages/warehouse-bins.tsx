@@ -1,8 +1,9 @@
 import { useRef, useState, type FormEvent } from "react";
-import { ArrowLeftRight, Plus } from "lucide-react";
+import { ArrowLeftRight, Plus, Printer } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { StockCounts } from "@/components/inventory/StockCounts";
+import { StockPieceLabel } from "@/components/inventory/StockPieceLabel";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useStore } from "@/hooks/use-store";
@@ -22,6 +23,7 @@ import {
 } from "@/lib/purchasing";
 import type { Product } from "@/lib/types";
 import { inventoryRoles, type Warehouse } from "@/lib/warehouse-inventory";
+import { locationBarcode, readLocationBarcode } from "@/lib/warehouse-labels";
 
 const unbinned = "unbinned";
 const keyFor = (id: string | null) => id ?? unbinned;
@@ -186,6 +188,7 @@ function BinContents({ warehouse, bins, products, productsUnavailable, productsF
   const [search, setSearch] = useUrlState<string>("q", "");
   const [adding, setAdding] = useState(false);
   const [moving, setMoving] = useState<{ product?: string; source?: string }>();
+  const [printing, setPrinting] = useState(false);
   const [notice, setNotice] = useState("");
   const term = search.trim().toLowerCase();
   const rows = stock.data ?? [];
@@ -194,6 +197,7 @@ function BinContents({ warehouse, bins, products, productsUnavailable, productsF
     (!term || [product?.sku, product?.name, binName(bins, row.binId)].some((label) => label?.toLowerCase().includes(term))),
   );
   const canMove = bins.length > 0 && rows.some((row) => row.onHand > 0) && !productsUnavailable && !stock.isError;
+  const selectedBin = bins.find((bin) => bin.id === binFilter);
 
   return (
     <section aria-label={`${warehouse.name} bin stock`} className="space-y-3">
@@ -210,6 +214,7 @@ function BinContents({ warehouse, bins, products, productsUnavailable, productsF
         </label>
         <Button variant="outline" onClick={() => { setNotice(""); setAdding(true); }}><Plus className="mr-2 h-4 w-4" aria-hidden />Add bin</Button>
         <Button variant="outline" disabled={!canMove} onClick={() => { setNotice(""); setMoving({}); }}><ArrowLeftRight className="mr-2 h-4 w-4" aria-hidden />Move stock</Button>
+        <Button variant="outline" onClick={() => setPrinting(true)}><Printer className="mr-2 h-4 w-4" aria-hidden />{selectedBin ? "Print bin label" : "Print warehouse label"}</Button>
       </div>
       {notice && <p role="status" className="text-sm text-emerald-800">{notice}</p>}
       {stock.isLoading && <p role="status" className="text-sm text-muted-foreground">Loading bin stock…</p>}
@@ -230,6 +235,9 @@ function BinContents({ warehouse, bins, products, productsUnavailable, productsF
       </div>}
       {adding && <AddBin warehouse={warehouse} onClose={() => setAdding(false)} onSaved={(bin) => { setAdding(false); setNotice(`${bin.code} added to ${warehouse.name}.`); void refresh(); }} />}
       {moving && <MoveBinStock warehouse={warehouse} bins={bins} stock={rows} products={products} initialProduct={moving.product} initialSource={moving.source} onClose={() => setMoving(undefined)} onSaved={() => { setMoving(undefined); setNotice("Stock move recorded."); void refresh(); }} />}
+      {printing && <StockPieceLabel title={selectedBin ? "Bin label" : "Warehouse label"} label={selectedBin?.code ?? warehouse.name}
+        code={locationBarcode(selectedBin ? { kind: "bin", id: selectedBin.id } : { kind: "warehouse", id: warehouse.id })}
+        fields={selectedBin ? [["Warehouse", warehouse.name]] : []} onClose={() => setPrinting(false)} />}
     </section>
   );
 }
@@ -237,10 +245,25 @@ function BinContents({ warehouse, bins, products, productsUnavailable, productsF
 export default function WarehouseBins() {
   const warehouses = useOperation<Warehouse[]>("/inventory/warehouses", inventoryRoles);
   const bins = useOperation<WarehouseBin[]>(warehouseBinsPath, inventoryRoles);
-  const { products, queryState } = useStore();
+  const { products, jobs, queryState } = useStore();
   const { update } = useQueryControls();
   const [warehouseId] = useUrlState("warehouse", "");
+  const [scan, setScan] = useState("");
+  const [scanError, setScanError] = useState("");
   const selected = warehouseId ? warehouses.data?.find((warehouse) => warehouse.id === warehouseId) : warehouses.data?.[0];
+  function openScannedLocation(event: FormEvent) {
+    event.preventDefault();
+    const label = readLocationBarcode(scan);
+    const candidate = label?.kind === "bin" ? bins.data?.find(({ id }) => id === label.id) : undefined;
+    const nextWarehouse = label?.kind === "warehouse" ? label.id : candidate?.warehouseId;
+    if (!nextWarehouse || !warehouses.data?.some(({ id }) => id === nextWarehouse)) {
+      setScanError("No warehouse or bin matches this label.");
+      return;
+    }
+    update({ warehouse: nextWarehouse, bin: candidate?.id ?? null, q: null });
+    setScan("");
+    setScanError("");
+  }
   if (!warehouses.allowed) return <p>Warehouse bins are available to owner and operations roles.</p>;
 
   return (
@@ -258,8 +281,15 @@ export default function WarehouseBins() {
           {warehouses.data?.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
         </select>
       </label>}
+      {!!warehouses.data?.length && bins.data && <form onSubmit={openScannedLocation} className="flex flex-wrap items-end gap-2">
+        <label className="w-full max-w-sm space-y-1 text-sm font-medium">Scan a location label
+          <Input maxLength={100} value={scan} onChange={(event) => { setScan(event.target.value); setScanError(""); }} placeholder="Scan or enter a warehouse or bin code" />
+        </label>
+        <Button type="submit" variant="outline" disabled={!scan.trim()}>Open location</Button>
+        {scanError && <p role="alert" className="w-full text-sm text-destructive">{scanError}</p>}
+      </form>}
       {selected && bins.data && !bins.isError && <BinContents key={selected.id} warehouse={selected} bins={binsInWarehouse(bins.data, selected.id)} products={products} productsUnavailable={queryState.products.isLoading || !!queryState.products.error} productsFailed={!!queryState.products.error} />}
-      {selected && bins.data && !bins.isError && <StockCounts key={`counts:${selected.id}`} warehouse={selected} bins={binsInWarehouse(bins.data, selected.id)} products={products} productsUnavailable={queryState.products.isLoading || !!queryState.products.error} />}
+      {selected && bins.data && !bins.isError && <StockCounts key={`counts:${selected.id}`} warehouse={selected} bins={binsInWarehouse(bins.data, selected.id)} products={products} jobs={jobs} productsUnavailable={queryState.products.isLoading || !!queryState.products.error} />}
     </div>
   );
 }

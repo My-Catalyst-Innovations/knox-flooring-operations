@@ -104,6 +104,7 @@ import type {
   SendSmsRequest,
   Settings,
   SettingsUpdate,
+  StagnantInventoryReport,
   SyncMeasurementsRequest,
   SyncMeasurementsResult,
   Task,
@@ -7488,6 +7489,83 @@ export const useUpdateCompletionCommitment = <TError = ErrorType<void>,
       > => {
       return useMutation(getUpdateCompletionCommitmentMutationOptions(options));
     }
+
+export const getGetStagnantInventoryUrl = () => {
+
+
+
+
+  return `/api/metrics/stagnant-inventory`
+}
+
+/**
+ * @summary Value current stock by days since its last stock-changing movement
+ */
+export const getStagnantInventory = async ( options?: RequestInit): Promise<StagnantInventoryReport> => {
+
+  return customFetch<StagnantInventoryReport>(getGetStagnantInventoryUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetStagnantInventoryQueryKey = () => {
+    return [
+    `/api/metrics/stagnant-inventory`
+    ] as const;
+    }
+
+
+export const getGetStagnantInventoryQueryOptions = <TData = Awaited<ReturnType<typeof getStagnantInventory>>, TError = ErrorType<void>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getStagnantInventory>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetStagnantInventoryQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getStagnantInventory>>> = ({ signal }) => getStagnantInventory({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getStagnantInventory>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetStagnantInventoryQueryResult = NonNullable<Awaited<ReturnType<typeof getStagnantInventory>>>
+export type GetStagnantInventoryQueryError = ErrorType<void>
+
+
+/**
+ * @summary Value current stock by days since its last stock-changing movement
+ */
+
+export function useGetStagnantInventory<TData = Awaited<ReturnType<typeof getStagnantInventory>>, TError = ErrorType<void>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getStagnantInventory>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetStagnantInventoryQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
 
 export const getGetOperationalMetricsUrl = (params?: GetOperationalMetricsParams,) => {
   const normalizedParams = new URLSearchParams();

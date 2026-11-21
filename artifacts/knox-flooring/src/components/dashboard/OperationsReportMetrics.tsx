@@ -340,6 +340,67 @@ export function OperationsReportMetrics({
           ) : (
             <p>No posted waste in this period.</p>
           )}
+          {stockAudit.wasteByJob.length > 0 && (
+            <details className="border-t pt-2">
+              <summary className="cursor-pointer font-medium text-primary">
+                Waste by job and crew
+              </summary>
+              <table className="mt-2 w-full">
+                <caption className="sr-only">
+                  Reviewed waste attributed by job and crew
+                </caption>
+                <thead className="text-xs text-muted-foreground">
+                  <tr>
+                    <th scope="col" className="pb-2 text-left">
+                      Job and crew
+                    </th>
+                    <th scope="col" className="pb-2 text-right">
+                      Quantity
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stockAudit.wasteByJob.map((record) => (
+                    <tr
+                      key={JSON.stringify([
+                        record.jobId,
+                        record.crewId,
+                        record.unit,
+                      ])}
+                      className="border-t"
+                    >
+                      <th
+                        scope="row"
+                        className="py-2 pr-2 text-left font-normal"
+                      >
+                        {record.jobId && record.jobNumber ? (
+                          <Link
+                            href={`/jobs/${encodeURIComponent(record.jobId)}`}
+                            className="text-primary hover:underline"
+                          >
+                            {record.jobNumber}
+                          </Link>
+                        ) : (
+                          "Unassigned job"
+                        )}
+                        <span className="block text-xs text-muted-foreground">
+                          {record.crewName ?? "Unassigned crew"} ·{" "}
+                          {record.entries}{" "}
+                          {record.entries === 1 ? "entry" : "entries"}
+                        </span>
+                      </th>
+                      <td className="text-right tabular-nums">
+                        {record.quantity.toLocaleString("en-US", {
+                          maximumFractionDigits: 6,
+                        })}{" "}
+                        {record.unit}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
+          )}
         </CardContent>
       </Card>
     </div>

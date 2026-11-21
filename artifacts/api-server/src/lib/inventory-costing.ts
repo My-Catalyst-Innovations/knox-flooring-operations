@@ -42,12 +42,15 @@ export async function inventoryAcquisitionValue(tx: StockTransaction) {
     warehouseId: string | null;
     trackedQuantity: number;
     trackedValue: number;
+    receiptValue: number;
   }>(sql`
     SELECT stock.product_id AS "productId", stock.warehouse_id AS "warehouseId",
       sum((CASE WHEN stock.quantity < 0 THEN -1 ELSE 1 END) * layer.quantity)::double precision AS "trackedQuantity",
-      sum((CASE WHEN stock.quantity < 0 THEN -1 ELSE 1 END) * layer.quantity * layer."unitCost")::double precision AS "trackedValue"
+      sum((CASE WHEN stock.quantity < 0 THEN -1 ELSE 1 END) * layer.quantity * layer."unitCost")::double precision AS "trackedValue",
+      coalesce(sum((CASE WHEN stock.quantity < 0 THEN -1 ELSE 1 END) * layer.quantity * layer."unitCost")
+        FILTER (WHERE layer.source IN ('purchase_order', 'stock_receipt')), 0)::double precision AS "receiptValue"
     FROM inventory_movements AS stock
-    CROSS JOIN LATERAL jsonb_to_recordset(stock.cost_allocations) AS layer("layerId" text, quantity numeric, "unitCost" numeric)
+    CROSS JOIN LATERAL jsonb_to_recordset(stock.cost_allocations) AS layer("layerId" text, quantity numeric, "unitCost" numeric, source text)
     WHERE layer."layerId" IS NOT NULL
     GROUP BY stock.product_id, stock.warehouse_id
   `);
