@@ -36,6 +36,7 @@ const balances = [
     locations: [
       { warehouseId: "north", onHand: 6, reserved: 3, available: 3 },
       { warehouseId: null, onHand: 2, reserved: 0, available: 2 },
+      { warehouseId: "south", onHand: 0, reserved: 0, available: 0 },
     ],
   },
   {
@@ -120,4 +121,13 @@ it("flags low stock from available warehouse units after reservations", () => {
   expect(screen.getAllByText("In Stock")).toHaveLength(2);
   fireEvent.change(screen.getByLabelText("Warehouse"), { target: { value: "north" } });
   expect(screen.getAllByText("Low Stock")).toHaveLength(2);
+});
+
+it("includes depleted warehouse stock in the reorder list", () => {
+  window.history.replaceState({}, "", "/inventory?warehouse=south");
+  render(<Inventory />);
+  expect(screen.queryByText(oak.name)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: /Reorder attention/ }));
+  expect(screen.getAllByText(oak.name)).toHaveLength(2);
+  expect(screen.getAllByText("Out of Stock")).toHaveLength(2);
 });

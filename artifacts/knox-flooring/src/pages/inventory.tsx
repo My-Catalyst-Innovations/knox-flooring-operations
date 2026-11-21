@@ -71,9 +71,11 @@ export default function Inventory() {
       .filter(p => category === "All" || category === p.category)
       .filter(p => filter === "all" || (filter === "low" ? low(p) : filter === "special" ? p.inventoryType === "Special Order" : p.inventoryType === "Inventory"))
       .filter(p => !q || aliasMatches.has(p.id) || [p.name, p.sku, p.supplier, p.color].some(v => v.toLowerCase().includes(q)))
-      .filter(p => warehouseFilter === "all" || stockByProduct.get(p.id)?.locations?.some(
-        (location) => location.warehouseId === selectedLocation && (location.onHand !== 0 || location.reserved !== 0),
-      ))
+      .filter(p => {
+        if (warehouseFilter === "all") return true;
+        const location = shownStock(p);
+        return !!location && (filter === "low" || location.onHand !== 0 || location.reserved !== 0);
+      })
       .sort((a, b) => {
         const key = ["name", "category", "supplier", "cost", "price", "quantityOnHand"].includes(sortKey) ? sortKey : "name";
         const av = a[key], bv = b[key];
