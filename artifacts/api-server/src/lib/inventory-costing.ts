@@ -36,6 +36,24 @@ export function acquisitionCostSlice(
   return { layerId: null, sourceMovementId: movementId, quantity, unitCost, acquiredAt, source };
 }
 
+export async function inventoryAcquisitionValue(tx: StockTransaction) {
+  const { rows } = await tx.execute<{
+    productId: string;
+    warehouseId: string | null;
+    trackedQuantity: number;
+    trackedValue: number;
+  }>(sql`
+    SELECT stock.product_id AS "productId", stock.warehouse_id AS "warehouseId",
+      sum((CASE WHEN stock.quantity < 0 THEN -1 ELSE 1 END) * layer.quantity)::double precision AS "trackedQuantity",
+      sum((CASE WHEN stock.quantity < 0 THEN -1 ELSE 1 END) * layer.quantity * layer."unitCost")::double precision AS "trackedValue"
+    FROM inventory_movements AS stock
+    CROSS JOIN LATERAL jsonb_to_recordset(stock.cost_allocations) AS layer("layerId" text, quantity numeric, "unitCost" numeric)
+    WHERE layer."layerId" IS NOT NULL
+    GROUP BY stock.product_id, stock.warehouse_id
+  `);
+  return rows;
+}
+
 export async function withdrawStockCosts(tx: StockTransaction, location: Location, quantity: number) {
   const { rows } = await tx.execute<InventoryCostSlice>(sql`
     SELECT layer."layerId", layer."sourceMovementId", layer.source, layer."acquiredAt", layer."unitCost",

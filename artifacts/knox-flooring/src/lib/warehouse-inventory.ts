@@ -13,10 +13,14 @@ export interface StockLocation {
   onHand: number;
   reserved: number;
   available: number;
+  stockValue?: number | null;
+  valueEstimated?: boolean;
 }
 
 export interface WarehouseStockSummary extends StockSummary {
   locations: StockLocation[];
+  stockValue?: number | null;
+  valueEstimated?: boolean;
 }
 
 export interface WarehouseStockMovement extends StockMovement {

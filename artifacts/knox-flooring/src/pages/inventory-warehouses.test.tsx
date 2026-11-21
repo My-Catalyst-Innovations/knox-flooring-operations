@@ -20,7 +20,7 @@ const testProduct = (id: string, name: string, sku: string): Product => ({
   createdAt: "",
   updatedAt: "",
 });
-const oak = testProduct("oak", "Sample oak", "KF-OAK");
+const oak = { ...testProduct("oak", "Sample oak", "KF-OAK"), reorderPoint: 4 };
 const ash = testProduct("ash", "Sample ash", "KF-ASH");
 const warehouses = [
   { id: "north", name: "North warehouse" },
@@ -112,4 +112,12 @@ it("finds the warehouse balance by supplier SKU and manufacturer part number", (
     expect(screen.queryByText(ash.name)).not.toBeInTheDocument();
     expect(screen.getAllByText("North warehouse · 3 available · 6 on hand · 3 reserved")).toHaveLength(2);
   }
+});
+
+it("flags low stock from available warehouse units after reservations", () => {
+  window.history.replaceState({}, "", "/inventory?q=KF-OAK");
+  render(<Inventory />);
+  expect(screen.getAllByText("In Stock")).toHaveLength(2);
+  fireEvent.change(screen.getByLabelText("Warehouse"), { target: { value: "north" } });
+  expect(screen.getAllByText("Low Stock")).toHaveLength(2);
 });

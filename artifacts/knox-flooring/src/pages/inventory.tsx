@@ -49,7 +49,19 @@ export default function Inventory() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const active = products.filter(p => p.active);
-  const low = (p: Product) => ["Low Stock", "Out of Stock"].includes(stockStatus(p));
+  const shownStock = (p: Product) => {
+    const summary = stock.isError ? undefined : stockByProduct.get(p.id);
+    return warehouseFilter === "all" ? summary : summary?.locations.find((location) => location.warehouseId === selectedLocation);
+  };
+  const availability = (p: Product) => stockStatus(p, shownStock(p)?.available);
+  const low = (p: Product) => ["Low Stock", "Out of Stock"].includes(availability(p));
+  const displayedValues = active.filter((product) => product.inventoryType === "Inventory").flatMap((product) => {
+    const shown = shownStock(product);
+    return shown ? [shown] : [];
+  });
+  const valueKnown = !stock.isLoading && !stock.isError && displayedValues.every((row) => typeof row.stockValue === "number");
+  const estimatedValue = displayedValues.some((row) => row.valueEstimated);
+  const value = displayedValues.reduce((sum, row) => sum + (row.stockValue ?? 0), 0);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     const aliasMatches = new Set((!q || crosswalk.isError ? [] : crosswalk.data ?? [])
@@ -67,14 +79,14 @@ export default function Inventory() {
         const av = a[key], bv = b[key];
         return (typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv))) * (sortDir === "desc" ? -1 : 1);
       });
-  }, [products, category, search, state, filter, sortKey, sortDir, warehouseFilter, selectedLocation, stockByProduct, crosswalk.data, crosswalk.isError]);
+  }, [products, category, search, state, filter, sortKey, sortDir, warehouseFilter, selectedLocation, stockByProduct, stock.isError, crosswalk.data, crosswalk.isError]);
   const edit = (p: Product | null) => { setEditing(p); setDialogOpen(true); };
   const mutate = async (action: () => Promise<unknown>) => { setBusy(true); setError(""); try { await action(); } catch (e) { setError(e instanceof Error ? e.message : "Unable to update the product."); } finally { setBusy(false); } };
   const actions = (p: Product) => <div className="flex flex-wrap gap-1"><Button size="sm" variant="outline" onClick={() => setActivity(p)}>Stock activity</Button>{canWrite && <><Button variant="ghost" size="icon" aria-label={`Edit ${p.name}`} onClick={() => edit(p)}><Pencil className="h-4 w-4" /></Button><Button disabled={busy} variant="ghost" size="icon" aria-label={`${p.active ? "Archive" : "Restore"} ${p.name}`} onClick={() => mutate(() => updateProduct(p.id, { active: !p.active }))}>{p.active ? <Archive className="h-4 w-4" /> : <ArchiveRestore className="h-4 w-4" />}</Button>{user?.role === "owner" && !p.active && <Button variant="ghost" size="icon" aria-label={`Delete ${p.name}`} onClick={() => setDeleteTarget(p)}><Trash2 className="h-4 w-4" /></Button>}</>}</div>;
   const thumbnail = (p: Product) => p.imageUrl ? <img src={productImageSrc(p.imageUrl)} alt={`${p.name} product photograph`} className="h-14 w-14 shrink-0 rounded-lg border object-cover" /> : <div className="flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-lg border bg-muted text-muted-foreground"><Package className="h-4 w-4" /><span className="mt-1 text-[10px]">No image</span></div>;
   const stockNumbers = (p: Product) => {
     const summary = stockByProduct.get(p.id);
-    const displayed = warehouseFilter === "all" ? summary : summary?.locations?.find((location) => location.warehouseId === selectedLocation);
+    const displayed = shownStock(p);
     const locations = summary?.locations?.filter((location) => location.onHand !== 0 || location.reserved !== 0) ?? [];
     return (
       <div className="text-sm tabular-nums">
@@ -94,6 +106,10 @@ export default function Inventory() {
       </div>
     );
   };
+  const availabilityBadge = (p: Product) => {
+    const status = availability(p);
+    return <Badge className={stockStatusClass(status)}>{status}</Badge>;
+  };
   return <div className="space-y-5">
     <header className="flex flex-wrap items-start justify-between gap-3">
       <div><h1 className="text-2xl font-semibold tracking-tight">Inventory</h1><p className="mt-1 text-sm text-muted-foreground">Product specifications, available stock, and movements.</p></div>
@@ -106,8 +122,8 @@ export default function Inventory() {
     </header>
     <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">{[
       { label: "Active products", value: active.length.toLocaleString(), detail: "Catalog records", filter: "all" },
-      { label: "Stock at cost", value: currency(active.filter(p => p.inventoryType === "Inventory").reduce((s, p) => s + p.cost * p.quantityOnHand, 0)), detail: "On-hand inventory", filter: "inventory" },
-      { label: "Reorder attention", value: active.filter(low).length.toLocaleString(), detail: "At or below configured levels", filter: "low" },
+      { label: "Active stock at cost", value: valueKnown ? currency(value) : "—", detail: estimatedValue ? "Includes estimates for unpriced stock" : "Recorded acquisition costs", filter: "inventory" },
+      { label: "Reorder attention", value: stock.isLoading || stock.isError ? "—" : active.filter(low).length.toLocaleString(), detail: "Available stock after reservations", filter: "low" },
       { label: "Special order", value: active.filter(p => p.inventoryType === "Special Order").length.toLocaleString(), detail: "Ordered for each project", filter: "special" },
     ].map(s => <button key={s.label} onClick={() => update({ stock: s.filter === "all" ? null : s.filter, state: null, category: null, q: null })} className="rounded-xl border bg-card p-4 text-left hover:bg-muted/40"><p className="text-xs font-medium text-muted-foreground">{s.label}</p><p className="my-1 text-xl font-semibold tabular-nums">{queryState.products.isLoading ? "—" : s.value}</p><p className="text-xs text-muted-foreground">{s.detail}</p></button>)}</div>
     {canWrite && <div className="flex flex-wrap items-center gap-3">
@@ -126,8 +142,8 @@ export default function Inventory() {
     <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground"><span>{filtered.length} products{filter !== "all" && ` · ${filter === "low" ? "Reorder attention" : filter === "special" ? "Special orders" : "Stocked inventory"}`}</span>{(search || category !== "All" || filter !== "all" || state !== "active" || warehouseFilter !== "all") && <Button size="sm" variant="ghost" onClick={() => update({ q: null, category: null, stock: null, state: null, warehouse: null })}>Clear filters</Button>}</div>
     {(error || queryState.products.error) && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-900">{error || "The product catalog could not load. Refresh to try again."}</p>}
     {queryState.products.isLoading ? <p role="status" className="p-8 text-center text-muted-foreground">Loading products…</p> : !queryState.products.error && filtered.length === 0 ? <div className="rounded-xl border border-dashed p-10 text-center"><Package className="mx-auto mb-3 h-6 w-6 text-muted-foreground" /><h2 className="font-semibold">No products match this view</h2><p className="mt-1 text-sm text-muted-foreground">Adjust your filters or add a product to the catalog.</p></div> : <>
-      <div className="space-y-3 md:hidden">{filtered.map(p => <article key={p.id} className="rounded-xl border bg-card p-4"><div className="flex gap-3">{thumbnail(p)}<div className="min-w-0 flex-1"><h2 className="font-semibold break-words">{p.name}</h2><p className="mt-1 text-xs text-muted-foreground">{p.sku || "SKU not set"} · {p.category}</p></div></div><div className="my-3 flex flex-wrap justify-between gap-2">{stockNumbers(p)}<div className="text-right text-sm"><strong>{currency(p.price)}</strong><p className="text-xs text-muted-foreground">per {p.unit}</p></div></div><Badge className={stockStatusClass(stockStatus(p))}>{stockStatus(p)}</Badge><details className="my-3 text-sm"><summary className="cursor-pointer text-muted-foreground">Specifications & pricing</summary><dl className="mt-3 grid grid-cols-2 gap-2"><dt>Supplier</dt><dd>{p.supplier || "Not recorded"}</dd><dt>Cost / unit</dt><dd>{currency(p.cost)}</dd><dt>Coverage / unit</dt><dd>{p.coveragePerUnit == null ? "Not verified" : `${quantity(p.coveragePerUnit)} sq ft`}</dd><dt>Order multiple</dt><dd>{p.orderMultiple ?? 1}</dd><dt>Minimum order</dt><dd>{p.minimumOrderQty ?? 0}</dd></dl></details>{actions(p)}</article>)}</div>
-      <div className="hidden rounded-xl border bg-card md:block"><table className="w-full table-fixed text-left text-sm"><thead className="border-b bg-muted/40 text-xs text-muted-foreground"><tr><th className="w-[30%] p-3" aria-sort={sortKey === "name" ? sortDir === "desc" ? "descending" : "ascending" : "none"}>Product / supplier</th><th className="w-[18%] p-3">Price / cost</th><th className="w-[26%] p-3">Availability</th><th className="p-3">Actions</th></tr></thead><tbody>{filtered.map(p => <tr key={p.id} className="border-b last:border-0 hover:bg-muted/20"><td className="p-3"><div className="flex gap-3">{thumbnail(p)}<div className="min-w-0"><p className="font-semibold break-words">{p.name}</p><p className="mt-1 text-xs text-muted-foreground break-words">{p.sku || "SKU not set"} · {p.category}</p><p className="text-xs text-muted-foreground">{p.supplier}</p></div></div></td><td className="p-3 tabular-nums"><p className="font-medium">{currency(p.price)} / {p.unit}</p><p className="mt-1 text-xs text-muted-foreground">Cost {currency(p.cost)}{marginPct(p.cost, p.price) != null && ` · ${marginPct(p.cost, p.price)!.toFixed(1)}% margin`}</p></td><td className="p-3">{stockNumbers(p)}<Badge className={`mt-2 ${stockStatusClass(stockStatus(p))}`}>{stockStatus(p)}</Badge></td><td className="p-3">{actions(p)}</td></tr>)}</tbody></table></div>
+      <div className="space-y-3 md:hidden">{filtered.map(p => <article key={p.id} className="rounded-xl border bg-card p-4"><div className="flex gap-3">{thumbnail(p)}<div className="min-w-0 flex-1"><h2 className="font-semibold break-words">{p.name}</h2><p className="mt-1 text-xs text-muted-foreground">{p.sku || "SKU not set"} · {p.category}</p></div></div><div className="my-3 flex flex-wrap justify-between gap-2">{stockNumbers(p)}<div className="text-right text-sm"><strong>{currency(p.price)}</strong><p className="text-xs text-muted-foreground">per {p.unit}</p></div></div>{availabilityBadge(p)}<details className="my-3 text-sm"><summary className="cursor-pointer text-muted-foreground">Specifications & pricing</summary><dl className="mt-3 grid grid-cols-2 gap-2"><dt>Supplier</dt><dd>{p.supplier || "Not recorded"}</dd><dt>Cost / unit</dt><dd>{currency(p.cost)}</dd><dt>Coverage / unit</dt><dd>{p.coveragePerUnit == null ? "Not verified" : `${quantity(p.coveragePerUnit)} sq ft`}</dd><dt>Order multiple</dt><dd>{p.orderMultiple ?? 1}</dd><dt>Minimum order</dt><dd>{p.minimumOrderQty ?? 0}</dd></dl></details>{actions(p)}</article>)}</div>
+      <div className="hidden rounded-xl border bg-card md:block"><table className="w-full table-fixed text-left text-sm"><thead className="border-b bg-muted/40 text-xs text-muted-foreground"><tr><th className="w-[30%] p-3" aria-sort={sortKey === "name" ? sortDir === "desc" ? "descending" : "ascending" : "none"}>Product / supplier</th><th className="w-[18%] p-3">Price / cost</th><th className="w-[26%] p-3">Availability</th><th className="p-3">Actions</th></tr></thead><tbody>{filtered.map(p => <tr key={p.id} className="border-b last:border-0 hover:bg-muted/20"><td className="p-3"><div className="flex gap-3">{thumbnail(p)}<div className="min-w-0"><p className="font-semibold break-words">{p.name}</p><p className="mt-1 text-xs text-muted-foreground break-words">{p.sku || "SKU not set"} · {p.category}</p><p className="text-xs text-muted-foreground">{p.supplier}</p></div></div></td><td className="p-3 tabular-nums"><p className="font-medium">{currency(p.price)} / {p.unit}</p><p className="mt-1 text-xs text-muted-foreground">Cost {currency(p.cost)}{marginPct(p.cost, p.price) != null && ` · ${marginPct(p.cost, p.price)!.toFixed(1)}% margin`}</p></td><td className="p-3">{stockNumbers(p)}<div className="mt-2">{availabilityBadge(p)}</div></td><td className="p-3">{actions(p)}</td></tr>)}</tbody></table></div>
     </>}
     <ProductDialog open={dialogOpen} onOpenChange={setDialogOpen} product={editing} />
     {activity && <StockActivity product={activity} onClose={() => setActivity(null)} />}

@@ -23,6 +23,7 @@ import {
 } from "../lib/inventory-issue-cost";
 import {
   acquisitionCostSlice,
+  inventoryAcquisitionValue,
   inventoryUnitCostPattern,
   normalizeInventoryUnitCost,
   placeStockCosts,
@@ -313,15 +314,17 @@ router.post(
 router.get(
   "/inventory/summary",
   domainRoute(async (_req, res) => {
-    const [products, reservations, balances] = await db.transaction(
+    const [products, reservations, balances, valuation] = await db.transaction(
       (tx) =>
         Promise.all([
           tx.select().from(productsTable),
           tx.select().from(inventoryReservationsTable),
           namedBalances(tx),
+          inventoryAcquisitionValue(tx),
         ]),
       { isolationLevel: "repeatable read", accessMode: "read only" },
     );
+    const acquisitionByLocation = new Map(valuation.map((entry) => [JSON.stringify([entry.productId, entry.warehouseId]), entry]));
     res.json(
       products.map((p) => {
         const productReservations = reservations.filter(
@@ -346,8 +349,14 @@ router.get(
               : (productBalances.find(
                   (balance) => balance.warehouseId === warehouseId,
                 )?.onHand ?? 0);
+          const acquisition = acquisitionByLocation.get(JSON.stringify([p.id, warehouseId]));
+          const trackedQuantity = roundStock(acquisition?.trackedQuantity ?? 0);
+          const unpricedQuantity = Math.max(0, roundStock(onHand - trackedQuantity));
+          const cents = Math.round(((acquisition?.trackedValue ?? 0) + unpricedQuantity * p.cost) * 100);
           return {
             warehouseId,
+            stockValue: p.inventoryType === "Inventory" && trackedQuantity >= 0 && trackedQuantity <= Math.max(0, roundStock(onHand)) && cents >= 0 && Number.isSafeInteger(cents) ? cents / 100 : null,
+            valueEstimated: unpricedQuantity > 0,
             ...stockAvailability(
               roundStock(onHand),
               productReservations.filter((r) => r.warehouseId === warehouseId),
@@ -358,6 +367,10 @@ router.get(
           productId: p.id,
           ...stock,
           locations,
+          stockValue: locations.every((location) => location.stockValue !== null)
+            ? Math.round(locations.reduce((sum, location) => sum + (location.stockValue ?? 0), 0) * 100) / 100
+            : null,
+          valueEstimated: locations.some((location) => location.valueEstimated),
           reorderPoint: p.reorderPoint,
           status:
             p.inventoryType !== "Inventory"

@@ -29,16 +29,15 @@ export const PRODUCT_INVENTORY_TYPES: ProductInventoryType[] = [
   "Service",
 ];
 
-/** On-hand quantity at or below this is flagged "Low Stock". */
+export type StockStatus = "In Stock" | "Low Stock" | "Out of Stock" | "Special Order" | "Service" | "Set reorder point" | "Availability unknown";
 
-export type StockStatus = "In Stock" | "Low Stock" | "Out of Stock" | "Special Order" | "Service" | "Set reorder point";
-
-export function stockStatus(product: Product): StockStatus {
+export function stockStatus(product: Product, available: number | undefined): StockStatus {
   if (product.inventoryType === "Special Order") return "Special Order";
   if (product.inventoryType === "Service") return "Service";
-  if (product.quantityOnHand <= 0) return "Out of Stock";
+  if (available === undefined) return "Availability unknown";
+  if (available <= 0) return "Out of Stock";
   if (product.reorderPoint == null) return "Set reorder point";
-  if (product.quantityOnHand <= product.reorderPoint) return "Low Stock";
+  if (available <= product.reorderPoint) return "Low Stock";
   return "In Stock";
 }
 
