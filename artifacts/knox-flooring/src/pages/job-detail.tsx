@@ -48,6 +48,7 @@ import { MeasurementsPanel } from "@/components/measurements/measurements-panel"
 import { JobActuals } from "@/components/jobs/JobActuals";
 import { JobUpdates } from "@/components/jobs/JobUpdates";
 import { JobInstallationAction } from "@/components/jobs/JobInstallationAction";
+import { JobCompletionCommitment } from "@/components/jobs/JobCompletionCommitment";
 import { STAGE_ORDER } from "@/lib/stages";
 import {
   computeCosting,
@@ -323,6 +324,7 @@ export default function JobDetail() {
                       : "TBD"}
                   </div>
                 </div>
+                <JobCompletionCommitment key={job.id} job={job} />
               </div>
 
               {job.notes && (

@@ -21,3 +21,5 @@ export * from "./operations";
 export * from "./outlook-calendar";
 export * from "./supplier-catalog";
 export * from "./purchase-orders";
+export * from "./physical-pieces";
+export * from "./stock-counts";

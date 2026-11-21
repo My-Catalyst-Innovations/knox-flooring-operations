@@ -32,6 +32,10 @@ export interface Job {
   salespersonId?: string | null;
   estStartDate?: string;
   estCompletionDate?: string;
+  /** Agreed completion day recorded by the owner before job completion. */
+  committedCompletionDate?: string;
+  /** When the current agreed completion date was recorded. */
+  committedCompletionRecordedAt?: string;
   materialStatus: MaterialStatusBadge;
   laborEstimate: number;
   estLaborHours: number;

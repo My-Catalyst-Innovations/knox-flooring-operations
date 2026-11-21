@@ -8,16 +8,23 @@ const document = z.object({
   TxnDate: z.string().optional(),
   DueDate: z.string().optional(),
   PrivateNote: z.string(),
-  Line: z.array(z.object({
-    Amount: z.number(),
-    DetailType: z.literal("SalesItemLineDetail"),
-    Description: z.string().default(""),
-    SalesItemLineDetail: z.object({
-      ItemRef: z.object({ value: z.string() }),
-      Qty: z.number(),
-      UnitPrice: z.number(),
+  Line: z.array(z.discriminatedUnion("DetailType", [
+    z.object({
+      Amount: z.number(),
+      DetailType: z.literal("SalesItemLineDetail"),
+      Description: z.string().default(""),
+      SalesItemLineDetail: z.object({
+        ItemRef: z.object({ value: z.string() }),
+        Qty: z.number(),
+        UnitPrice: z.number(),
+      }),
     }),
-  })).min(1),
+    z.object({
+      Amount: z.number().positive(),
+      DetailType: z.literal("DiscountLineDetail"),
+      DiscountLineDetail: z.object({ PercentBased: z.literal(false).default(false) }),
+    }),
+  ])).min(1),
 });
 
 export type QuickBooksInvoiceDocument = z.infer<typeof document>;
@@ -51,9 +58,10 @@ function sameInvoice(expected: QuickBooksInvoiceDocument, posted: unknown) {
   }).safeParse(posted);
   if (!result.success) return false;
   const invoice = result.data;
-  const salesLines = invoice.Line.filter((line) => (line as { DetailType?: string } | null)?.DetailType !== "SubTotalLineDetail");
-  const lines = document.shape.Line.safeParse(salesLines);
-  const totalInCents = expected.Line.reduce((total, line) => total + Math.round(line.Amount * 100), 0);
+  const postedLines = invoice.Line.filter((line) => (line as { DetailType?: string } | null)?.DetailType !== "SubTotalLineDetail");
+  const lines = document.shape.Line.safeParse(postedLines);
+  const totalInCents = expected.Line.reduce((total, line) =>
+    total + Math.round(line.Amount * 100) * (line.DetailType === "DiscountLineDetail" ? -1 : 1), 0);
   return invoice.DocNumber === expected.DocNumber && invoice.CustomerRef.value === expected.CustomerRef.value &&
     (!expected.TxnDate || invoice.TxnDate === expected.TxnDate) && (!expected.DueDate || invoice.DueDate === expected.DueDate) &&
     invoice.PrivateNote === expected.PrivateNote && Math.round(invoice.TotalAmt * 100) === totalInCents &&

@@ -38,6 +38,10 @@ Use **Preview supplier CSV** to match manufacturer part numbers and supplier SKU
 
 Create an order under **Inventory → Purchase orders** with the supplier, receiving warehouse, products, and unit costs. The draft fills in the approved supplier price when a single supplier code matches the product and its unit on the current business date. Review the suggested price before ordering. Mark the order **Ordered** after placing it with the supplier. Use **Receive shipment** to record only the items that arrived, with an optional packing slip reference and a destination bin per line. A partial receipt leaves the balance open. Create, inspect, and move bins under **Inventory → Warehouse bins**.
 
+Link a purchase order to a job and add the supplier's delivery estimate. The job workflow shows the linked open quantity and expected date. Use **Stock activity → Pick and stage** to scan a product and move part of an active reservation to a bin or truck. The pick stays reserved for the same job. **Record used** issues the staged stock and adds job cost.
+
+Use **Inventory → Rolls & remnants** to label stocked square-foot pieces, record a full-width cut, move a piece after arrival, and issue or return a measured piece. The label preview includes the SKU, piece ID, dimensions, and current location. Use **Inventory → Warehouse bins → Stock counts** to submit a physical count, damage, or waste for owner review. Review and reconcile each count before it changes stock.
+
 ## QuickBooks Online setup
 
 1. Create an app in the Intuit Developer dashboard and enable the `com.intuit.quickbooks.accounting` scope.
@@ -49,6 +53,8 @@ Create an order under **Inventory → Purchase orders** with the supplier, recei
 QuickBooks tokens are encrypted with AES-256-GCM. Webhooks are signature checked and deduplicated. A periodic change-data poll checks for missed invoice changes.
 
 Approve the QuickBooks Service items for labor, add-ons, and non-catalog materials under **Settings → QuickBooks** before exporting invoices with those lines. Production vendor bill export starts disabled. For a verified USD company and item-only vendor bills, set `QUICKBOOKS_PRODUCTION_VENDOR_BILLS_ENABLED=true` and `QUICKBOOKS_PRODUCTION_VENDOR_BILLS_REALM_ID` to the connected production company ID. Each live bill requires owner confirmation after reviewing its matched items and totals.
+
+Supplier bill review accepts CSV and tab-separated line tables. Inspect the parsed SKU, quantity, unit, and rate before applying the rows. Enter the total shown on the source bill independently so review can flag discrepancies.
 
 ## Outlook Calendar setup
 

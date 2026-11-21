@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { QuickBooksSettings } from "./QuickBooksSettings";
+import { VendorBillSandbox } from "./VendorBillSandbox";
 
 const { customFetch, operation, useOperation } = vi.hoisted(() => ({
   customFetch: vi.fn(),
@@ -13,6 +14,51 @@ vi.mock("@/lib/operations", () => ({ operation, useOperation }));
 afterEach(() => {
   cleanup();
   vi.resetAllMocks();
+});
+
+it("previews a file locally and applies exact supplier bill fields only on request", async () => {
+  operation.mockResolvedValue([]);
+  render(<VendorBillSandbox mode="review" vendors={[]} />);
+  fireEvent.change(screen.getByLabelText("Supplier SKU"), { target: { value: "manual entry" } });
+  fireEvent.click(screen.getByText("Import bill lines"));
+  const file = new File(["fixture"], "statement.csv", { type: "text/csv" });
+  Object.defineProperty(file, "text", { value: async () => "supplier_sku,unit,quantity,unit_cost\n00073,BOX,10.000,49.9250" });
+  fireEvent.change(screen.getByLabelText("Bill line CSV or text file"), { target: { files: [file] } });
+
+  const apply = await screen.findByRole("button", { name: "Use 1 line" });
+  expect(screen.getAllByText("$499.25")).toHaveLength(2);
+  expect(screen.getByLabelText("Supplier SKU")).toHaveValue("manual entry");
+  expect(operation).toHaveBeenCalledExactlyOnceWith("/quickbooks/vendor-bills?mode=review");
+  fireEvent.click(apply);
+  expect(screen.getByLabelText("Supplier SKU")).toHaveValue("00073");
+  expect(screen.getByLabelText("Unit")).toHaveValue("BOX");
+  expect(screen.getByLabelText("Quantity")).toHaveValue("10.000");
+  expect(screen.getByLabelText("Billed unit cost")).toHaveValue("49.9250");
+  expect(screen.getByLabelText("Source bill total (USD)")).toHaveValue("");
+  expect(screen.getByRole("button", { name: "Preview supplier bill" })).toBeDisabled();
+  expect(operation).toHaveBeenCalledTimes(1);
+
+  operation.mockRejectedValueOnce(new Error("Fixture preview stops at validation"));
+  for (const [label, value] of Object.entries({ Supplier: "Fixture Supply", "Bill number": "F-101", "Bill date": "2026-11-20", "Source bill total (USD)": "499.25" })) {
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  }
+  fireEvent.click(screen.getByRole("button", { name: "Preview supplier bill" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Fixture preview stops at validation");
+  expect(operation).toHaveBeenLastCalledWith("/quickbooks/vendor-bills/preview", "POST", expect.objectContaining({
+    supplier: "Fixture Supply", billTotal: "499.25", lines: [{ supplierSku: "00073", unit: "BOX", quantity: "10.000", unitCost: "49.9250" }],
+  }));
+});
+
+it("blocks an invalid pasted row and reports an invalid manual price in its field", async () => {
+  operation.mockResolvedValue([]);
+  render(<VendorBillSandbox mode="review" vendors={[]} />);
+  fireEvent.click(screen.getByText("Import bill lines"));
+  fireEvent.change(screen.getByLabelText("Paste bill line table"), { target: { value: "supplier_sku\tunit\tquantity\tunit_cost\n00073\tbox\t2\t$49.00" } });
+  fireEvent.click(screen.getByRole("button", { name: "Check imported lines" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Line 2, Billed unit cost");
+  expect(screen.queryByRole("button", { name: /Use \d+ lines?/ })).toBeNull();
+  fireEvent.change(screen.getByLabelText("Billed unit cost"), { target: { value: "$3.00" } });
+  expect(screen.getByLabelText("Billed unit cost")).toHaveAttribute("aria-invalid", "true");
 });
 
 it("records a local supplier bill review without selecting a QuickBooks vendor", async () => {

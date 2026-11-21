@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   check,
+  date,
   index,
   integer,
   numeric,
@@ -11,6 +12,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { inventoryMovementsTable, warehousesTable } from "./operations";
 import { productsTable } from "./products";
+import { jobsTable } from "./jobs";
 
 export const purchaseOrderStatuses = [
   "Draft",
@@ -29,6 +31,8 @@ export const purchaseOrdersTable = pgTable(
       .notNull()
       .references(() => warehousesTable.id, { onDelete: "restrict" }),
     supplier: text("supplier").notNull(),
+    jobId: text("job_id").references(() => jobsTable.id, { onDelete: "restrict" }),
+    expectedOn: date("expected_on"),
     notes: text("notes").notNull(),
     status: text("status")
       .$type<(typeof purchaseOrderStatuses)[number]>()
@@ -45,6 +49,7 @@ export const purchaseOrdersTable = pgTable(
     uniqueIndex("purchase_orders_number_unique").on(table.number),
     uniqueIndex("purchase_orders_request_key_unique").on(table.requestKey),
     index("purchase_orders_warehouse_idx").on(table.warehouseId),
+    index("purchase_orders_job_id_idx").on(table.jobId),
     check(
       "purchase_orders_status_valid",
       sql`${table.status} in ('Draft', 'Ordered', 'Partially received', 'Received', 'Cancelled')`,

@@ -439,8 +439,11 @@ export function JobMaterialReceipt({ job }: { job: Job }) {
   };
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
         <CardTitle>Material readiness</CardTitle>
+        <Button size="sm" variant="outline" asChild>
+          <Link href={`/inventory/purchase-orders?job=${encodeURIComponent(job.id)}`}>Purchase orders for this job</Link>
+        </Button>
       </CardHeader>
       <CardContent>
         {queryState.materials.isLoading && (

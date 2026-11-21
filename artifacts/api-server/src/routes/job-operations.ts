@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, lte, sql } from "drizzle-orm";
 import {
   db,
   jobsTable,
@@ -13,11 +13,31 @@ import {
   laborEntriesTable,
   settingsTable,
   usersTable,
+  inventoryMovementsTable,
+  inventoryStockCountsTable,
 } from "@workspace/db";
 import { requireRole } from "../middlewares/auth";
 import { domainRoute, parse, revision, id } from "../lib/domain-http";
-import { eventDate, withinPeriod, DomainError } from "../lib/operations-rules";
 import {
+  assertRevision,
+  eventDate,
+  withinPeriod,
+  DomainError,
+} from "../lib/operations-rules";
+import { audit } from "../lib/auth";
+import { reportMaterialUsage } from "../lib/report-material-usage";
+import {
+  completionTimeliness,
+  inventoryActivity,
+  invoiceAging,
+  isReportDate,
+  reportBusinessDate,
+  shiftReportDate,
+  stockAuditSummary,
+  upcomingInstallationJobs,
+} from "../lib/report-metrics";
+import {
+  installationMaterialMessages,
   jobReadiness,
   updateJobWithReadiness,
   JOB_STAGES,
@@ -180,14 +200,83 @@ router.post(
     );
   }),
 );
-function boundary(value: string, end = false) {
+router.put(
+  "/jobs/:id/committed-completion",
+  requireRole("owner"),
+  domainRoute(async (req, res) => {
+    const data = parse(
+      z.object({
+        revision,
+        date: z
+          .string()
+          .refine(isReportDate, "Enter a valid calendar date.")
+          .nullable(),
+      }),
+      req.body,
+    );
+    const saved = await db.transaction(async (tx) => {
+      const [job] = await tx
+        .select()
+        .from(jobsTable)
+        .where(eq(jobsTable.id, id(req)))
+        .for("update");
+      if (!job) throw new DomainError(404, "Job not found.");
+      assertRevision(job.revision, data.revision);
+      if (
+        ["Completed", "Invoiced"].includes(job.status) ||
+        eventDate(job, "completed")
+      ) {
+        throw new DomainError(
+          409,
+          "The completion commitment is locked after recorded completion.",
+        );
+      }
+      const now = new Date().toISOString();
+      if (job.committedCompletionDate === data.date) {
+        return {
+          date: job.committedCompletionDate,
+          recordedAt: job.committedCompletionRecordedAt,
+          revision: job.revision,
+        };
+      }
+      const nextRevision = job.revision + 1;
+      const recordedAt = data.date ? now : null;
+      await tx
+        .update(jobsTable)
+        .set({
+          committedCompletionDate: data.date,
+          committedCompletionRecordedAt: recordedAt,
+          revision: nextRevision,
+          updatedAt: now,
+        })
+        .where(eq(jobsTable.id, job.id));
+      await audit(
+        "job.completion_commitment_changed",
+        {
+          userId: req.auth!.userId,
+          entityType: "job",
+          entityId: job.id,
+          ip: req.ip,
+          details: {
+            previousDate: job.committedCompletionDate,
+            previousRecordedAt: job.committedCompletionRecordedAt,
+            date: data.date,
+            recordedAt,
+          },
+        },
+        tx,
+      );
+      return { date: data.date, recordedAt, revision: nextRevision };
+    });
+    res.json(saved);
+  }),
+);
+
+function boundary(value: string) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     // Convert midnight in the business timezone, including daylight-saving offsets.
     const wall = Date.parse(value + "T00:00:00Z");
-    if (
-      !Number.isFinite(wall) ||
-      new Date(wall).toISOString().slice(0, 10) !== value
-    )
+    if (!isReportDate(value))
       throw new DomainError(400, "Use a valid calendar date.");
     let result = wall;
     for (let i = 0; i < 2; i++) {
@@ -216,46 +305,119 @@ router.get(
   requireRole("owner"),
   domainRoute(async (req, res) => {
     const today = new Date();
-    const monthParts = new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/New_York",
-      year: "numeric",
-      month: "2-digit",
-    }).formatToParts(today);
-    const month = `${monthParts.find((p) => p.type === "year")!.value}-${monthParts.find((p) => p.type === "month")!.value}`;
+    const businessToday = reportBusinessDate(today);
+    const month = businessToday.slice(0, 7);
     const from = boundary(String(req.query.from ?? month + "-01"));
-    const businessToday = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/New_York",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(today);
-    const defaultTo = new Date(
-      Date.parse(businessToday + "T00:00:00Z") + 86400000,
-    )
-      .toISOString()
-      .slice(0, 10);
+    const defaultTo = shiftReportDate(businessToday, 1);
     const to = boundary(String(req.query.to ?? defaultTo));
     if (Date.parse(from) >= Date.parse(to))
       throw new DomainError(400, "The period must end after it starts.");
     if (Date.parse(to) - Date.parse(from) > 366 * 86400000)
       throw new DomainError(400, "Choose a period of one year or less.");
-    const [jobs, invoices, crews, bookings, callbacks, labor] =
-      await Promise.all([
-        db.select().from(jobsTable),
-        db.select().from(invoicesTable),
-        db.select().from(crewsTable),
-        db.select().from(crewBookingsTable),
-        db.select().from(jobCallbacksTable),
-        db.select().from(laborEntriesTable),
-      ]);
-    const sold = jobs.filter((j) =>
-      withinPeriod(eventDate(j, "sold"), from, to),
+    const oldestMovement = boundary(shiftReportDate(businessToday, -89));
+    const recentMovementCount = (days: number) =>
+      sql<number>`count(*) filter (where ${inventoryMovementsTable.createdAt} >= ${boundary(shiftReportDate(businessToday, 1 - days))})`.mapWith(
+        Number,
+      );
+    const counts = inventoryStockCountsTable;
+    const [
+      jobs,
+      invoices,
+      crews,
+      bookings,
+      callbacks,
+      labor,
+      movements,
+      audits,
+    ] = await Promise.all([
+      db
+        .select({
+          id: jobsTable.id,
+          status: jobsTable.status,
+          estRevenue: jobsTable.estRevenue,
+          soldAt: jobsTable.soldAt,
+          completedAt: jobsTable.completedAt,
+          stageHistory: jobsTable.stageHistory,
+          estStartDate: jobsTable.estStartDate,
+          estCompletionDate: jobsTable.estCompletionDate,
+          committedCompletionDate: jobsTable.committedCompletionDate,
+          committedCompletionRecordedAt:
+            jobsTable.committedCompletionRecordedAt,
+        })
+        .from(jobsTable),
+      db
+        .select({
+          status: invoicesTable.status,
+          total: invoicesTable.total,
+          balanceAmount: invoicesTable.balanceAmount,
+          issueDate: invoicesTable.issueDate,
+          dueDate: invoicesTable.dueDate,
+        })
+        .from(invoicesTable),
+      db.select().from(crewsTable),
+      db.select().from(crewBookingsTable),
+      db.select().from(jobCallbacksTable),
+      db.select().from(laborEntriesTable),
+      db
+        .select({
+          kind: inventoryMovementsTable.kind,
+          last30: recentMovementCount(30),
+          last60: recentMovementCount(60),
+          last90: sql<number>`count(*)`.mapWith(Number),
+        })
+        .from(inventoryMovementsTable)
+        .where(
+          and(
+            gte(inventoryMovementsTable.createdAt, oldestMovement),
+            lte(inventoryMovementsTable.createdAt, today.toISOString()),
+          ),
+        )
+        .groupBy(inventoryMovementsTable.kind),
+      db
+        .select({
+          reason: counts.reason,
+            productId: counts.productId,
+          sku: counts.sku,
+          productName: counts.productName,
+          unit: counts.unit,
+          entries: sql<number>`count(*)`.mapWith(Number),
+          matches:
+            sql<number>`count(*) filter (where ${counts.bookedQuantity} = ${counts.countedQuantity})`.mapWith(
+              Number,
+            ),
+          quantity:
+            sql<number>`round(sum(${counts.bookedQuantity}::numeric - ${counts.countedQuantity}::numeric), 6)`.mapWith(
+              Number,
+            ),
+        })
+        .from(counts)
+        .where(
+          and(
+            eq(counts.status, "Reconciled"),
+            gte(counts.resolvedAt, from),
+            lt(counts.resolvedAt, to),
+          ),
+        )
+          .groupBy(counts.reason, counts.productId, counts.sku, counts.productName, counts.unit)
+        .orderBy(asc(counts.productName), asc(counts.sku), asc(counts.unit)),
+    ]);
+    const installationUntil = shiftReportDate(businessToday, 14);
+    const { confirmedJobIds, needsCrew } = upcomingInstallationJobs(
+      jobs,
+      bookings,
+      new Set(crews.filter((crew) => crew.active).map((crew) => crew.id)),
+      today,
+      new Date(boundary(installationUntil)),
     );
-    const completed = jobs.filter(
-      (j) =>
-        ["Completed", "Invoiced"].includes(j.status) &&
-        withinPeriod(eventDate(j, "completed"), from, to),
-    );
+    const materialIssues =
+      confirmedJobIds.length > 0
+        ? await db.transaction((tx) =>
+            installationMaterialMessages(tx, confirmedJobIds),
+          )
+        : new Map();
+    const materialsNeedAttention = confirmedJobIds.filter(
+      (jobId) => (materialIssues.get(jobId)?.length ?? 0) > 0,
+    ).length;
     const recordedBoundary = (value: string | null) => {
       try {
         return value ? boundary(value) : null;
@@ -263,6 +425,20 @@ router.get(
         return null;
       }
     };
+    const sold = jobs.filter((j) =>
+      withinPeriod(eventDate(j, "sold"), from, to),
+    );
+    const completedRecords = jobs
+      .filter((job) => ["Completed", "Invoiced"].includes(job.status))
+      .map((job) => ({
+        ...job,
+        recordedCompletion: eventDate(job, "completed"),
+      }));
+    const completed = completedRecords.filter(
+      (job): job is typeof job & { recordedCompletion: string } =>
+        !!job.recordedCompletion &&
+        withinPeriod(recordedBoundary(job.recordedCompletion), from, to),
+    );
     const billed = invoices.filter(
       (i) =>
         !["Draft", "Voided"].includes(i.status) &&
@@ -320,6 +496,7 @@ router.get(
     const actualHours = periodLabor
       .filter((l) => l.crewId)
       .reduce((sum, l) => sum + l.hours, 0);
+    const materialUsageReport = await reportMaterialUsage(completed);
     res.json({
       from,
       to,
@@ -331,6 +508,18 @@ router.get(
       outstanding: invoices
         .filter((i) => ["Sent", "Partial", "Overdue"].includes(i.status))
         .reduce((sum, i) => sum + Math.max(0, i.balanceAmount), 0),
+      asOfDate: businessToday,
+      invoiceAging: invoiceAging(invoices, businessToday),
+      inventoryActivity: inventoryActivity(movements),
+      completionTimeliness: completionTimeliness(completed),
+      stockAudit: stockAuditSummary(audits),
+      materialUsageReport,
+      installationReadiness: {
+        through: shiftReportDate(installationUntil, -1),
+        ready: confirmedJobIds.length - materialsNeedAttention,
+        materialsNeedAttention,
+        needsCrew,
+      },
       capacityHours: capacityKnown ? capacity : null,
       plannedLaborHours: plannedHours,
       actualLaborHours: actualHours,
@@ -360,10 +549,8 @@ router.get(
             "Invoiced",
           ].includes(j.status) && !eventDate(j, "sold"),
       ).length,
-      missingCompletionDates: jobs.filter(
-        (j) =>
-          ["Completed", "Invoiced"].includes(j.status) &&
-          !eventDate(j, "completed"),
+      missingCompletionDates: completedRecords.filter(
+        (job) => !recordedBoundary(job.recordedCompletion),
       ).length,
       unassignedLaborEntries: periodLabor.filter((l) => !l.crewId).length,
       sourceJobIds: sold.map((j) => j.id),

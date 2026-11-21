@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { checkPieceMovementRetry, pieceForMovement, savePieceMovement } from "../lib/physical-pieces";
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -389,12 +390,14 @@ router.get(
 router.get(
   "/inventory/reservations",
   domainRoute(async (req, res) => {
-    const rows = await db.select().from(inventoryReservationsTable);
-    res.json(
-      rows.filter(
-        (r) => !req.query.productId || r.productId === req.query.productId,
-      ),
-    );
+    const { productId, jobId } = parse(z.object({
+      productId: z.string().min(1).max(200).optional(),
+      jobId: z.string().min(1).max(200).optional(),
+    }), req.query);
+    res.json(await db.select().from(inventoryReservationsTable).where(and(
+      productId ? eq(inventoryReservationsTable.productId, productId) : undefined,
+      jobId ? eq(inventoryReservationsTable.jobId, jobId) : undefined,
+    )));
   }),
 );
 router.post(
@@ -420,6 +423,10 @@ router.post(
         returnOfMovementId: z.string().min(1).optional(),
         callbackId: z.string().min(1).optional(),
         labelCode: productLabelCode.optional(),
+        physicalPieceId: z.string().min(1).max(200).optional(),
+        pieceRevision: z.number().int().positive().optional(),
+        returnLengthInches: z.number().min(0.001).max(120000)
+          .refine((value) => Math.round(value * 1000) / 1000 === value).optional(),
         kind: z.enum(["receipt", "return", "consume", "adjustment"]),
         quantity: z.number().finite().refine(finiteStockRange),
         unitCost: z.string().trim().regex(inventoryUnitCostPattern).transform(normalizeInventoryUnitCost).optional(),
@@ -431,6 +438,13 @@ router.post(
     );
     const warehouseId = data.warehouseId ?? null;
     const binId = data.binId ?? null;
+    if ((data.pieceRevision !== undefined || data.returnLengthInches !== undefined) && !data.physicalPieceId)
+      throw new DomainError(400, "Choose the stock piece for these measurements.");
+    if (data.returnLengthInches !== undefined && data.kind !== "return")
+      throw new DomainError(400, "A measured return length is valid only for returns.");
+    if (data.physicalPieceId && data.overrideReason)
+      throw new DomainError(400, "Reconcile reserved stock before issuing a labeled piece.");
+    const pieceInput = { ...data, warehouseId, binId };
     if (data.unitCost !== undefined && data.kind !== "receipt")
       throw new DomainError(400, "An acquisition cost applies only to a stock receipt.");
     if (data.returnOfMovementId && (data.kind !== "return" || !data.jobId)) {
@@ -490,6 +504,7 @@ router.post(
             409,
             "This request key was already used for a different movement.",
           );
+        await checkPieceMovementRetry(tx, duplicate.id, pieceInput, req.auth!.userId);
         if (data.kind === "consume" && data.jobId) {
           const [usage] = await tx
             .select()
@@ -522,6 +537,7 @@ router.post(
         )[0]
       )
         throw new DomainError(404, "Job not found");
+      const piece = await pieceForMovement(tx, pieceInput);
       let returnCredit:
         | Awaited<ReturnType<typeof calculateReturnCredit>>
         | undefined;
@@ -563,7 +579,7 @@ router.post(
           { available },
         );
       const now = new Date().toISOString();
-      if (delta < 0) await assertBinWithdrawal(tx, product.id, warehouseId, binId, -delta);
+      if (delta < 0) await assertBinWithdrawal(tx, product.id, warehouseId, binId, -delta, !!piece, piece?.id);
       const issuingJob = data.kind === "consume" ? data.jobId : undefined;
       await ensureOpeningMovement(tx, product, now);
       const movementId = randomUUID();
@@ -628,6 +644,7 @@ router.post(
         });
       }
       await updateStockTotal(tx, product, delta, now);
+      if (piece) await savePieceMovement(tx, piece, row, pieceInput, req.auth!.userId);
       return row;
     });
     res.status(201).json(result);
@@ -717,9 +734,14 @@ router.patch(
         binId: binIdInput,
         callbackId: z.string().min(1).optional(),
         labelCode: productLabelCode.optional(),
+        physicalPieceId: z.string().min(1).max(200).optional(),
+        pieceRevision: z.number().int().positive().optional(),
       }),
       req.body,
     );
+    if ((data.physicalPieceId !== undefined || data.pieceRevision !== undefined) &&
+      (data.status !== "Consumed" || !data.physicalPieceId || data.pieceRevision === undefined))
+      throw new DomainError(400, "Select the stock piece when issuing this reservation.");
     if (data.callbackId && data.status !== "Consumed")
       throw new DomainError(
         400,
@@ -732,7 +754,6 @@ router.patch(
       );
     if (data.binId && data.status !== "Consumed")
       throw new DomainError(400, "Choose a bin only when issuing reserved stock.");
-    const binId = data.binId ?? null;
     const result = await db.transaction(async (tx) => {
       const [initial] = await tx
         .select()
@@ -745,6 +766,14 @@ router.patch(
         .from(inventoryReservationsTable)
         .where(eq(inventoryReservationsTable.id, id(req)))
         .for("update");
+      if (data.status === "Consumed" && current.stagedBinId && data.binId && data.binId !== current.stagedBinId)
+        throw new DomainError(409, "Issue this reservation from its staged bin.");
+      const binId = current.stagedBinId ?? data.binId ?? null;
+      const pieceInput = {
+        physicalPieceId: data.physicalPieceId, pieceRevision: data.pieceRevision, kind: "consume",
+        productId: current.productId, jobId: current.jobId, warehouseId: current.warehouseId, binId, quantity: current.quantity,
+        reason: "Consumed job reservation",
+      };
       if (data.labelCode)
         await verifyProductLabel(tx, current.productId, data.labelCode);
       if (current.status === data.status) {
@@ -773,6 +802,7 @@ router.patch(
               "This reservation already recorded a different callback cost. Review the saved usage instead of retrying with changed details.",
             );
           if (movement?.binId !== binId) throw new DomainError(409, "This reservation was already issued from a different bin.");
+          await checkPieceMovementRetry(tx, movement.id, pieceInput, req.auth!.userId);
         }
         return current;
       }
@@ -799,7 +829,8 @@ router.patch(
             "Reserved material is no longer on hand; reconcile stock first.",
           );
         await verifyBin(tx, current.warehouseId, binId);
-        await assertBinWithdrawal(tx, product.id, current.warehouseId, binId, current.quantity);
+        const piece = await pieceForMovement(tx, pieceInput);
+        await assertBinWithdrawal(tx, product.id, current.warehouseId, binId, current.quantity, !!piece || !!current.stagedBinId, piece?.id, current.id);
         await ensureOpeningMovement(tx, product, now);
         const movementId = randomUUID();
         const location = { productId: product.id, warehouseId: current.warehouseId, binId };
@@ -817,7 +848,7 @@ router.patch(
             costAllocations: jobCost.allocations,
             quantity: -current.quantity,
             kind: "consume",
-            reason: "Consumed job reservation",
+            reason: pieceInput.reason,
             actorUserId: req.auth!.userId,
             idempotencyKey: "reservation:" + current.id,
             createdAt: now,
@@ -836,6 +867,7 @@ router.patch(
           createdAt: now,
         });
         await updateStockTotal(tx, product, -current.quantity, now);
+        if (piece) await savePieceMovement(tx, piece, movement, pieceInput, req.auth!.userId);
       }
       const [row] = await tx
         .update(inventoryReservationsTable)
@@ -910,6 +942,100 @@ async function recordTransferMovement(
     createdAt: now,
   });
 }
+
+router.post(
+  "/inventory/reservations/:id/stage",
+  domainRoute(async (req, res) => {
+    const input = parse(z.object({
+      revision,
+      sourceBinId: binIdInput,
+      destinationWarehouseId: z.string().min(1).max(200),
+      destinationBinId: z.string().min(1).max(200),
+      quantity: z.number().min(0.000001).max(1_000_000).refine((amount) => roundStock(amount) === amount),
+      labelCode: productLabelCode,
+      idempotencyKey: requestKey,
+    }).strict(), req.body);
+    const sourceId = id(req);
+    const sourceBinId = input.sourceBinId ?? null;
+    const requestId = `stage:${input.idempotencyKey}`;
+    const result = await db.transaction(async (tx) => {
+      const [initial] = await tx.select({ productId: inventoryReservationsTable.productId })
+        .from(inventoryReservationsTable).where(eq(inventoryReservationsTable.id, sourceId));
+      if (!initial) throw new DomainError(404, "Reservation not found.");
+      await lockStockProduct(tx, initial.productId);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${requestId}))`);
+      const [source] = await tx.select().from(inventoryReservationsTable)
+        .where(eq(inventoryReservationsTable.id, sourceId)).for("update");
+      const [prior] = await tx.select().from(inventoryTransfersTable)
+        .where(eq(inventoryTransfersTable.idempotencyKey, requestId));
+      if (prior) {
+        const [staged] = await tx.select().from(inventoryReservationsTable)
+          .where(eq(inventoryReservationsTable.stagedTransferId, prior.id));
+        if (staged?.sourceReservationId !== sourceId || prior.sourceBinId !== sourceBinId ||
+          prior.destinationWarehouseId !== input.destinationWarehouseId ||
+          prior.destinationBinId !== input.destinationBinId || prior.quantity !== input.quantity)
+          throw new DomainError(409, "This request key was used for a different pick.");
+        return { source, staged };
+      }
+
+      assertRevision(source.revision, input.revision);
+      if (source.status !== "Active" || source.stagedBinId || !source.warehouseId)
+        throw new DomainError(409, "Choose an active, unstaged reservation in a warehouse.");
+      if (input.quantity > source.quantity)
+        throw new DomainError(409, "The pick exceeds the remaining reserved quantity.");
+      if (source.warehouseId === input.destinationWarehouseId && sourceBinId === input.destinationBinId)
+        throw new DomainError(400, "Choose a different bin for staging.");
+
+      await verifyProductLabel(tx, source.productId, input.labelCode);
+      await verifyBin(tx, source.warehouseId, sourceBinId);
+      await verifyBin(tx, input.destinationWarehouseId, input.destinationBinId);
+      await assertBinWithdrawal(tx, source.productId, source.warehouseId, sourceBinId, input.quantity, true);
+      const actor = req.auth!.userId;
+      const now = new Date().toISOString();
+      const [transfer] = await tx.insert(inventoryTransfersTable).values({
+        id: randomUUID(),
+        productId: source.productId,
+        sourceWarehouseId: source.warehouseId,
+        sourceBinId,
+        destinationWarehouseId: input.destinationWarehouseId,
+        destinationBinId: input.destinationBinId,
+        quantity: input.quantity,
+        reason: "Picked and staged for a job",
+        status: "Received",
+        idempotencyKey: requestId,
+        dispatchedBy: actor,
+        receivedBy: actor,
+        receivedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      }).returning();
+      await recordTransferMovement(tx, transfer, "transfer_out", actor, now);
+      await recordTransferMovement(tx, transfer, "transfer_in", actor, now);
+
+      const remaining = roundStock(source.quantity - input.quantity);
+      const [updated] = await tx.update(inventoryReservationsTable).set({
+        ...(remaining === 0 ? { status: "Released" } : { quantity: remaining }),
+        revision: source.revision + 1,
+        updatedAt: now,
+      }).where(eq(inventoryReservationsTable.id, sourceId)).returning();
+      const [staged] = await tx.insert(inventoryReservationsTable).values({
+        id: randomUUID(),
+        productId: source.productId,
+        jobId: source.jobId,
+        warehouseId: input.destinationWarehouseId,
+        stagedBinId: input.destinationBinId,
+        sourceReservationId: sourceId,
+        stagedTransferId: transfer.id,
+        quantity: input.quantity,
+        idempotencyKey: requestId,
+        createdAt: now,
+        updatedAt: now,
+      }).returning();
+      return { source: updated, staged };
+    });
+    res.status(201).json(result);
+  }),
+);
 
 router.post(
   "/inventory/transfers",

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   jobsTable,
   settingsTable,
@@ -9,6 +9,9 @@ import {
   productsTable,
   inventoryReservationsTable,
   inventoryMovementsTable,
+  purchaseOrdersTable,
+  purchaseOrderLinesTable,
+  purchaseReceiptLinesTable,
   auditEventsTable,
   type JobInsert,
 } from "@workspace/db";
@@ -30,35 +33,180 @@ export const JOB_STAGES = [
   "Invoiced",
 ];
 
-async function stockReadinessMessages(tx: Transaction, jobId: string) {
-  const requirements = await tx.select().from(jobMaterialsTable).where(eq(jobMaterialsTable.jobId, jobId));
-  const productIds = [...new Set(requirements.flatMap((item) => item.productId ? [item.productId] : []))];
-  if (!productIds.length) return [];
-  const [products, reservations, movements] = await Promise.all([
-    tx.select().from(productsTable).where(inArray(productsTable.id, productIds)),
-    tx.select().from(inventoryReservationsTable).where(and(
-      inArray(inventoryReservationsTable.productId, productIds), eq(inventoryReservationsTable.status, "Active"),
-    )),
-    tx.select().from(inventoryMovementsTable).where(and(
-      inArray(inventoryMovementsTable.productId, productIds), eq(inventoryMovementsTable.jobId, jobId),
-      inArray(inventoryMovementsTable.kind, ["consume", "return"]),
-    )),
+async function stockReadinessMessages(tx: Transaction, jobIds: string[]) {
+  const requirements = await tx
+    .select()
+    .from(jobMaterialsTable)
+    .where(inArray(jobMaterialsTable.jobId, jobIds));
+  const productIds = [
+    ...new Set(
+      requirements.flatMap((item) => (item.productId ? [item.productId] : [])),
+    ),
+  ];
+  if (!productIds.length)
+    return new Map<
+      string,
+      Array<{ code: string; message: string; href: string }>
+    >();
+  const orders = purchaseOrdersTable;
+  const orderLines = purchaseOrderLinesTable;
+  const receiptLines = purchaseReceiptLinesTable;
+  const [products, reservations, movements, deliveries] = await Promise.all([
+    tx
+      .select()
+      .from(productsTable)
+      .where(inArray(productsTable.id, productIds)),
+    tx
+      .select()
+      .from(inventoryReservationsTable)
+      .where(
+        and(
+          inArray(inventoryReservationsTable.productId, productIds),
+          eq(inventoryReservationsTable.status, "Active"),
+        ),
+      ),
+    tx
+      .select()
+      .from(inventoryMovementsTable)
+      .where(
+        and(
+          inArray(inventoryMovementsTable.productId, productIds),
+          inArray(inventoryMovementsTable.jobId, jobIds),
+          inArray(inventoryMovementsTable.kind, ["consume", "return"]),
+        ),
+      ),
+    tx
+      .select({
+        orderId: orders.id,
+        jobId: orders.jobId,
+        expectedOn: orders.expectedOn,
+        productId: orderLines.productId,
+        unit: orderLines.unit,
+        ordered: orderLines.quantity,
+        accepted: sql<string>`coalesce(sum(${receiptLines.quantity}), 0)`,
+      })
+      .from(orders)
+      .innerJoin(orderLines, eq(orderLines.orderId, orders.id))
+      .leftJoin(receiptLines, eq(receiptLines.lineId, orderLines.id))
+      .where(
+        and(
+          inArray(orders.jobId, jobIds),
+          inArray(orders.status, ["Ordered", "Partially received"]),
+          inArray(orderLines.productId, productIds),
+        ),
+      )
+      .groupBy(orders.id, orderLines.id)
+      .orderBy(asc(orders.expectedOn), asc(orders.number)),
   ]);
-  return products.filter((product) => product.inventoryType === "Inventory").flatMap((product) => {
-    const lines = requirements.filter((item) => item.productId === product.id);
-    if (lines.some((item) => item.unit.trim().toLowerCase() !== product.unit.trim().toLowerCase())) {
-      return [{ code: `material_unit_${product.id}`, message: `${product.name}: confirm the job and warehouse units before comparing stock.`, href: `/jobs/${jobId}` }];
-    }
-    const required = lines.reduce((sum, item) => sum + item.quantity, 0);
-    const reservedForOtherJobs = reservations.filter((item) => item.productId === product.id && item.jobId !== jobId)
-      .reduce((sum, item) => sum + item.quantity, 0);
-    const issuedToJob = movements.filter((item) => item.productId === product.id)
-      .reduce((sum, item) => sum - item.quantity, 0);
-    const usable = Math.max(0, product.quantityOnHand - reservedForOtherJobs) + Math.max(0, issuedToJob);
-    if (required - usable <= 0.000001) return [];
-    const format = (amount: number) => amount.toLocaleString("en-US", { maximumFractionDigits: 3 });
-    return [{ code: `material_shortage_${product.id}`, message: `${product.name}: ${format(usable)} of ${format(required)} ${product.unit} available or issued to this job.`, href: `/jobs/${jobId}` }];
-  });
+  return new Map(
+    jobIds.map((jobId) => [
+      jobId,
+      products
+        .filter((product) => product.inventoryType === "Inventory")
+        .flatMap((product) => {
+          const lines = requirements.filter(
+            (item) => item.productId === product.id && item.jobId === jobId,
+          );
+          if (!lines.length) return [];
+          if (
+            lines.some(
+              (item) =>
+                item.unit.trim().toLowerCase() !==
+                product.unit.trim().toLowerCase(),
+            )
+          ) {
+            return [
+              {
+                code: `material_unit_${product.id}`,
+                message: `${product.name}: confirm the job and warehouse units before comparing stock.`,
+                href: `/jobs/${jobId}`,
+              },
+            ];
+          }
+          const required = lines.reduce((sum, item) => sum + item.quantity, 0);
+          const reservedForOtherJobs = reservations
+            .filter(
+              (item) => item.productId === product.id && item.jobId !== jobId,
+            )
+            .reduce((sum, item) => sum + item.quantity, 0);
+          const issuedToJob = movements
+            .filter(
+              (item) => item.productId === product.id && item.jobId === jobId,
+            )
+            .reduce((sum, item) => sum - item.quantity, 0);
+          const usable =
+            Math.max(0, product.quantityOnHand - reservedForOtherJobs) +
+            Math.max(0, issuedToJob);
+          if (required - usable <= 0.000001) return [];
+          const format = (amount: number) =>
+            amount.toLocaleString("en-US", { maximumFractionDigits: 3 });
+          const delivery = deliveries.find(
+            (line) =>
+              line.jobId === jobId &&
+              line.productId === product.id &&
+              line.unit === product.unit &&
+              Number(line.accepted) < Number(line.ordered),
+          );
+          const available = `${product.name}: ${format(usable)} of ${format(required)} ${product.unit} available or issued to this job.`;
+          const receipt = delivery
+            ? ` ${format(Number(delivery.accepted))} of ${format(Number(delivery.ordered))} ${product.unit} received on the linked order. ${format(Number(delivery.ordered) - Number(delivery.accepted))} outstanding${delivery.expectedOn ? `, expected ${delivery.expectedOn}` : ", delivery date unconfirmed"}.`
+            : "";
+          return [
+            {
+              code: `material_shortage_${product.id}`,
+              message: available + receipt,
+              href: `/jobs/${jobId}`,
+            },
+          ];
+        }),
+    ]),
+  );
+}
+
+export async function installationMaterialMessages(
+  tx: Transaction,
+  jobIds: string[],
+) {
+  if (!jobIds.length)
+    return new Map<
+      string,
+      Array<{ code: string; message: string; href: string }>
+    >();
+  const [receipts, stockIssues] = await Promise.all([
+    tx
+      .select()
+      .from(materialsTable)
+      .where(inArray(materialsTable.jobId, jobIds)),
+    stockReadinessMessages(tx, jobIds),
+  ]);
+  return new Map(
+    jobIds.map((jobId) => {
+      const records = receipts.filter((receipt) => receipt.jobId === jobId);
+      const ready =
+        records.length > 0 &&
+        records.every(
+          (receipt) =>
+            receipt.received &&
+            !receipt.damaged &&
+            !receipt.missingItems.trim(),
+        );
+      const issues = stockIssues.get(jobId) ?? [];
+      return [
+        jobId,
+        ready
+          ? issues
+          : [
+              {
+                code: "materials_unconfirmed",
+                message:
+                  "Material receipt and condition have not been confirmed.",
+                href: "/materials",
+              },
+              ...issues,
+            ],
+      ];
+    }),
+  );
 }
 export async function jobReadiness(
   tx: Transaction,
@@ -89,22 +237,10 @@ export async function jobReadiness(
         message: "Confirm a dated crew booking before scheduling installation.",
         href: "/schedule",
       });
-    const materialRecords = await tx
-      .select()
-      .from(materialsTable)
-      .where(eq(materialsTable.jobId, jobId));
-    const ready =
-      materialRecords.length > 0 &&
-      materialRecords.every(
-        (m) => m.received && !m.damaged && !m.missingItems.trim(),
-      );
-    if (!ready)
-      (policy?.requireReceivedMaterials ? blockers : warnings).push({
-        code: "materials_unconfirmed",
-        message: "Material receipt and condition have not been confirmed.",
-        href: "/materials",
-      });
-    (policy?.requireReceivedMaterials ? blockers : warnings).push(...await stockReadinessMessages(tx, jobId));
+    const materialMessages = await installationMaterialMessages(tx, [jobId]);
+    (policy?.requireReceivedMaterials ? blockers : warnings).push(
+      ...(materialMessages.get(jobId) ?? []),
+    );
   }
   if (["Completed", "Invoiced"].includes(targetStage)) {
     const required = policy?.requiredCompletionChecks ?? [];

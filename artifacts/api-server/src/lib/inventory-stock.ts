@@ -3,6 +3,8 @@ import { and, eq, isNotNull, sql } from "drizzle-orm";
 import {
   db,
   inventoryMovementsTable,
+  inventoryReservationsTable,
+  physicalPiecesTable,
   productsTable,
   warehouseBinsTable,
   warehousesTable,
@@ -88,6 +90,8 @@ export async function assertBinWithdrawal(
   binId: string | null,
   quantity: number,
   strict = false,
+  selectedPieceId?: string,
+  issuedReservationId?: string,
 ) {
   if (!warehouseId) return;
   const balances = await binBalances(tx, { productId, warehouseId });
@@ -95,6 +99,31 @@ export async function assertBinWithdrawal(
   const hasBinnedStock = balances.some(
     (row) => row.binId && roundStock(row.onHand) > 0,
   );
+  const [pieces] = await tx.select({
+    quantity: sql<number>`coalesce(sum(${physicalPiecesTable.quantity}), 0)::double precision`,
+  }).from(physicalPiecesTable).where(and(
+    eq(physicalPiecesTable.productId, productId),
+    eq(physicalPiecesTable.warehouseId, warehouseId),
+    sql`${physicalPiecesTable.binId} IS NOT DISTINCT FROM ${binId}::text`,
+    sql`${physicalPiecesTable.issuedMovementId} IS NULL`,
+    selectedPieceId ? sql`${physicalPiecesTable.id} <> ${selectedPieceId}` : undefined,
+  ));
+  const [staging] = binId ? await tx.select({
+    quantity: sql<number>`coalesce(sum(${inventoryReservationsTable.quantity}), 0)::double precision`,
+  }).from(inventoryReservationsTable).where(and(
+    eq(inventoryReservationsTable.productId, productId),
+    eq(inventoryReservationsTable.stagedBinId, binId),
+    eq(inventoryReservationsTable.status, "Active"),
+    issuedReservationId ? sql`${inventoryReservationsTable.id} <> ${issuedReservationId}` : undefined,
+  )) : [{ quantity: 0 }];
+  const protectedQuantity = pieces.quantity + staging.quantity;
+  if (protectedQuantity > 0 && roundStock(onHand - protectedQuantity) < quantity) {
+    throw new DomainError(409, staging.quantity > 0
+      ? "Some stock in this bin is staged for a job. Issue the matching staged reservation or pick from another bin."
+      : "Some stock at this location is labeled by piece. Choose the roll or remnant to use from Rolls & remnants.", {
+      looseOnHand: roundStock(onHand - protectedQuantity),
+    });
+  }
   if (
     (strict || binId || hasBinnedStock) &&
     roundStock(onHand) < quantity

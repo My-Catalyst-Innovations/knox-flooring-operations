@@ -30,12 +30,25 @@ export interface PurchaseOrder {
   orderNumber: string;
   supplier: string;
   warehouseId: string;
+  jobId?: string | null;
+  expectedOn?: string | null;
   notes: string | null;
   status: PurchaseOrderStatus;
   revision: number;
   createdAt: string;
   updatedAt: string;
   lines: PurchaseOrderLine[];
+}
+
+export function pendingJobDelivery(order: PurchaseOrder) {
+  if (!order.jobId || (order.status !== "Ordered" && order.status !== "Partially received")) return null;
+  const line = order.lines.find((item) => item.receivedQuantity < item.quantity);
+  if (!line) return null;
+  const received = purchaseQuantity(line.receivedQuantity);
+  const ordered = purchaseQuantity(line.quantity);
+  const remaining = purchaseQuantity(line.quantity - line.receivedQuantity);
+  const eta = order.expectedOn ? `expected ${order.expectedOn}` : "delivery date unconfirmed";
+  return `${line.sku || line.productName}: ${received} of ${ordered} ${line.unit} received. ${remaining} outstanding, ${eta}.`;
 }
 
 export interface PurchaseReceipt {

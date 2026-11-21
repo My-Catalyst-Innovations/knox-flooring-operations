@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { ProductBinSelect, useWarehouseBins } from "@/components/inventory/WarehouseBinSelect";
+import { StageReservationDialog } from "@/components/inventory/StageReservationDialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,6 +30,7 @@ import {
 } from "@/lib/warehouse-inventory";
 import type { JobMaterial, Product } from "@/lib/types";
 import type { JobEntryContext } from "@workspace/api-client-react";
+import { binName, binStockQuery, type BinStock } from "@/lib/purchasing";
 
 const empty = () => ({ name: "", quantity: "", unit: "", productId: "" });
 const selectClass =
@@ -56,16 +58,14 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
   const warehouses = warehouseQuery.data ?? [];
   const bins = useWarehouseBins();
   const reservationsQuery = useOperation<WarehouseReservation[]>(
-    "/inventory/reservations",
-    ["owner", "operations"],
+    `/inventory/reservations?jobId=${encodeURIComponent(jobId)}`,
+    inventoryRoles,
   );
   const context = useOperation<JobEntryContext>(`/jobs/${jobId}/entry-context`);
   const canStock = user?.role === "owner" || user?.role === "operations";
   const materials = materialsQuery.data ?? [];
   const products = productsQuery.data ?? [];
-  const reservations = (reservationsQuery.data ?? []).filter(
-    (r) => r.jobId === jobId,
-  );
+  const reservations = reservationsQuery.data ?? [];
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(empty);
@@ -75,6 +75,11 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
   const [reserveQuantity, setReserveQuantity] = useState("");
   const [reserveWarehouseId, setReserveWarehouseId] = useState("");
   const [consume, setConsume] = useState<WarehouseReservation | null>(null);
+  const [picking, setPicking] = useState<WarehouseReservation>();
+  const pickStock = useOperation<BinStock[]>(
+    binStockQuery({ productId: picking?.productId, warehouseId: picking?.warehouseId ?? undefined }),
+    picking ? inventoryRoles : [],
+  );
   const [consumeBinId, setConsumeBinId] = useState("");
   const [callbackId, setCallbackId] = useState("");
   const requestKey = useRef({ payload: "", key: "" });
@@ -311,11 +316,16 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
                       {products.find((p) => p.id === reservation.productId)
                         ?.unit ?? "units"}{" "}
                       · {warehouseName(warehouses, reservation.warehouseId)} ·{" "}
-                      {reservation.status}
+                      {reservation.stagedBinId ? `Staged in ${binName(bins.data ?? [], reservation.stagedBinId)} · ${reservation.status}` : reservation.status}
                     </p>
                   </div>
                   {reservation.status === "Active" && (
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
+                      {reservation.warehouseId && !reservation.stagedBinId && (
+                        <Button size="sm" variant="outline" disabled={busy || !bins.isSuccess || !warehouseQuery.isSuccess} onClick={() => setPicking(reservation)}>
+                          Pick and stage
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
@@ -533,7 +543,8 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
             {products.find((p) => p.id === consume?.productId)?.unit ?? "units"}{" "}
             as used. Inventory and job material cost update together.
           </p>
-          {consume?.warehouseId && <ProductBinSelect label="Issue from bin" productId={consume.productId} warehouseId={consume.warehouseId} bins={bins.data ?? []} value={consumeBinId} onChange={setConsumeBinId} disabled={busy || bins.isLoading || bins.isError} />}
+          {consume?.stagedBinId && <p className="text-sm">Issue from staged bin {binName(bins.data ?? [], consume.stagedBinId)}.</p>}
+          {consume?.warehouseId && !consume.stagedBinId && <ProductBinSelect label="Issue from bin" productId={consume.productId} warehouseId={consume.warehouseId} bins={bins.data ?? []} value={consumeBinId} onChange={setConsumeBinId} disabled={busy || bins.isLoading || bins.isError} />}
           {consume?.warehouseId && bins.isError && <p role="alert" className="text-sm text-destructive">Could not load warehouse bins. <button type="button" className="underline" onClick={() => void bins.refetch()}>Retry</button></p>}
           <Label htmlFor="consume-callback">Work category</Label>
           <select
@@ -561,7 +572,7 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
                       {
                         revision: consume.revision,
                         status: "Consumed",
-                        ...(consume.warehouseId ? { binId: consumeBinId || null } : {}),
+                        ...(consume.warehouseId ? { binId: consume.stagedBinId || consumeBinId || null } : {}),
                         callbackId: callbackId || undefined,
                       },
                     );
@@ -574,6 +585,18 @@ export function MaterialsNeeded({ jobId }: { jobId: string }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {picking && (
+        <StageReservationDialog reservation={picking}
+          unit={products.find((product) => product.id === picking.productId)?.unit ?? "units"}
+          warehouses={warehouses} bins={bins.data ?? []} stock={pickStock.data ?? []}
+          stockStatus={pickStock.isError ? "unavailable" : pickStock.isLoading ? "loading" : undefined}
+          onClose={() => setPicking(undefined)}
+          onSaved={() => {
+            setPicking(undefined);
+            toast({ title: "Reserved stock staged for the job" });
+            void refresh();
+          }} />
+      )}
     </Card>
   );
 }

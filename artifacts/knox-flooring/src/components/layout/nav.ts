@@ -47,6 +47,7 @@ export const viewItems: NavItem[] = [
   { name: "Reports · Commissions", href: "/commissions", icon: Wallet, keywords: "payouts pay", roles: ["owner"] },
   { name: "Purchase orders", href: "/inventory/purchase-orders", icon: ClipboardList, keywords: "supplier order receiving shipments", roles: ["owner", "operations"] },
   { name: "Warehouse bins", href: "/inventory/bins", icon: Warehouse, keywords: "stock location aisle shelf rack SKU putaway", roles: ["owner", "operations"] },
+  { name: "Rolls & remnants", href: "/inventory/physical-pieces", icon: Package, keywords: "carpet offcuts leftovers labels dye lot", roles: ["owner", "operations"] },
 ];
 export const navItems = [...navGroups.flatMap((group) => group.items), ...utilityItems, ...viewItems];
 export const canAccess = (item: Pick<NavItem, "roles">, role: string) => !item.roles || item.roles.includes(role);

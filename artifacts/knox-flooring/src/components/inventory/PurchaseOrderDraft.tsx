@@ -9,7 +9,7 @@ import { currency, operation, useOperation } from "@/lib/operations";
 import { inventorySelect, purchaseOrdersPath, useInventoryRequestKey, type PurchaseOrder } from "@/lib/purchasing";
 import { businessDate } from "@/lib/reporting";
 import type { SupplierCrosswalkAlias } from "@/lib/supplier-import";
-import type { Product } from "@/lib/types";
+import type { Job, Product } from "@/lib/types";
 import { inventoryRoles, type Warehouse } from "@/lib/warehouse-inventory";
 
 type DraftLine = { key: string; productId: string; quantity: string; unitCost: string | null };
@@ -18,11 +18,13 @@ const costPattern = /^\d{1,12}(?:\.\d{1,6})?$/;
 const normalize = (value: string) => value.trim().toLowerCase();
 
 export function PurchaseOrderDraft({
-  order, products, warehouses, onClose, onSaved,
+  order, products, warehouses, jobs = [], initialJobId, onClose, onSaved,
 }: {
   order?: PurchaseOrder;
   products: readonly Product[];
   warehouses: readonly Warehouse[];
+  jobs?: readonly Pick<Job, "id" | "jobNumber" | "customerName">[];
+  initialJobId?: string;
   onClose(): void;
   onSaved(order: PurchaseOrder): void;
 }) {
@@ -32,6 +34,8 @@ export function PurchaseOrderDraft({
   const [form, setForm] = useState(() => ({
     supplier: order?.supplier ?? "",
     warehouseId: order?.warehouseId ?? (warehouses.length === 1 ? warehouses[0].id : ""),
+    jobId: order ? order.jobId ?? "" : initialJobId ?? "",
+    expectedOn: order?.expectedOn ?? "",
     notes: order?.notes ?? "",
     lines: order?.lines.map((line) => ({
       key: line.id,
@@ -87,6 +91,8 @@ export function PurchaseOrderDraft({
     const data = {
       supplier: form.supplier.trim(),
       warehouseId: form.warehouseId,
+      ...(order || form.jobId ? { jobId: form.jobId || null } : {}),
+      ...(order || form.expectedOn ? { expectedOn: form.expectedOn || null } : {}),
       notes: form.notes.trim(),
       lines: lines.map(({ line, cost }) => ({
         productId: line.productId,
@@ -130,6 +136,18 @@ export function PurchaseOrderDraft({
                   <option value="">Select warehouse</option>
                   {warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
                 </select>
+              </label>
+              <label className="space-y-1 text-sm font-medium">
+                Job
+                <select className={inventorySelect} value={form.jobId} onChange={(event) => setForm({ ...form, jobId: event.target.value })}>
+                  <option value="">Warehouse replenishment</option>
+                  {form.jobId && !jobs.some((job) => job.id === form.jobId) && <option value={form.jobId}>Linked job</option>}
+                  {jobs.map((job) => <option key={job.id} value={job.id}>{job.jobNumber} · {job.customerName}</option>)}
+                </select>
+              </label>
+              <label className="space-y-1 text-sm font-medium">
+                Expected delivery (optional)
+                <Input type="date" value={form.expectedOn} onChange={(event) => setForm({ ...form, expectedOn: event.target.value })} />
               </label>
             </div>
             <label className="block space-y-1 text-sm font-medium">

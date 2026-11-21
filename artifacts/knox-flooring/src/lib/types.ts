@@ -117,6 +117,8 @@ export interface Job {
   salespersonId?: string | null;
   estStartDate?: string;
   estCompletionDate?: string;
+  committedCompletionDate?: string;
+  committedCompletionRecordedAt?: string;
   materialStatus: MaterialStatusBadge;
   laborEstimate: number;
   estLaborHours: number;

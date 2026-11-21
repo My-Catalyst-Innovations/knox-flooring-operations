@@ -501,6 +501,10 @@ export interface Job {
   salespersonId?: string | null;
   estStartDate?: string;
   estCompletionDate?: string;
+  /** Agreed completion day recorded by the owner before job completion. */
+  committedCompletionDate?: string;
+  /** When the current agreed completion date was recorded. */
+  committedCompletionRecordedAt?: string;
   materialStatus: MaterialStatusBadge;
   laborEstimate: number;
   estLaborHours: number;
@@ -1683,6 +1687,90 @@ export interface WorkspaceBrand {
   address: string;
 }
 
+export type InvoiceAgingBucketBand = typeof InvoiceAgingBucketBand[keyof typeof InvoiceAgingBucketBand];
+
+
+export const InvoiceAgingBucketBand = {
+  current: 'current',
+  pastDue1To30: 'pastDue1To30',
+  pastDue31To60: 'pastDue31To60',
+  pastDue61To90: 'pastDue61To90',
+  pastDue91Plus: 'pastDue91Plus',
+  unknown: 'unknown',
+} as const;
+
+export interface InvoiceAgingBucket {
+  band: InvoiceAgingBucketBand;
+  invoiceCount: number;
+  balance: number;
+}
+
+export interface InventoryActivityWindow {
+  /** One of the 30, 60, or 90 day rolling windows. */
+  days: number;
+  movements: number;
+  receipts: number;
+  issued: number;
+  returns: number;
+  transfers: number;
+  binMoves: number;
+  adjustments: number;
+  other: number;
+}
+
+export type CompletionTimelinessCommitted = {
+  onTime: number;
+  late: number;
+};
+
+export type CompletionTimelinessEstimated = {
+  onTime: number;
+  late: number;
+};
+
+export interface CompletionTimeliness {
+  committed: CompletionTimelinessCommitted;
+  estimated: CompletionTimelinessEstimated;
+  unknown: number;
+}
+
+export type StockAuditMetricsWasteItem = {
+  productId: string;
+  sku: string;
+  productName: string;
+  unit: string;
+  entries: number;
+  quantity: number;
+};
+
+export interface StockAuditMetrics {
+  checked: number;
+  matched: number;
+  waste: StockAuditMetricsWasteItem[];
+}
+
+export type CompletedJobMaterialUsageRowsItem = {
+  productId: string;
+  sku: string;
+  productName: string;
+  unit: string;
+  approvedQuantity: number;
+  netIssuedQuantity: number;
+};
+
+export interface CompletedJobMaterialUsage {
+  comparableJobs: number;
+  unknownJobs: number;
+  rows: CompletedJobMaterialUsageRowsItem[];
+}
+
+export interface InstallationReadinessMetrics {
+  through: string;
+  ready: number;
+  materialsNeedAttention: number;
+  needsCrew: number;
+}
+
 export interface OperationalMetrics {
   from: string;
   to: string;
@@ -1692,6 +1780,14 @@ export interface OperationalMetrics {
   completedRevenue: number;
   invoicedRevenue: number;
   outstanding: number;
+  /** Business date used for current aging and rolling inventory activity. */
+  asOfDate: string;
+  invoiceAging: InvoiceAgingBucket[];
+  inventoryActivity: InventoryActivityWindow[];
+  completionTimeliness: CompletionTimeliness;
+  stockAudit: StockAuditMetrics;
+  materialUsageReport: CompletedJobMaterialUsage;
+  installationReadiness: InstallationReadinessMetrics;
   capacityHours: number | null;
   plannedLaborHours: number;
   actualLaborHours: number;
@@ -1704,6 +1800,12 @@ export interface OperationalMetrics {
   unassignedLaborEntries: number;
   sourceJobIds: string[];
   definition: string;
+}
+
+export interface CompletionCommitment {
+  date: string | null;
+  recordedAt: string | null;
+  revision: number;
 }
 
 export interface DraftConversion {
@@ -1949,6 +2051,13 @@ export type TransitionJobBody = {
   targetStage: JobStatus;
   overrideReason?: string;
   completionChecklist?: TransitionJobBodyCompletionChecklist;
+};
+
+export type UpdateCompletionCommitmentBody = {
+  /** Agreed completion day in YYYY-MM-DD format. Null clears the commitment before completion. */
+  date: string | null;
+  /** @minimum 1 */
+  revision: number;
 };
 
 export type GetOperationalMetricsParams = {

@@ -22,6 +22,7 @@ import type {
 import type {
   CloseInventoryReservationBody,
   Communication,
+  CompletionCommitment,
   ConvertEstimateDraftBody,
   ConvertLeadBody,
   ConvertProposalResult,
@@ -109,6 +110,7 @@ import type {
   TaskInput,
   TaskUpdate,
   TransitionJobBody,
+  UpdateCompletionCommitmentBody,
   UpdateCrewBody,
   UpdateCrewBookingBody,
   UpdateCustomerBody,
@@ -7413,6 +7415,78 @@ export const useTransitionJob = <TError = ErrorType<void>,
         TContext
       > => {
       return useMutation(getTransitionJobMutationOptions(options));
+    }
+
+export const getUpdateCompletionCommitmentUrl = (id: string,) => {
+
+
+
+
+  return `/api/jobs/${id}/committed-completion`
+}
+
+/**
+ * @summary Record the agreed completion date for an open job
+ */
+export const updateCompletionCommitment = async (id: string,
+    updateCompletionCommitmentBody: UpdateCompletionCommitmentBody, options?: RequestInit): Promise<CompletionCommitment> => {
+
+  return customFetch<CompletionCommitment>(getUpdateCompletionCommitmentUrl(id),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      updateCompletionCommitmentBody,)
+  }
+);}
+
+
+
+
+export const getUpdateCompletionCommitmentMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateCompletionCommitment>>, TError,{id: string;data: BodyType<UpdateCompletionCommitmentBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateCompletionCommitment>>, TError,{id: string;data: BodyType<UpdateCompletionCommitmentBody>}, TContext> => {
+
+const mutationKey = ['updateCompletionCommitment'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateCompletionCommitment>>, {id: string;data: BodyType<UpdateCompletionCommitmentBody>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateCompletionCommitment(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateCompletionCommitmentMutationResult = NonNullable<Awaited<ReturnType<typeof updateCompletionCommitment>>>
+    export type UpdateCompletionCommitmentMutationBody = BodyType<UpdateCompletionCommitmentBody>
+    export type UpdateCompletionCommitmentMutationError = ErrorType<void>
+
+    /**
+ * @summary Record the agreed completion date for an open job
+ */
+export const useUpdateCompletionCommitment = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateCompletionCommitment>>, TError,{id: string;data: BodyType<UpdateCompletionCommitmentBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateCompletionCommitment>>,
+        TError,
+        {id: string;data: BodyType<UpdateCompletionCommitmentBody>},
+        TContext
+      > => {
+      return useMutation(getUpdateCompletionCommitmentMutationOptions(options));
     }
 
 export const getGetOperationalMetricsUrl = (params?: GetOperationalMetricsParams,) => {

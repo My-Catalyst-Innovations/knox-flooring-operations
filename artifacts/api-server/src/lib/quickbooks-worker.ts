@@ -106,7 +106,7 @@ async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
       const category = categoriesByKey.get(link.localId);
       if (link.entityType === invoiceServiceEntity && category) serviceIds.set(category, link.itemId);
     }
-    const lines = quickBooksInvoiceLines(source, itemIds, serviceIds);
+    const lines = quickBooksInvoiceLines(source, itemIds, serviceIds, connection.environment === "sandbox" && !existing);
     const customer = await mapping("customer", source.jobId);
     if (!customer) throw new Error("Customer mapping is required");
     assertQuickBooksCompanyLink("customer", customer, connection);

@@ -60,9 +60,19 @@ describe("QuickBooks invoice lines", () => {
       lineItems: [line, labor, addOn],
       total: 127.37,
     }, links, services);
-    expect(lines.map((item) => item.SalesItemLineDetail.ItemRef.value)).toEqual(["123", "432", "433"]);
-    expect(lines.map((item) => item.SalesItemLineDetail.UnitPrice)).toEqual([23.4567, 8.5, 40]);
+    expect(lines.map((item) => "SalesItemLineDetail" in item && item.SalesItemLineDetail.ItemRef.value)).toEqual(["123", "432", "433"]);
+    expect(lines.map((item) => "SalesItemLineDetail" in item && item.SalesItemLineDetail.UnitPrice)).toEqual([23.4567, 8.5, 40]);
     expect(lines.map((item) => item.Amount)).toEqual([70.37, 17, 40]);
+  });
+
+  it("prepares a fixed discount for a first sandbox export with a matching total", () => {
+    const invoice = { ...exportable, discountAmount: 5.24, total: 65.13 };
+    expect(quickBooksInvoiceLines(invoice, links, services, true).at(-1)).toEqual({
+      Amount: 5.24, DetailType: "DiscountLineDetail", DiscountLineDetail: { PercentBased: false },
+    });
+    expect(() => quickBooksInvoiceLines({ ...invoice, total: 65.12 }, links, services, true)).toThrow(/total does not match/);
+    expect(() => quickBooksInvoiceLines({ ...invoice, discountAmount: 5.243 }, links, services, true)).toThrow(/exact currency amount/);
+    expect(() => quickBooksInvoiceLines(invoice, links, services)).toThrow(/sandbox/);
   });
 
   it.each([

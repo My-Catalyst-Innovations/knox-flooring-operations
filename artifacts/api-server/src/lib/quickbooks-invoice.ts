@@ -34,17 +34,23 @@ export function quickBooksInvoiceLines(
   invoice: InvoiceExport,
   itemIds: ReadonlyMap<string, string>,
   serviceIds: ReadonlyMap<InvoiceLineCategory, string>,
+  allowFixedDiscount = false,
 ) {
-  if (invoice.discountAmount !== 0)
-    throw new Error("Automatic QuickBooks export does not support invoice discounts. Reconcile this invoice manually.");
+  if (invoice.discountAmount !== 0 && !allowFixedDiscount)
+    throw new Error("Automatic QuickBooks export of invoice discounts is available for first-time exports in the sandbox. Reconcile this invoice manually.");
   if (invoice.taxAmount !== 0)
     throw new Error("Automatic QuickBooks export does not support invoice tax. Reconcile this invoice manually.");
   if (invoice.depositAmount !== 0)
     throw new Error("Reconcile the applied deposit in QuickBooks before exporting this invoice. No payment was created.");
-  if (!invoice.lineItems.length || Math.round(invoice.total * 100) / 100 !== invoiceSubtotal(invoice.lineItems))
+  const subtotal = Math.round(invoiceSubtotal(invoice.lineItems) * 100);
+  const discount = Math.round(invoice.discountAmount * 100);
+  if (!Number.isSafeInteger(discount) || discount < 0 || discount > subtotal ||
+    Math.abs(invoice.discountAmount - discount / 100) > 0.000001)
+    throw new Error("The invoice discount must be an exact currency amount up to the sales subtotal.");
+  if (!invoice.lineItems.length || Math.round(invoice.total * 100) !== subtotal - discount)
     throw new Error("The invoice total does not match its sales lines. Review the invoice before exporting to QuickBooks.");
 
-  return invoice.lineItems.map((line) => {
+  const sales = invoice.lineItems.map((line) => {
     if (line.quantity <= 0 || line.unitPrice < 0)
       throw new Error(`Review the quantity and price on invoice line “${line.description}” before exporting.`);
     const itemId = line.productId ? itemIds.get(line.productId) : serviceIds.get(line.category);
@@ -65,6 +71,11 @@ export function quickBooksInvoiceLines(
       },
     };
   });
+  return discount > 0 ? [...sales, {
+    Amount: discount / 100,
+    DetailType: "DiscountLineDetail" as const,
+    DiscountLineDetail: { PercentBased: false as const },
+  }] : sales;
 }
 
 const officeDate = new Intl.DateTimeFormat("en-US", {

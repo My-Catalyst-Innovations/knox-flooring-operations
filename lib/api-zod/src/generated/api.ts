@@ -45,6 +45,8 @@ export const ListJobsResponseItem = zod.object({
   "salespersonId": zod.string().nullish(),
   "estStartDate": zod.string().optional(),
   "estCompletionDate": zod.string().optional(),
+  "committedCompletionDate": zod.string().optional().describe('Agreed completion day recorded by the owner before job completion.'),
+  "committedCompletionRecordedAt": zod.string().optional().describe('When the current agreed completion date was recorded.'),
   "materialStatus": zod.enum(['Not Ordered', 'Ordered', 'In Transit', 'Received', 'Delayed', 'Damaged', 'Missing Items']),
   "laborEstimate": zod.number(),
   "estLaborHours": zod.number(),
@@ -155,6 +157,8 @@ export const GetJobResponse = zod.object({
   "salespersonId": zod.string().nullish(),
   "estStartDate": zod.string().optional(),
   "estCompletionDate": zod.string().optional(),
+  "committedCompletionDate": zod.string().optional().describe('Agreed completion day recorded by the owner before job completion.'),
+  "committedCompletionRecordedAt": zod.string().optional().describe('When the current agreed completion date was recorded.'),
   "materialStatus": zod.enum(['Not Ordered', 'Ordered', 'In Transit', 'Received', 'Delayed', 'Damaged', 'Missing Items']),
   "laborEstimate": zod.number(),
   "estLaborHours": zod.number(),
@@ -265,6 +269,8 @@ export const UpdateJobResponse = zod.object({
   "salespersonId": zod.string().nullish(),
   "estStartDate": zod.string().optional(),
   "estCompletionDate": zod.string().optional(),
+  "committedCompletionDate": zod.string().optional().describe('Agreed completion day recorded by the owner before job completion.'),
+  "committedCompletionRecordedAt": zod.string().optional().describe('When the current agreed completion date was recorded.'),
   "materialStatus": zod.enum(['Not Ordered', 'Ordered', 'In Transit', 'Received', 'Delayed', 'Damaged', 'Missing Items']),
   "laborEstimate": zod.number(),
   "estLaborHours": zod.number(),
@@ -564,6 +570,8 @@ export const ConvertProposalResponse = zod.object({
   "salespersonId": zod.string().nullish(),
   "estStartDate": zod.string().optional(),
   "estCompletionDate": zod.string().optional(),
+  "committedCompletionDate": zod.string().optional().describe('Agreed completion day recorded by the owner before job completion.'),
+  "committedCompletionRecordedAt": zod.string().optional().describe('When the current agreed completion date was recorded.'),
   "materialStatus": zod.enum(['Not Ordered', 'Ordered', 'In Transit', 'Received', 'Delayed', 'Damaged', 'Missing Items']),
   "laborEstimate": zod.number(),
   "estLaborHours": zod.number(),
@@ -3503,6 +3511,8 @@ export const ConvertLeadResponse = zod.object({
   "salespersonId": zod.string().nullish(),
   "estStartDate": zod.string().optional(),
   "estCompletionDate": zod.string().optional(),
+  "committedCompletionDate": zod.string().optional().describe('Agreed completion day recorded by the owner before job completion.'),
+  "committedCompletionRecordedAt": zod.string().optional().describe('When the current agreed completion date was recorded.'),
   "materialStatus": zod.enum(['Not Ordered', 'Ordered', 'In Transit', 'Received', 'Delayed', 'Damaged', 'Missing Items']),
   "laborEstimate": zod.number(),
   "estLaborHours": zod.number(),
@@ -3608,6 +3618,8 @@ export const TransitionJobResponse = zod.object({
   "salespersonId": zod.string().nullish(),
   "estStartDate": zod.string().optional(),
   "estCompletionDate": zod.string().optional(),
+  "committedCompletionDate": zod.string().optional().describe('Agreed completion day recorded by the owner before job completion.'),
+  "committedCompletionRecordedAt": zod.string().optional().describe('When the current agreed completion date was recorded.'),
   "materialStatus": zod.enum(['Not Ordered', 'Ordered', 'In Transit', 'Received', 'Delayed', 'Damaged', 'Missing Items']),
   "laborEstimate": zod.number(),
   "estLaborHours": zod.number(),
@@ -3643,6 +3655,28 @@ export const TransitionJobResponse = zod.object({
 
 
 /**
+ * @summary Record the agreed completion date for an open job
+ */
+export const UpdateCompletionCommitmentParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+
+
+
+export const UpdateCompletionCommitmentBody = zod.object({
+  "date": zod.string().nullable().describe('Agreed completion day in YYYY-MM-DD format. Null clears the commitment before completion.'),
+  "revision": zod.number().min(1)
+})
+
+export const UpdateCompletionCommitmentResponse = zod.object({
+  "date": zod.string().nullable(),
+  "recordedAt": zod.string().nullable(),
+  "revision": zod.number()
+})
+
+
+/**
  * @summary get Operational Metrics
  */
 export const GetOperationalMetricsQueryParams = zod.object({
@@ -3659,6 +3693,64 @@ export const GetOperationalMetricsResponse = zod.object({
   "completedRevenue": zod.number(),
   "invoicedRevenue": zod.number(),
   "outstanding": zod.number(),
+  "asOfDate": zod.string().describe('Business date used for current aging and rolling inventory activity.'),
+  "invoiceAging": zod.array(zod.object({
+  "band": zod.enum(['current', 'pastDue1To30', 'pastDue31To60', 'pastDue61To90', 'pastDue91Plus', 'unknown']),
+  "invoiceCount": zod.number(),
+  "balance": zod.number()
+})),
+  "inventoryActivity": zod.array(zod.object({
+  "days": zod.number().describe('One of the 30, 60, or 90 day rolling windows.'),
+  "movements": zod.number(),
+  "receipts": zod.number(),
+  "issued": zod.number(),
+  "returns": zod.number(),
+  "transfers": zod.number(),
+  "binMoves": zod.number(),
+  "adjustments": zod.number(),
+  "other": zod.number()
+})),
+  "completionTimeliness": zod.object({
+  "committed": zod.object({
+  "onTime": zod.number(),
+  "late": zod.number()
+}),
+  "estimated": zod.object({
+  "onTime": zod.number(),
+  "late": zod.number()
+}),
+  "unknown": zod.number()
+}),
+  "stockAudit": zod.object({
+  "checked": zod.number(),
+  "matched": zod.number(),
+  "waste": zod.array(zod.object({
+  "productId": zod.string(),
+  "sku": zod.string(),
+  "productName": zod.string(),
+  "unit": zod.string(),
+  "entries": zod.number(),
+  "quantity": zod.number()
+}))
+}),
+  "materialUsageReport": zod.object({
+  "comparableJobs": zod.number(),
+  "unknownJobs": zod.number(),
+  "rows": zod.array(zod.object({
+  "productId": zod.string(),
+  "sku": zod.string(),
+  "productName": zod.string(),
+  "unit": zod.string(),
+  "approvedQuantity": zod.number(),
+  "netIssuedQuantity": zod.number()
+}))
+}),
+  "installationReadiness": zod.object({
+  "through": zod.string(),
+  "ready": zod.number(),
+  "materialsNeedAttention": zod.number(),
+  "needsCrew": zod.number()
+}),
   "capacityHours": zod.number().nullable(),
   "plannedLaborHours": zod.number(),
   "actualLaborHours": zod.number(),

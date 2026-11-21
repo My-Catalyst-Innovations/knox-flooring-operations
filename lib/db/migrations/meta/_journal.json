@@ -113,6 +113,20 @@
       "when": 1795216899072,
       "tag": "0015_purchase_receipt_damage",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1795221197299,
+      "tag": "0016_job_purchasing_and_physical_pieces",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1795221587189,
+      "tag": "0017_staging_counts_and_operational_kpis",
+      "breakpoints": true
     }
   ]
 }

@@ -153,7 +153,7 @@ router.patch("/products/:id", requireRole("owner", "operations"), domainRoute(as
   validatePackMetadata(parsed.data);
   const product = await db.transaction(async tx => {
     const sku = parsed.data.sku?.trim();
-    if (sku) await tx.execute(catalogLockQuery);
+    if (sku !== undefined) await tx.execute(catalogLockQuery);
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${"inventory:" + params.data.id}))`);
     const [current] = await tx.select().from(productsTable).where(eq(productsTable.id, params.data.id)).for("update");
     if (!current) throw new DomainError(404, "Product not found");
@@ -161,7 +161,24 @@ router.patch("/products/:id", requireRole("owner", "operations"), domainRoute(as
     if (parsed.data.imageUrl && parsed.data.imageUrl !== current.imageUrl && !externalImageUrl(parsed.data.imageUrl)) {
       await assertOwnedFile(parsed.data.imageUrl, ["product-image"], req.auth!.userId, "");
     }
-    if (sku && catalogKey(sku) !== catalogKey(current.sku)) await assertSkuAvailable(tx, sku);
+    if (sku !== undefined && sku !== current.sku) {
+      if (sku && catalogKey(sku) !== catalogKey(current.sku)) await assertSkuAvailable(tx, sku);
+      if (current.sku?.trim()) {
+        const history = await tx.execute<{ linked: boolean }>(sql`
+          SELECT EXISTS (
+            SELECT 1 FROM inventory_movements WHERE product_id = ${current.id} AND (kind <> 'opening' OR quantity <> 0)
+            UNION ALL SELECT 1 FROM inventory_reservations WHERE product_id = ${current.id}
+            UNION ALL SELECT 1 FROM job_materials WHERE product_id = ${current.id}
+            UNION ALL SELECT 1 FROM material_usage WHERE product_id = ${current.id}
+            UNION ALL SELECT 1 FROM purchase_order_lines WHERE product_id = ${current.id}
+            UNION ALL SELECT 1 FROM supplier_product_aliases WHERE product_id = ${current.id}
+            UNION ALL SELECT 1 FROM quickbooks_entity_mappings WHERE entity_type = 'item' AND local_id = ${current.id} AND status = 'linked'
+          ) AS linked
+        `);
+        if (current.quantityOnHand !== 0 || history.rows[0]?.linked)
+          throw new DomainError(409, "Keep this SKU because stock, purchasing, jobs, or accounting already refer to it. Add a supplier code or archive and replace the product if needed.");
+      }
+    }
     if (parsed.data.quantityOnHand !== undefined && parsed.data.quantityOnHand !== current.quantityOnHand) throw new DomainError(409, "Record a receipt, return, consumption or adjustment to change stock.");
     if ((parsed.data.unit && parsed.data.unit !== current.unit) || (parsed.data.inventoryType && parsed.data.inventoryType !== current.inventoryType)) {
       const history = await tx.select({ id: inventoryMovementsTable.id }).from(inventoryMovementsTable).where(eq(inventoryMovementsTable.productId, current.id)).limit(1);

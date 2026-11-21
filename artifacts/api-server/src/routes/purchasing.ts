@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   db,
   inventoryMovementsTable,
+  jobsTable,
   productsTable,
   purchaseOrdersTable,
   purchaseOrderLinesTable,
@@ -60,6 +61,8 @@ const orderLine = z.object({ productId: identifier, quantity, unitCost: cost });
 const orderFields = z.object({
   supplier: z.string().trim().min(1).max(200),
   warehouseId: identifier,
+  jobId: identifier.nullable().optional(),
+  expectedOn: z.string().date().nullable().optional(),
   notes: z.string().trim().max(4000).optional(),
   lines: z.array(orderLine).min(1).max(100),
 });
@@ -70,11 +73,8 @@ const orderEdit = z.union([
     .extend({ revision })
     .strict()
     .refine(
-      ({ supplier, warehouseId, notes, lines }) =>
-        supplier !== undefined ||
-        warehouseId !== undefined ||
-        notes !== undefined ||
-        lines !== undefined,
+      ({ revision: _revision, ...fields }) =>
+        Object.values(fields).some((value) => value !== undefined),
     ),
 ]);
 const receiptQuantity = z.union([z.literal(0), quantity]);
@@ -240,6 +240,13 @@ async function draftLines(
   });
 }
 
+async function verifyOrderJob(tx: StockTransaction, jobId: string | null | undefined) {
+  if (!jobId) return;
+  const [job] = await tx.select({ id: jobsTable.id }).from(jobsTable)
+    .where(eq(jobsTable.id, jobId)).for("key share");
+  if (!job) throw new DomainError(404, "The job linked to this order could not be found.");
+}
+
 router.get(
   path,
   domainRoute(async (_req, res) => {
@@ -291,6 +298,7 @@ router.post(
       }
       const orderId = randomUUID();
       await verifyWarehouse(tx, data.warehouseId);
+      await verifyOrderJob(tx, data.jobId);
       const items = await draftLines(tx, orderId, lines);
       const now = new Date().toISOString();
       const [order] = await tx
@@ -342,13 +350,16 @@ router.patch(
         }
         updates = { status };
       } else {
-        if (current.status !== "Draft")
+        const dateOnly = Object.keys(change).every((key) => key === "expectedOn");
+        const open = current.status === "Ordered" || current.status === "Partially received";
+        if (current.status !== "Draft" && !(open && dateOnly))
           throw new DomainError(
             409,
-            "Only a draft purchase order can be edited.",
+            "Only the expected delivery date can be updated on an open supplier order.",
           );
         const { lines, ...fields } = change;
         if (fields.warehouseId) await verifyWarehouse(tx, fields.warehouseId);
+        await verifyOrderJob(tx, fields.jobId);
         if (lines) {
           const items = await draftLines(tx, current.id, lines);
           await tx

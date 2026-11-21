@@ -37,6 +37,8 @@ export const jobsTable = pgTable("jobs", {
   salespersonId: text("salesperson_id"),
   estStartDate: text("est_start_date"),
   estCompletionDate: text("est_completion_date"),
+  committedCompletionDate: text("committed_completion_date"),
+  committedCompletionRecordedAt: text("committed_completion_recorded_at"),
   materialStatus: text("material_status").notNull(),
   laborEstimate: real("labor_estimate").notNull().default(0),
   estLaborHours: real("est_labor_hours").notNull().default(0),

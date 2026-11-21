@@ -2,6 +2,7 @@ import { useRef, useState, type FormEvent } from "react";
 import { ArrowLeftRight, Plus } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
+import { StockCounts } from "@/components/inventory/StockCounts";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useStore } from "@/hooks/use-store";
@@ -258,6 +259,7 @@ export default function WarehouseBins() {
         </select>
       </label>}
       {selected && bins.data && !bins.isError && <BinContents key={selected.id} warehouse={selected} bins={binsInWarehouse(bins.data, selected.id)} products={products} productsUnavailable={queryState.products.isLoading || !!queryState.products.error} productsFailed={!!queryState.products.error} />}
+      {selected && bins.data && !bins.isError && <StockCounts key={`counts:${selected.id}`} warehouse={selected} bins={binsInWarehouse(bins.data, selected.id)} products={products} productsUnavailable={queryState.products.isLoading || !!queryState.products.error} />}
     </div>
   );
 }

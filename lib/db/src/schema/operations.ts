@@ -134,7 +134,7 @@ export const inventoryTransfersTable = pgTable("inventory_transfers", {
   foreignKey({ columns: [table.sourceBinId, table.sourceWarehouseId], foreignColumns: [warehouseBinsTable.id, warehouseBinsTable.warehouseId], name: "inventory_transfers_source_bin_warehouse_fk" }).onDelete("restrict"),
   foreignKey({ columns: [table.destinationBinId, table.destinationWarehouseId], foreignColumns: [warehouseBinsTable.id, warehouseBinsTable.warehouseId], name: "inventory_transfers_destination_bin_warehouse_fk" }).onDelete("restrict"),
   check("inventory_transfers_positive_quantity", sql`${table.quantity} > 0 AND ${table.quantity} < 'Infinity'::real`),
-  check("inventory_transfers_distinct_warehouses", sql`${table.sourceWarehouseId} IS DISTINCT FROM ${table.destinationWarehouseId}`),
+  check("inventory_transfers_distinct_locations", sql`${table.sourceWarehouseId} IS DISTINCT FROM ${table.destinationWarehouseId} OR ${table.sourceBinId} IS DISTINCT FROM ${table.destinationBinId}`),
   check("inventory_transfers_valid_status", sql`${table.status} IN ('In transit', 'Received')`),
 ]);
 
@@ -170,6 +170,7 @@ export const inventoryMovementsTable = pgTable(
   (t) => [
     uniqueIndex("inventory_movements_idempotency_unique").on(t.idempotencyKey),
     index("inventory_movements_product_idx").on(t.productId),
+    index("inventory_movements_created_at_idx").on(t.createdAt),
     index("inventory_movements_job_id_idx").on(t.jobId),
     index("inventory_movements_product_warehouse_idx").on(t.productId, t.warehouseId),
     index("inventory_movements_bin_warehouse_idx").on(t.binId, t.warehouseId),
@@ -193,6 +194,9 @@ export const inventoryReservationsTable = pgTable(
     productId: text("product_id").notNull(),
     jobId: text("job_id").notNull().references(() => jobsTable.id, { onDelete: "restrict" }),
     warehouseId: text("warehouse_id").references(() => warehousesTable.id, { onDelete: "restrict" }),
+    stagedBinId: text("staged_bin_id"),
+    sourceReservationId: text("source_reservation_id"),
+    stagedTransferId: text("staged_transfer_id"),
     quantity: doublePrecision("quantity").notNull(),
     status: text("status").notNull().default("Active"),
     idempotencyKey: text("idempotency_key").notNull(),
@@ -205,6 +209,13 @@ export const inventoryReservationsTable = pgTable(
     ),
     index("inventory_reservations_job_id_idx").on(t.jobId),
     index("inventory_reservations_product_warehouse_idx").on(t.productId, t.warehouseId),
+    index("inventory_reservations_staging_bin_idx").on(t.stagedBinId),
+    index("inventory_reservations_source_idx").on(t.sourceReservationId),
+    uniqueIndex("inventory_reservations_staged_transfer_idx").on(t.stagedTransferId),
+    foreignKey({ columns: [t.stagedBinId, t.warehouseId], foreignColumns: [warehouseBinsTable.id, warehouseBinsTable.warehouseId], name: "inventory_reservation_staging_bin_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [t.sourceReservationId], foreignColumns: [t.id], name: "inventory_reservation_source_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [t.stagedTransferId], foreignColumns: [inventoryTransfersTable.id], name: "inventory_reservation_staged_transfer_fk" }).onDelete("restrict"),
+    check("inventory_reservations_staging_links_valid", sql`(${t.stagedBinId} IS NULL AND ${t.sourceReservationId} IS NULL AND ${t.stagedTransferId} IS NULL) OR (${t.warehouseId} IS NOT NULL AND ${t.stagedBinId} IS NOT NULL AND ${t.sourceReservationId} IS NOT NULL AND ${t.stagedTransferId} IS NOT NULL)`),
   ],
 );
 export const estimateDraftsTable = pgTable("estimate_drafts", {

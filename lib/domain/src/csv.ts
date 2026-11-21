@@ -3,7 +3,7 @@ interface CsvRecord {
   fields: string[];
 }
 
-export function readCsv(csv: string): CsvRecord[] {
+export function readCsv(csv: string, delimiter: "," | "\t" = ","): CsvRecord[] {
   const source = csv.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const records: CsvRecord[] = [];
   let line = 1;
@@ -38,7 +38,7 @@ export function readCsv(csv: string): CsvRecord[] {
         field += character;
         if (character === "\n") line++;
       }
-    } else if (character === ",") {
+    } else if (character === delimiter) {
       finishField();
     } else if (character === "\n") {
       finishRecord();

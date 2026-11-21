@@ -103,4 +103,18 @@ describe("first QuickBooks customer invoice creation", () => {
     const request = vi.fn().mockRejectedValueOnce(new QuickBooksRequestError("Invalid amount", 400, "ValidationFault", "2140"));
     await expect(reconcileQuickBooksInvoiceCreate(attempt, mockProvider(query, request))).rejects.toBeInstanceOf(QuickBooksInvoiceValidationError);
   });
+
+  it("reconciles a fixed sandbox discount and rejects a divergent posted amount", async () => {
+    const discounted = prepareQuickBooksInvoiceCreate({ ...company, environment: "sandbox" }, "sandbox-invoice", {
+      ...invoice,
+      Line: [...invoice.Line, { Amount: 8.75, DetailType: "DiscountLineDetail", DiscountLineDetail: { PercentBased: false } }],
+    });
+    const saved = { ...discounted.document, Id: "1123", TotalAmt: 36.25 };
+    const query = vi.fn().mockResolvedValue(empty);
+    const post = vi.fn().mockResolvedValueOnce({ Invoice: saved }).mockResolvedValueOnce({
+      Invoice: { ...saved, TotalAmt: 45 },
+    });
+    await expect(reconcileQuickBooksInvoiceCreate(discounted, mockProvider(query, post))).resolves.toEqual(saved);
+    await expect(reconcileQuickBooksInvoiceCreate(discounted, mockProvider(query, post))).rejects.toThrow(/differs from the approved details/);
+  });
 });

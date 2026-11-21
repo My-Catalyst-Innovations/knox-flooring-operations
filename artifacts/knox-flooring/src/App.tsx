@@ -26,6 +26,7 @@ import Materials from "@/pages/materials";
 import Inventory from "@/pages/inventory";
 import PurchaseOrders from "@/pages/purchase-orders";
 import WarehouseBins from "@/pages/warehouse-bins";
+import PhysicalPieces from "@/pages/physical-pieces";
 import Reports from "@/pages/reports";
 import Settings from "@/pages/settings";
 import PublicStatus from "@/pages/public-status";
@@ -66,6 +67,7 @@ function AdminRouter() {
         <Route path="/inventory" component={Inventory} />
         <Route path="/inventory/purchase-orders" component={PurchaseOrders} />
         <Route path="/inventory/bins" component={WarehouseBins} />
+        <Route path="/inventory/physical-pieces" component={PhysicalPieces} />
         <Route path="/reports" component={Reports} />
         <Route path="/settings" component={Settings} />
         <Route path="/integration-health" component={IntegrationHealth} />

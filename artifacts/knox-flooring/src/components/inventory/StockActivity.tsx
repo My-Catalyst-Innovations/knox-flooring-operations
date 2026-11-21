@@ -30,6 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { WarehouseTransfers } from "./WarehouseTransfers";
 import { WarehouseBinSelect } from "./WarehouseBinSelect";
+import { StageReservationDialog } from "./StageReservationDialog";
 
 const selectStyle = "h-11 w-full rounded-lg border bg-background px-3 text-sm";
 export function StockActivity({
@@ -72,6 +73,7 @@ export function StockActivity({
   const [warehouseId, setWarehouseId] = useState("");
   const [binId, setBinId] = useState("");
   const [reservationBins, setReservationBins] = useState<Record<string, string>>({});
+  const [picking, setPicking] = useState<WarehouseReservation>();
   const [returnOfMovementId, setReturnOfMovementId] = useState("");
   const [labelCode, setLabelCode] = useState("");
   const [labelCheck, setLabelCheck] = useState<{
@@ -113,7 +115,7 @@ export function StockActivity({
   const checkedLabel =
     labelCheck?.code === labelCode.trim() ? labelCheck : undefined;
   const close = () => {
-    if (!busy && !transferBusy && !checkingLabel && changes.confirmDiscard())
+    if (!busy && !transferBusy && !checkingLabel && !picking && changes.confirmDiscard())
       onClose();
   };
   const change = () => {
@@ -229,7 +231,7 @@ export function StockActivity({
       await operation(`/inventory/reservations/${r.id}`, "PATCH", {
         revision: r.revision,
         status,
-        ...(status === "Consumed" && r.warehouseId ? { binId: reservationBins[r.id] || null } : {}),
+        ...(status === "Consumed" && r.warehouseId ? { binId: r.stagedBinId || reservationBins[r.id] || null } : {}),
         labelCode:
           status === "Consumed" ? labelCode.trim() || undefined : undefined,
       });
@@ -305,6 +307,7 @@ export function StockActivity({
         ))}
         {product.inventoryType === "Inventory" && <section className="space-y-2 border-t pt-3" aria-label="Product bin stock">
           <h3 className="font-semibold">Bin stock</h3>
+          {product.unit === "sqft" && <Link className="text-sm underline underline-offset-4" href={`/inventory/physical-pieces?productId=${encodeURIComponent(product.id)}`}>Find labeled rolls and remnants</Link>}
           {(binStock.isLoading || warehouseBins.isLoading) && <p role="status" className="text-sm text-muted-foreground">Loading bin locations…</p>}
           {(binStock.isError || warehouseBins.isError) && <p role="alert" className="text-sm text-destructive">Bin locations could not load. <button className="underline" onClick={() => void refresh()}>Retry</button></p>}
           {binStock.data?.length === 0 && <p className="text-sm text-muted-foreground">No balances in named warehouses.</p>}
@@ -584,10 +587,16 @@ export function StockActivity({
                 {jobs.find((j) => j.id === r.jobId)?.jobNumber ?? r.jobId} ·{" "}
                 {quantity(r.quantity)} {product.unit} ·{" "}
                 {warehouseName(warehouses, r.warehouseId)}
+                {r.stagedBinId && ` · Staged in ${binName(bins, r.stagedBinId)}`}
               </p>
               {canWrite && (
                 <div className="flex flex-wrap items-end gap-2">
-                  {r.warehouseId && <WarehouseBinSelect label={`Issue bin for ${jobs.find((job) => job.id === r.jobId)?.jobNumber ?? r.jobId}`} warehouseId={r.warehouseId} bins={bins} stock={binStock.data} value={reservationBins[r.id] ?? ""} onChange={(id) => setReservationBins((current) => ({ ...current, [r.id]: id }))} disabled={busy || transferBusy || warehouseBins.isLoading || warehouseBins.isError} />}
+                  {r.warehouseId && !r.stagedBinId && <WarehouseBinSelect label={`Issue bin for ${jobs.find((job) => job.id === r.jobId)?.jobNumber ?? r.jobId}`} warehouseId={r.warehouseId} bins={bins} stock={binStock.data} value={reservationBins[r.id] ?? ""} onChange={(id) => setReservationBins((current) => ({ ...current, [r.id]: id }))} disabled={busy || transferBusy || warehouseBins.isLoading || warehouseBins.isError} />}
+                  {r.warehouseId && !r.stagedBinId && (
+                    <Button size="sm" variant="outline" disabled={busy || transferBusy || !binStock.isSuccess || !warehouseBins.isSuccess} onClick={() => setPicking(r)}>
+                      Pick and stage
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"
@@ -620,6 +629,14 @@ export function StockActivity({
               </p>
             )}
         </section>
+        {picking && (
+          <StageReservationDialog reservation={picking} unit={product.unit} warehouses={warehouses} bins={bins}
+            stock={binStock.data ?? []} onClose={() => setPicking(undefined)} onSaved={() => {
+              setPicking(undefined);
+              setMessage("Reserved stock staged for the job.");
+              void refresh();
+            }} />
+        )}
         <section className="space-y-2">
           <h3 className="font-semibold">Movement history</h3>
           {movements.isLoading && (

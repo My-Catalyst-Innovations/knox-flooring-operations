@@ -8,6 +8,7 @@ import { useStore } from "@/hooks/use-store";
 import { useUrlState } from "@/hooks/use-url-state";
 import { contextualCreateHref } from "@/lib/create-context";
 import { invoiceBalance } from "@/lib/invoices";
+import { pendingJobDelivery, purchaseOrdersPath, type PurchaseOrder } from "@/lib/purchasing";
 import {
   confirmedInstallationBookings,
   currency,
@@ -34,6 +35,7 @@ type Entry = {
   schedule?: string;
   materials?: string;
   blocker?: string;
+  delivery?: { text: string; href: string };
   quote?: { label: string; href: string };
   invoice?: { label: string; href: string };
   accounting?: string;
@@ -87,6 +89,7 @@ function WorkflowCard({ entry }: { entry: Entry }) {
       {entry.schedule && <p className="text-muted-foreground">{entry.schedule}</p>}
       {entry.materials && <p className="text-muted-foreground">Materials · {entry.materials}</p>}
       {entry.blocker && <p className="rounded bg-amber-50 px-2 py-1 text-amber-950">{entry.blocker}</p>}
+      {entry.delivery && <Link className="block text-muted-foreground underline" href={entry.delivery.href}>{entry.delivery.text}</Link>}
       {(entry.quote || entry.invoice || entry.accounting) && (
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
           {entry.quote && <Link href={entry.quote.href} className="underline">{entry.quote.label}</Link>}
@@ -114,6 +117,7 @@ export default function Pipeline() {
   const bookings = useOperation<Booking[]>("/bookings", ["owner", "operations"]);
   const crews = useOperation<Crew[]>("/crews", ["owner", "operations"]);
   const accounting = useOperation<AccountingEntry[]>("/quickbooks/queue", ["owner"]);
+  const purchaseOrders = useOperation<PurchaseOrder[]>(purchaseOrdersPath, ["owner", "operations"]);
   const [search, setSearch] = useUrlState<string>("q", "");
   const [view, setView] = useUrlState<"board" | "list">("view", "board");
   const bookingRecords = operations && !bookings.isError ? bookings.data : undefined;
@@ -126,6 +130,14 @@ export default function Pipeline() {
     else if (!upcomingByJob.has(booking.jobId)) upcomingByJob.set(booking.jobId, booking);
   }
   const crewNames = new Map((crews.isError ? [] : crews.data ?? []).map((crew) => [crew.id, crew.name]));
+  const pendingDeliveries = new Map<string, NonNullable<Entry["delivery"]>>();
+  for (const order of [...purchaseOrders.data ?? []].sort(
+    (left, right) => (left.expectedOn ?? "9999").localeCompare(right.expectedOn ?? "9999"),
+  )) {
+    const text = pendingJobDelivery(order);
+    if (text && order.jobId && !pendingDeliveries.has(order.jobId))
+      pendingDeliveries.set(order.jobId, { text, href: `${purchaseOrdersPath}?order=${encodeURIComponent(order.id)}` });
+  }
   const entries: Entry[] = jobs.map((job) => {
     const [jobPhase, defaultNext, team] = workflow[job.status] ?? workflow.Approved;
     const booking = upcomingByJob.get(job.id);
@@ -162,6 +174,7 @@ export default function Pipeline() {
       schedule,
       materials: phase === "Preparation" || phase === "Installation" ? job.materialStatus : undefined,
       blocker: blocked ? blocked.damaged ? "Damaged materials" : blocked.missingItems.trim() ? `Missing materials: ${blocked.missingItems}` : "Material delivery delayed" : undefined,
+      delivery: phase === "Preparation" || phase === "Installation" ? pendingDeliveries.get(job.id) : undefined,
       quote: quote && { label: `Quote · ${quote.status}`, href: `/proposals?proposal=${encodeURIComponent(quote.id)}` },
       invoice: invoice && { label: `Invoice · ${invoice.status}${invoiceBalance(invoice) > 0 && invoice.status !== "Draft" ? ` · ${currency(invoiceBalance(invoice))} due` : ""}`, href: `/invoices?invoice=${encodeURIComponent(invoice.id)}` },
       accounting: queueEntry ? accountingLabels[queueEntry.status] : undefined,

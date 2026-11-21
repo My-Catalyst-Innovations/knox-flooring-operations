@@ -31,6 +31,9 @@ export interface WarehouseStockMovement extends StockMovement {
 
 export interface WarehouseReservation extends Reservation {
   warehouseId?: string | null;
+  stagedBinId?: string | null;
+  sourceReservationId?: string | null;
+  stagedTransferId?: string | null;
 }
 
 export interface WarehouseTransfer {

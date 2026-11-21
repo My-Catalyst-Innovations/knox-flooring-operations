@@ -9,14 +9,10 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { operation, useOperation } from "@/lib/operations";
+import { billLineFields, billLineLimit, validBillTotal, validateBillLine, type VendorBillLine } from "@/lib/vendor-bill-intake";
+import { VendorBillLineIntake } from "./VendorBillLineIntake";
 
 type Mode = "review" | "simulated" | "sandbox" | "production";
-type Line = {
-  supplierSku: string;
-  unit: string;
-  quantity: string;
-  unitCost: string;
-};
 type ReviewedLine = {
   supplierSku: string;
   internalSku: string;
@@ -79,7 +75,7 @@ const approvalMessages: Record<Mode, string> = {
   simulated: "Supplier bill simulated.",
   production: "Supplier bill verified in QuickBooks Online.",
 };
-const blankLine: Line = {
+const blankLine: VendorBillLine = {
   supplierSku: "",
   unit: "box",
   quantity: "",
@@ -174,7 +170,7 @@ export function VendorBillSandbox({
   const [billNumber, setBillNumber] = useState("");
   const [billDate, setBillDate] = useState("");
   const [billTotal, setBillTotal] = useState("");
-  const [lines, setLines] = useState<Line[]>([blankLine]);
+  const [lines, setLines] = useState<VendorBillLine[]>([blankLine]);
   const [preview, setPreview] = useState<Prepared>();
   const [bills, setBills] = useState<Bill[]>([]);
   const [busy, setBusy] = useState(false);
@@ -235,13 +231,15 @@ export function VendorBillSandbox({
     billTotal,
     lines,
   };
+  const lineIssues = lines.map(validateBillLine);
+  const totalProblem = billTotal.trim() && !validBillTotal(billTotal);
   const canPreview =
     supplier.trim() &&
     (!usesQuickBooksVendor || /^\d+$/.test(vendorId)) &&
     billNumber.trim() &&
     billDate &&
-    billTotal.trim() &&
-    lines.every((line) => Object.values(line).every((value) => value.trim()));
+    validBillTotal(billTotal) &&
+    lineIssues.every((issues) => Object.keys(issues).length === 0);
   const visibleBills = bills.filter((bill) => bill.payload.mode === mode);
 
   return (
@@ -300,16 +298,20 @@ export function VendorBillSandbox({
                   }
                 />
               </label>
-              <label className="space-y-1 text-sm font-medium">
-                Source bill total (USD)
+              <div className="space-y-1 text-sm font-medium">
+                <label htmlFor={`vendor-bill-${mode}-total`}>Source bill total (USD)</label>
                 <Input
+                  id={`vendor-bill-${mode}-total`}
                   value={billTotal}
                   inputMode="decimal"
+                  aria-invalid={!!totalProblem || undefined}
+                  aria-describedby={totalProblem ? `vendor-bill-${mode}-total-error` : undefined}
                   onChange={(event) =>
                     edit(() => setBillTotal(event.target.value))
                   }
                 />
-              </label>
+                {totalProblem && <p id={`vendor-bill-${mode}-total-error`} className="text-xs text-destructive">Enter the positive bill total with up to two decimal places and no currency symbol or separators.</p>}
+              </div>
             </div>
             {usesQuickBooksVendor && (
               <label className="block max-w-xs space-y-1 text-sm font-medium">
@@ -333,42 +335,47 @@ export function VendorBillSandbox({
                 </datalist>
               </label>
             )}
+            <VendorBillLineIntake onApply={(imported) => {
+              edit(() => setLines(imported));
+              setMessage(`Imported ${imported.length} ${imported.length === 1 ? "line" : "lines"}.`);
+            }} />
             {lines.map((line, index) => (
               <div
                 className="grid gap-2 rounded-md border p-2 sm:grid-cols-2 xl:grid-cols-5"
                 key={index}
               >
-                {(
-                  [
-                    ["supplierSku", "Supplier SKU"],
-                    ["unit", "Unit"],
-                    ["quantity", "Quantity"],
-                    ["unitCost", "Billed unit cost"],
-                  ] as const
-                ).map(([field, label]) => (
-                  <label className="space-y-1 text-sm font-medium" key={field}>
-                    {label}
-                    <Input
-                      value={line[field]}
-                      inputMode={
-                        field === "quantity" || field === "unitCost"
-                          ? "decimal"
-                          : "text"
-                      }
-                      onChange={(event) =>
-                        edit(() =>
-                          setLines((current) =>
-                            current.map((item, key) =>
-                              key === index
-                                ? { ...item, [field]: event.target.value }
-                                : item,
+                {billLineFields.map(([field, label]) => {
+                  const problem = line[field].trim() ? lineIssues[index][field] : undefined;
+                  const fieldId = `vendor-bill-${mode}-${index}-${field}`;
+                  return (
+                    <div className="space-y-1 text-sm font-medium" key={field}>
+                      <label htmlFor={fieldId}>{label}</label>
+                      <Input
+                        id={fieldId}
+                        value={line[field]}
+                        aria-invalid={!!problem || undefined}
+                        aria-describedby={problem ? `${fieldId}-error` : undefined}
+                        inputMode={
+                          field === "quantity" || field === "unitCost"
+                            ? "decimal"
+                            : "text"
+                        }
+                        onChange={(event) =>
+                          edit(() =>
+                            setLines((current) =>
+                              current.map((item, key) =>
+                                key === index
+                                  ? { ...item, [field]: event.target.value }
+                                  : item,
+                              ),
                             ),
-                          ),
-                        )
-                      }
-                    />
-                  </label>
-                ))}
+                          )
+                        }
+                      />
+                      {problem && <p id={`${fieldId}-error`} className="text-xs text-destructive">{problem}</p>}
+                    </div>
+                  );
+                })}
                 {lines.length > 1 && (
                   <Button
                     variant="ghost"
@@ -394,7 +401,7 @@ export function VendorBillSandbox({
                 onClick={() =>
                   edit(() => setLines((current) => [...current, blankLine]))
                 }
-                disabled={lines.length >= 50}
+                disabled={lines.length >= billLineLimit}
               >
                 Add line
               </Button>

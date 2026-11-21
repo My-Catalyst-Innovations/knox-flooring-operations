@@ -5,6 +5,12 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { CompletedJobMaterialUsage } from './completedJobMaterialUsage';
+import type { CompletionTimeliness } from './completionTimeliness';
+import type { InstallationReadinessMetrics } from './installationReadinessMetrics';
+import type { InventoryActivityWindow } from './inventoryActivityWindow';
+import type { InvoiceAgingBucket } from './invoiceAgingBucket';
+import type { StockAuditMetrics } from './stockAuditMetrics';
 
 export interface OperationalMetrics {
   from: string;
@@ -15,6 +21,14 @@ export interface OperationalMetrics {
   completedRevenue: number;
   invoicedRevenue: number;
   outstanding: number;
+  /** Business date used for current aging and rolling inventory activity. */
+  asOfDate: string;
+  invoiceAging: InvoiceAgingBucket[];
+  inventoryActivity: InventoryActivityWindow[];
+  completionTimeliness: CompletionTimeliness;
+  stockAudit: StockAuditMetrics;
+  materialUsageReport: CompletedJobMaterialUsage;
+  installationReadiness: InstallationReadinessMetrics;
   capacityHours: number | null;
   plannedLaborHours: number;
   actualLaborHours: number;
