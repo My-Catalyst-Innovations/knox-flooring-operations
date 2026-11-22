@@ -10,6 +10,7 @@ import { InvoiceServiceMappings, type QuickBooksCatalogItem, type QuickBooksCata
 import { ProductionVendorBills, VendorBillSandbox, type SandboxVendor } from "./VendorBillSandbox";
 import { ProductionStockItems, SandboxStockItems, type SandboxAccount } from "./SandboxStockItems";
 import { QuickBooksInvoiceReview } from "./QuickBooksInvoiceReview";
+import { QuickBooksStockReconciliation } from "./QuickBooksStockReconciliation";
 import { useOperation } from "@/lib/operations";
 
 type Status = {
@@ -99,7 +100,7 @@ export function QuickBooksSettings() {
     }
   };
   const demoQueue = queue.filter((item) => item.payload?.demoSimulation).sort((a, b) => Number(a.payload?.flowStep ?? 0) - Number(b.payload?.flowStep ?? 0));
-  const liveQueue = queue.filter((item) => !item.payload?.demoSimulation && !["vendor_bill", "sandbox_stock_item", "production_stock_item"].includes(item.entityType));
+  const liveQueue = queue.filter((item) => !item.payload?.demoSimulation && !["vendor_bill", "sandbox_stock_item", "production_stock_item", "stock_return_adjustment"].includes(item.entityType));
   const pending = liveQueue.filter((item) => item.status === "pending_approval");
   const failures = liveQueue.filter((item) => item.status === "failed");
   const needsInvoiceReview = (item: QueueItem) => item.accountingReviewRequired && status?.connection.environment === "production";
@@ -126,6 +127,8 @@ export function QuickBooksSettings() {
       <SandboxStockItems key={reconciledConnection} connectionId={reconciledConnection} accounts={accounts} />}
     {status?.connection.connected && status.connection.environment === "production" && reconciledConnection &&
       <ProductionStockItems key={`${status.connection.realmId}:${reconciledConnection}`} realmId={status.connection.realmId} connectionId={reconciledConnection} accounts={accounts} />}
+    {status?.connection.connected && status.connection.realmId && status.connection.environment &&
+      <QuickBooksStockReconciliation key={`${status.connection.environment}:${status.connection.realmId}`} realmId={status.connection.realmId} environment={status.connection.environment} />}
 
     {status?.demoAvailable && !status.connection.connected && <Card className="overflow-hidden border-violet-500/30" data-training-id="quickbooks-demo">
       <CardHeader className="bg-gradient-to-r from-violet-600/10 via-blue-500/10 to-sky-400/10"><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle className="flex items-center gap-2"><PlayCircle className="h-5 w-5 text-violet-600" />Interactive QuickBooks Demo Company</CardTitle><CardDescription className="mt-1">A safe, persistent rehearsal of the exact approval and synchronization workflow Will would use. Nothing leaves Knox Ops.</CardDescription></div><Badge className="bg-violet-600 text-white">Clearly simulated</Badge></div></CardHeader>

@@ -11,6 +11,7 @@ import { prepareReviewedInvoice, processQuickBooksQueue } from "../lib/quickbook
 import { requireOwner } from "../middlewares/auth";
 import { vendorBillEntity } from "../lib/vendor-bill";
 import { productionStockItemEntity, sandboxStockItemEntity } from "../lib/quickbooks-stock-item";
+import { stockAdjustmentEntity } from "../lib/quickbooks-inventory-reconciliation";
 import { invoiceServiceCategories, invoiceServiceEntity, invoiceServiceMappingKey, isActiveQuickBooksServiceItem } from "../lib/quickbooks-invoice";
 import { domainRoute, parse } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
@@ -298,7 +299,7 @@ router.post("/quickbooks/queue", async (req, res) => {
   if (req.body?.payload && [invoiceCreateRecord, reviewedInvoiceRecord].some((key) => Object.hasOwn(req.body.payload, key))) { res.status(400).json({ error: "The QuickBooks invoice accounting record is reserved." }); return; }
   const now = new Date().toISOString(); const version = createHash("sha256").update(JSON.stringify(req.body?.payload ?? {})).digest("hex").slice(0, 16); const [created] = await db.insert(quickbooksSyncJobsTable).values({ id: randomUUID(), idempotencyKey: `${entityType}:${localId}:${action}:${version}`, entityType, localId, action, payload: req.body?.payload ?? {}, warnings: req.body?.warnings ?? [], status: "pending_approval", nextAttemptAt: now, createdAt: now, updatedAt: now }).onConflictDoNothing().returning(); res.status(created ? 201 : 200).json(created ?? { duplicate: true });
 });
-const dedicatedApprovalEntities = [vendorBillEntity, sandboxStockItemEntity, productionStockItemEntity];
+const dedicatedApprovalEntities = [vendorBillEntity, sandboxStockItemEntity, productionStockItemEntity, stockAdjustmentEntity];
 const genericApproval = () => and(notInArray(accountingQueue.entityType, dedicatedApprovalEntities),
   workspaceEnvironment().QUICKBOOKS_ENVIRONMENT === "production" ? sql`not ${invoiceNeedsAccountingReview()}` : undefined,
   sql`not (${accountingQueue.payload} ? ${reviewedInvoiceRecord})`);

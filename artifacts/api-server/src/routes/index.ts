@@ -24,6 +24,7 @@ import storageRouter, { publicMediaRouter } from "./storage";
 import authRouter from "./auth";
 import quickbooksRouter, { quickBooksWebhook } from "./quickbooks";
 import quickBooksStockItemsRouter from "./quickbooks-stock-items";
+import quickBooksInventoryReconciliationRouter from "./quickbooks-inventory-reconciliation";
 import { emailWebhook } from "../lib/email-webhooks";
 import vendorBillsRouter from "./vendor-bills";
 import { enforceRoleAccess, requireAuth } from "../middlewares/auth";
@@ -89,6 +90,7 @@ router.use(outlookCalendarRouter);
 router.use(storageRouter);
 router.use(quickbooksRouter);
 router.use(quickBooksStockItemsRouter);
+router.use(quickBooksInventoryReconciliationRouter);
 router.use(vendorBillsRouter);
 
 export default router;
