@@ -1376,6 +1376,16 @@ export const SendSmsResponse = zod.object({
 
 
 /**
+ * @summary Determine whether company SMS submission is available
+ */
+export const GetSmsDeliveryStatusResponse = zod.object({
+  "mode": zod.enum(['capture', 'allowlist', 'live']),
+  "provider": zod.enum(['signalwire', 'twilio']).nullable(),
+  "serverSendAvailable": zod.boolean()
+})
+
+
+/**
  * @summary List measurements, optionally filtered by lead or job
  */
 export const ListMeasurementsQueryParams = zod.object({
@@ -3682,6 +3692,21 @@ export const UpdateCompletionCommitmentResponse = zod.object({
 export const GetStagnantInventoryResponse = zod.object({
   "asOfDate": zod.string(),
   "unknownMovementLocations": zod.number(),
+  "records": zod.array(zod.object({
+  "productId": zod.string(),
+  "sku": zod.string(),
+  "productName": zod.string(),
+  "unit": zod.string(),
+  "active": zod.boolean(),
+  "warehouseId": zod.string().nullable(),
+  "warehouseName": zod.string().nullable(),
+  "onHand": zod.number(),
+  "inactiveDays": zod.number(),
+  "lastMovedOn": zod.string(),
+  "receiptValue": zod.number(),
+  "estimatedValue": zod.number(),
+  "incompleteValue": zod.boolean()
+})).optional(),
   "windows": zod.array(zod.object({
   "days": zod.number(),
   "locations": zod.number(),
@@ -3776,6 +3801,45 @@ export const GetOperationalMetricsResponse = zod.object({
   "materialsNeedAttention": zod.number(),
   "needsCrew": zod.number()
 }),
+  "sourceRecords": zod.object({
+  "invoices": zod.array(zod.object({
+  "invoiceId": zod.string(),
+  "invoiceNumber": zod.string(),
+  "customerName": zod.string(),
+  "band": zod.enum(['current', 'pastDue1To30', 'pastDue31To60', 'pastDue61To90', 'pastDue91Plus', 'unknown']),
+  "balance": zod.number(),
+  "dueDate": zod.string().nullable()
+})),
+  "completions": zod.array(zod.object({
+  "jobId": zod.string(),
+  "jobNumber": zod.string(),
+  "customerName": zod.string(),
+  "completedOn": zod.string(),
+  "targetOn": zod.string().nullable(),
+  "basis": zod.enum(['committed', 'estimated', 'unknown']),
+  "outcome": zod.enum(['onTime', 'late', 'unknown'])
+})),
+  "installations": zod.array(zod.object({
+  "jobId": zod.string(),
+  "jobNumber": zod.string(),
+  "customerName": zod.string(),
+  "scheduledOn": zod.string().nullable(),
+  "status": zod.enum(['ready', 'materialsNeedAttention', 'needsCrew']),
+  "issues": zod.array(zod.string())
+})),
+  "postedCounts": zod.array(zod.object({
+  "id": zod.string(),
+  "sku": zod.string(),
+  "productName": zod.string(),
+  "unit": zod.string(),
+  "warehouseId": zod.string(),
+  "warehouseName": zod.string(),
+  "binCode": zod.string().nullable(),
+  "postedAt": zod.string().nullable(),
+  "bookedQuantity": zod.number(),
+  "countedQuantity": zod.number()
+}))
+}).optional(),
   "capacityHours": zod.number().nullable(),
   "plannedLaborHours": zod.number(),
   "actualLaborHours": zod.number(),

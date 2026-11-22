@@ -1,12 +1,13 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type RequestHandler } from "express";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import {
   auditEventsTable,
   db,
   demoBaselinesTable,
   demoOutboxTable,
   demoRecordOriginsTable,
+  estimateDraftsTable,
   invoicesTable,
   jobsTable,
   leadsTable,
@@ -17,18 +18,68 @@ import {
   trainingPreferencesTable,
   trainingRunsTable,
 } from "@workspace/db";
+import { currentWorkspace, workspaceEnvironment } from "@workspace/db/workspace";
 import { audit } from "../lib/auth";
-import { PAGE_GUIDES, TRAINING_MANIFEST_VERSION, TRAINING_MISSIONS, canCompleteTrainingStep, findTrainingStep } from "../lib/training";
+import { PAGE_GUIDES, TRAINING_MANIFEST_VERSION, TRAINING_MISSIONS, canCompleteTrainingStep, findTrainingStep, type TrainingStep } from "../lib/training";
+import { hasMeasuredRoom, practiceCustomerName, trainingPracticeAccess } from "../lib/training-practice";
 import { requireOwner } from "../middlewares/auth";
 import { SEED_INVOICES, SEED_JOBS, SEED_LEADS, SEED_PRODUCTS, SEED_PROPOSALS } from "../lib/seed-data";
 import { generateTutorialNarration, getTutorialNarrationStatus } from "../lib/tutorial-narration";
 import { createTrainingAudioHandler } from "../lib/training-audio-handler";
 
 const router: IRouter = Router();
-const runStatuses = new Set(["active", "paused", "completed", "dismissed"]);
 
 function canUseMission(req: Express.Request, role: string) {
   return req.auth?.role === role;
+}
+
+function practiceAccess(req: Request) {
+  return trainingPracticeAccess(workspaceEnvironment(), req.get("host") ?? "", !currentWorkspace());
+}
+
+const requirePractice: RequestHandler = (req, res, next) => {
+  if (!practiceAccess(req).enabled) {
+    res.status(403).json({ error: "Interactive training is available in the separate practice workspace." });
+    return;
+  }
+  next();
+};
+
+const requireLegacyBaseline: RequestHandler = (req, res, next) => {
+  if (!practiceAccess(req).enabled || workspaceEnvironment().ALLOW_DEMO_SEED !== "true") {
+    res.status(404).json({ error: "Demo baseline management is unavailable." });
+    return;
+  }
+  next();
+};
+
+type TrainingRun = typeof trainingRunsTable.$inferSelect;
+
+function publicRun(run: TrainingRun) {
+  const { practiceData: _private, ...values } = run;
+  return { ...values, practiceCustomerName: practiceCustomerName(run) };
+}
+
+async function hasPracticeOutcome(step: TrainingStep, run: TrainingRun) {
+  if (!step.outcome) return false;
+  const name = practiceCustomerName(run);
+  if (step.outcome === "lead") {
+    const [lead] = await db.select({ id: leadsTable.id }).from(leadsTable).where(and(
+      eq(leadsTable.customerName, name), eq(leadsTable.phone, ""), eq(leadsTable.email, ""),
+      gte(leadsTable.createdAt, run.startedAt),
+    )).limit(1);
+    return Boolean(lead);
+  }
+
+  const drafts = await db.select({ inputs: estimateDraftsTable.inputs, proposalId: proposalsTable.id })
+    .from(estimateDraftsTable).leftJoin(proposalsTable, and(
+      eq(proposalsTable.id, estimateDraftsTable.convertedProposalId),
+      eq(proposalsTable.customerName, name), gte(proposalsTable.createdAt, run.startedAt),
+    )).where(and(
+      eq(estimateDraftsTable.ownerUserId, run.userId), gte(estimateDraftsTable.createdAt, run.startedAt),
+      sql`${estimateDraftsTable.inputs}->>'customerName' = ${name}`,
+    ));
+  return drafts.some((draft) => hasMeasuredRoom(draft.inputs) && (step.outcome !== "proposal" || Boolean(draft.proposalId)));
 }
 
 async function saveLegacyProgress(userId: string, missionKey: string, currentStep: number, status: string, checkpoints: string[], startedAt: string, completedAt: string | null) {
@@ -41,10 +92,14 @@ async function saveLegacyProgress(userId: string, missionKey: string, currentSte
 }
 
 router.get("/demo/status", async (req, res) => {
+  const practice = practiceAccess(req);
+  const recentRuns: Promise<TrainingRun[]> = practice.enabled
+    ? db.select().from(trainingRunsTable).where(eq(trainingRunsTable.userId, req.auth!.userId)).orderBy(desc(trainingRunsTable.updatedAt))
+    : Promise.resolve([]);
   const [[baseline], progress, runs, [savedPreferences]] = await Promise.all([
-    db.select().from(demoBaselinesTable).where(eq(demoBaselinesTable.active, true)).limit(1),
-    db.select().from(tourProgressTable).where(eq(tourProgressTable.userId, req.auth!.userId)),
-    db.select().from(trainingRunsTable).where(eq(trainingRunsTable.userId, req.auth!.userId)).orderBy(desc(trainingRunsTable.updatedAt)),
+    practice.enabled ? db.select().from(demoBaselinesTable).where(eq(demoBaselinesTable.active, true)).limit(1) : [],
+    practice.enabled ? db.select().from(tourProgressTable).where(eq(tourProgressTable.userId, req.auth!.userId)) : [],
+    recentRuns,
     db.select().from(trainingPreferencesTable).where(eq(trainingPreferencesTable.userId, req.auth!.userId)).limit(1),
   ]);
   const role = req.auth!.role;
@@ -52,12 +107,16 @@ router.get("/demo/status", async (req, res) => {
   const pageGuides = PAGE_GUIDES.filter((guide) => guide.role.includes(role));
   res.json({
     enabled: true,
+    practice,
     manifestVersion: TRAINING_MANIFEST_VERSION,
-    baseline: baseline ?? { version: "2026.1", label: "Executive demo", recordCounts: {} },
-    missions,
+    baseline: baseline ?? null,
+    missions: practice.enabled ? missions : [],
+    lessons: practice.enabled ? [] : missions.map((mission) => ({
+      ...mission, steps: mission.steps.map(({ id, title, explanation }) => ({ id, title, explanation })),
+    })),
     pageGuides,
     progress,
-    runs,
+    runs: runs.filter((run) => run.manifestVersion === TRAINING_MANIFEST_VERSION).map(publicRun),
     preferences: savedPreferences ?? { userId: req.auth!.userId, voiceEnabled: false, captionsEnabled: true, welcomeDismissed: false },
     narration: getTutorialNarrationStatus(),
   });
@@ -67,7 +126,7 @@ router.get("/demo/outbox", async (_req, res) => {
   res.json(await db.select().from(demoOutboxTable).orderBy(desc(demoOutboxTable.createdAt)).limit(100));
 });
 
-router.post("/demo/training/reset", requireOwner, async (req, res) => {
+router.post("/demo/training/reset", requireOwner, requirePractice, async (req, res) => {
   await db.transaction(async (tx) => {
     await tx.delete(trainingRunsTable).where(eq(trainingRunsTable.userId, req.auth!.userId));
     await tx.delete(tourProgressTable).where(eq(tourProgressTable.userId, req.auth!.userId));
@@ -93,6 +152,8 @@ router.put("/demo/preferences", async (req, res) => {
   res.json({ userId: req.auth!.userId, ...values });
 });
 
+router.use("/demo/missions", requirePractice);
+
 router.post("/demo/missions/:key/start", async (req, res) => {
   const mission = TRAINING_MISSIONS.find((item) => item.key === req.params.key);
   if (!mission) { res.status(404).json({ error: "Mission not found" }); return; }
@@ -112,7 +173,7 @@ router.post("/demo/missions/:key/start", async (req, res) => {
       currentStep: 0,
       voiceEnabled,
       checkpoints: [],
-      practiceData: { namespace: `training:${id}`, isolated: true, externalSync: false, externalCommunication: false },
+      practiceData: { environment: "practice" },
       startedAt: now,
       updatedAt: now,
     });
@@ -123,51 +184,59 @@ router.post("/demo/missions/:key/start", async (req, res) => {
   });
   await saveLegacyProgress(req.auth!.userId, mission.key, 0, "active", [], now, null);
   await audit("training.mission.started", { userId: req.auth!.userId, entityType: "training_run", entityId: id, ip: req.ip, details: { missionKey: mission.key, voiceEnabled, manifestVersion: TRAINING_MANIFEST_VERSION } });
-  res.status(201).json({ id, userId: req.auth!.userId, missionKey: mission.key, manifestVersion: TRAINING_MANIFEST_VERSION, status: "active", currentStep: 0, voiceEnabled, checkpoints: [], startedAt: now, updatedAt: now });
+  res.status(201).json({ id, userId: req.auth!.userId, missionKey: mission.key, manifestVersion: TRAINING_MANIFEST_VERSION, status: "active", currentStep: 0, voiceEnabled, checkpoints: [], startedAt: now, updatedAt: now, practiceCustomerName: practiceCustomerName({ id, startedAt: now }) });
 });
 
 router.put("/demo/missions/:key", async (req, res) => {
   const mission = TRAINING_MISSIONS.find((item) => item.key === req.params.key);
   if (!mission) { res.status(404).json({ error: "Mission not found" }); return; }
+  if (!canUseMission(req, mission.role)) { res.status(403).json({ error: "Switch to the mission's role to continue." }); return; }
   const runId = String(req.body?.runId ?? "");
   const [run] = await db.select().from(trainingRunsTable)
     .where(and(eq(trainingRunsTable.id, runId), eq(trainingRunsTable.userId, req.auth!.userId), eq(trainingRunsTable.missionKey, mission.key))).limit(1);
   if (!run) { res.status(404).json({ error: "Training run not found" }); return; }
-  const status = runStatuses.has(req.body?.status) ? String(req.body.status) : run.status;
-  const currentStep = Math.max(0, Math.min(Number(req.body?.currentStep ?? run.currentStep), mission.steps.length - 1));
+  const currentStep = req.body?.currentStep ?? run.currentStep;
+  if (run.manifestVersion !== TRAINING_MANIFEST_VERSION || !["active", "paused"].includes(run.status) ||
+    req.body?.status !== "active" || !Number.isInteger(currentStep) || currentStep < Math.max(0, run.currentStep - 1) || currentStep > run.currentStep) {
+    res.status(409).json({ error: "Resume this mission or verify its current checkpoint to advance." }); return;
+  }
   const now = new Date().toISOString();
-  const completedAt = status === "completed" ? now : run.completedAt;
-  const values = { status, currentStep, completedAt, updatedAt: now };
-  await db.update(trainingRunsTable).set(values).where(eq(trainingRunsTable.id, run.id));
-  await saveLegacyProgress(run.userId, run.missionKey, currentStep, status, run.checkpoints, run.startedAt, completedAt);
-  res.json({ ...run, ...values });
+  const values = { status: "active", currentStep, updatedAt: now };
+  const [updated] = await db.update(trainingRunsTable).set(values).where(and(eq(trainingRunsTable.id, run.id), eq(trainingRunsTable.updatedAt, run.updatedAt))).returning();
+  if (!updated) { res.status(409).json({ error: "Training progress changed. Refresh and try again." }); return; }
+  await saveLegacyProgress(run.userId, run.missionKey, currentStep, values.status, run.checkpoints, run.startedAt, run.completedAt);
+  res.json(publicRun(updated));
 });
 
 router.post("/demo/missions/:key/verify", async (req, res) => {
   const mission = TRAINING_MISSIONS.find((item) => item.key === req.params.key);
   if (!mission) { res.status(404).json({ error: "Mission not found" }); return; }
+  if (!canUseMission(req, mission.role)) { res.status(403).json({ error: "Switch to the mission's role to continue." }); return; }
   const runId = String(req.body?.runId ?? "");
   const [run] = await db.select().from(trainingRunsTable)
     .where(and(eq(trainingRunsTable.id, runId), eq(trainingRunsTable.userId, req.auth!.userId), eq(trainingRunsTable.missionKey, mission.key))).limit(1);
   if (!run) { res.status(404).json({ error: "Training run not found" }); return; }
   if (run.manifestVersion !== TRAINING_MANIFEST_VERSION) { res.status(409).json({ error: "Training content changed. Restart this mission to continue." }); return; }
+  if (run.status !== "active") { res.status(409).json({ error: "Resume this mission before verifying a checkpoint." }); return; }
   const step = mission.steps[run.currentStep];
   if (!step || step.id !== req.body?.stepId) { res.status(409).json({ error: "This is not the active training step" }); return; }
   const skipped = req.body?.skipped === true;
-  if (!canCompleteTrainingStep(step, req.body?.targetInteracted === true, skipped)) {
-    await audit("training.step.validation_failed", { userId: req.auth!.userId, entityType: "training_run", entityId: run.id, ip: req.ip, details: { missionKey: mission.key, stepId: step.id, reason: "target_not_interacted" } });
-    res.status(422).json({ error: "Use the highlighted control before checking this step" });
+  const persistedOutcome = step.kind === "action" && !skipped && (run.checkpoints.includes(step.id) || await hasPracticeOutcome(step, run));
+  if (!canCompleteTrainingStep(step, persistedOutcome, skipped)) {
+    await audit("training.step.validation_failed", { userId: req.auth!.userId, entityType: "training_run", entityId: run.id, ip: req.ip, details: { missionKey: mission.key, stepId: step.id, reason: "practice_record_missing" } });
+    res.status(422).json({ error: "The expected practice record is missing. Save it using the exact practice customer name and try again." });
     return;
   }
   const checkpoint = skipped ? `${step.id}:skipped` : step.id;
-  const checkpoints = Array.from(new Set([...run.checkpoints, checkpoint]));
+  const checkpoints = Array.from(new Set([...run.checkpoints.filter((item) => item !== `${step.id}:skipped`), run.checkpoints.includes(step.id) ? step.id : checkpoint]));
   const lastStep = run.currentStep >= mission.steps.length - 1;
   const now = new Date().toISOString();
   const values = { checkpoints, currentStep: lastStep ? run.currentStep : run.currentStep + 1, status: lastStep ? "completed" : "active", completedAt: lastStep ? now : null, updatedAt: now };
-  await db.update(trainingRunsTable).set(values).where(eq(trainingRunsTable.id, run.id));
+  const [updated] = await db.update(trainingRunsTable).set(values).where(and(eq(trainingRunsTable.id, run.id), eq(trainingRunsTable.updatedAt, run.updatedAt))).returning();
+  if (!updated) { res.status(409).json({ error: "Training progress changed. Refresh and try again." }); return; }
   await saveLegacyProgress(run.userId, run.missionKey, values.currentStep, values.status, checkpoints, run.startedAt, values.completedAt);
   await audit(lastStep ? "training.mission.completed" : "training.step.verified", { userId: req.auth!.userId, entityType: "training_run", entityId: run.id, ip: req.ip, details: { missionKey: mission.key, stepId: step.id, skipped } });
-  res.json({ ...run, ...values, verifiedStepId: step.id, complete: lastStep });
+  res.json({ ...publicRun(updated), verifiedStepId: skipped ? null : step.id, complete: lastStep });
 });
 
 router.post("/demo/missions/:key/exit", async (req, res) => {
@@ -184,16 +253,19 @@ router.post("/demo/missions/:key/exit", async (req, res) => {
 });
 
 router.post("/demo/missions/:key/restart", async (req, res) => {
+  const mission = TRAINING_MISSIONS.find((item) => item.key === req.params.key);
+  if (!mission) { res.status(404).json({ error: "Mission not found" }); return; }
+  if (!canUseMission(req, mission.role)) { res.status(403).json({ error: "Switch to the mission's role to restart." }); return; }
   const runId = String(req.body?.runId ?? "");
   const [run] = await db.select().from(trainingRunsTable)
     .where(and(eq(trainingRunsTable.id, runId), eq(trainingRunsTable.userId, req.auth!.userId), eq(trainingRunsTable.missionKey, req.params.key))).limit(1);
   if (!run) { res.status(404).json({ error: "Training run not found" }); return; }
   const now = new Date().toISOString();
-  const values = { manifestVersion: TRAINING_MANIFEST_VERSION, status: "active", currentStep: 0, checkpoints: [] as string[], practiceData: { namespace: `training:${run.id}`, isolated: true, externalSync: false, externalCommunication: false }, startedAt: now, completedAt: null, updatedAt: now };
+  const values = { manifestVersion: TRAINING_MANIFEST_VERSION, status: "active", currentStep: 0, checkpoints: [] as string[], practiceData: { environment: "practice" }, startedAt: now, completedAt: null, updatedAt: now };
   await db.update(trainingRunsTable).set(values).where(eq(trainingRunsTable.id, run.id));
   await saveLegacyProgress(run.userId, run.missionKey, 0, "active", [], now, null);
   await audit("training.mission.restarted", { userId: req.auth!.userId, entityType: "training_run", entityId: run.id, ip: req.ip, details: { missionKey: run.missionKey } });
-  res.json({ ...run, ...values });
+  res.json(publicRun({ ...run, ...values }));
 });
 
 router.get("/demo/audio/:stepId", createTrainingAudioHandler({
@@ -213,13 +285,13 @@ router.get("/demo/audio/:stepId", createTrainingAudioHandler({
   },
 }));
 
-router.get("/demo/reset/preview", requireOwner, async (_req, res) => {
+router.get("/demo/reset/preview", requireOwner, requireLegacyBaseline, async (_req, res) => {
   const origins = await db.select().from(demoRecordOriginsTable);
   const counts = origins.reduce<Record<string, number>>((acc, row) => { acc[row.entityType] = (acc[row.entityType] ?? 0) + 1; return acc; }, {});
   res.json({ demoRecords: counts, teamRecordsPreserved: true, transactional: true });
 });
 
-router.post("/demo/reset", requireOwner, async (req, res) => {
+router.post("/demo/reset", requireOwner, requireLegacyBaseline, async (req, res) => {
   const scope = String(req.body?.scope ?? "all");
   if (scope === "factory" && req.body?.confirmation !== "DELETE ALL DATA") { res.status(400).json({ error: "Type DELETE ALL DATA to confirm a factory reset" }); return; }
   await db.transaction(async (tx) => {

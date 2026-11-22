@@ -36,6 +36,7 @@ import {
   XCircle,
   FileText,
   Send,
+  MessageSquare,
   Link as LinkIcon,
   Copy,
   PenLine,
@@ -52,7 +53,7 @@ import { Proposal, ProposalStatus, DepositType, ProposalLineItem } from "@/lib/t
 import { useUrlState, useQueryControls } from "@/hooks/use-url-state";
 import { FilterSummary } from "@/components/layout/FilterSummary";
 import { CompanyBrand } from "@/components/layout/Brand";
-import { CommunicationsHistory, EmailComposeDialog } from "@/components/communications";
+import { CommunicationsHistory, EmailComposeDialog, SmsComposeDialog } from "@/components/communications";
 
 const STATUS_FLOW: ProposalStatus[] = ["Draft", "Sent", "Viewed", "Accepted"];
 
@@ -119,11 +120,13 @@ export default function Proposals() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [converting, setConverting] = useState(false);
   const [quoteEmailOpen, setQuoteEmailOpen] = useState(false);
+  const [smsQuoteId, setSmsQuoteId] = useState<string | null>(null);
   const [addProductId, setAddProductId] = useState("");
   const [addQty, setAddQty] = useState(1);
 
   const selected = proposals.find((p) => p.id === selectedId) ?? null;
   const quoteMessages = useCommunications(selected ? { customerKey: `quote:${selected.id}` } : {});
+  const quoteReadyToShare = selected && ["Sent", "Viewed"].includes(selected.status) && Boolean(selected.shareToken);
   const selectedJob = selected && jobs.find((job) => job.id === (selected.convertedJobId ?? selected.jobId));
   const activeProducts = products.filter((p) => p.active);
   const filtered = proposals.filter((proposal) => (status === "All" || proposal.status === status) && [proposal.customerName, proposal.projectLocation, proposal.flooringType].some((value) => value.toLowerCase().includes(search.trim().toLowerCase())));
@@ -665,9 +668,14 @@ export default function Proposals() {
                     <Send className="w-4 h-4 mr-2" /> Enable customer link
                   </Button>
                 )}
-                {["Sent", "Viewed"].includes(selected.status) && selected.shareToken && (
+                {quoteReadyToShare && (
                   <Button className="flex-1 min-w-[160px]" onClick={() => setQuoteEmailOpen(true)}>
                     <Send className="w-4 h-4 mr-2" /> Email quote link
+                  </Button>
+                )}
+                {quoteReadyToShare && (
+                  <Button variant="outline" className="flex-1 min-w-[160px]" onClick={() => setSmsQuoteId(selected.id)}>
+                    <MessageSquare className="w-4 h-4 mr-2" /> Text quote link
                   </Button>
                 )}
                 {selected.status !== "Draft" && selected.shareToken && (
@@ -724,6 +732,17 @@ export default function Proposals() {
           defaultSubject={`Your flooring quote${settings.companyName ? ` from ${settings.companyName}` : ""}`}
           defaultBody={`Hi ${selected.customerName},\n\nYou can review and respond to your flooring quote at the link below.\n\n${quoteLink(selected.shareToken)}\n\nPlease reply if you have questions.`}
           onSend={quoteMessages.sendEmail}
+        />
+      )}
+      {selected && quoteReadyToShare && (
+        <SmsComposeDialog
+          key={selected.id}
+          open={smsQuoteId === selected.id}
+          onOpenChange={(open) => { if (!open) setSmsQuoteId(null); }}
+          toNumber={selectedJob?.phone ?? ""}
+          customerName={selected.customerName}
+          defaultBody={`Hi ${selected.customerName}, you can review and respond to your flooring quote here.\n\n${quoteLink(selected.shareToken)}`}
+          onSend={quoteMessages.sendSms}
         />
       )}
 

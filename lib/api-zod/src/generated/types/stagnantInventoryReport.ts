@@ -5,10 +5,12 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { StagnantInventoryReportRecordsItem } from './stagnantInventoryReportRecordsItem';
 import type { StagnantInventoryReportWindowsItem } from './stagnantInventoryReportWindowsItem';
 
 export interface StagnantInventoryReport {
   asOfDate: string;
   unknownMovementLocations: number;
+  records?: StagnantInventoryReportRecordsItem[];
   windows: StagnantInventoryReportWindowsItem[];
 }

@@ -253,14 +253,13 @@ export function LeadTabs({ lead, section }: LeadTabsProps) {
       <TabsContent value="SMS" className="mt-4 space-y-4">
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm text-muted-foreground">
-            Text messages with {lead.customerName}.
+            Texts sent from your device stay in its messaging app.
           </p>
           <Button
             size="sm"
             onClick={() => setSmsOpen(true)}
-            disabled={!lead.phone}
           >
-            <MessageSquare className="mr-2 h-4 w-4" /> Send SMS
+            <MessageSquare className="mr-2 h-4 w-4" /> Compose text
           </Button>
         </div>
         <CommunicationsHistory
@@ -269,6 +268,7 @@ export function LeadTabs({ lead, section }: LeadTabsProps) {
           channel="sms"
         />
         <SmsComposeDialog
+          key={lead.id}
           open={smsOpen}
           onOpenChange={setSmsOpen}
           toNumber={lead.phone}

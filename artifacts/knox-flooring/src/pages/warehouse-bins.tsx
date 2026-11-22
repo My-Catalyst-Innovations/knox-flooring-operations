@@ -260,7 +260,7 @@ export default function WarehouseBins() {
       setScanError("No warehouse or bin matches this label.");
       return;
     }
-    update({ warehouse: nextWarehouse, bin: candidate?.id ?? null, q: null });
+    update({ warehouse: nextWarehouse, bin: candidate?.id ?? null, q: null, count: null });
     setScan("");
     setScanError("");
   }
@@ -276,7 +276,7 @@ export default function WarehouseBins() {
       {(warehouses.isError || bins.isError) && <p role="alert" className="text-sm text-destructive">Could not load warehouse locations. <button className="underline" onClick={() => { void warehouses.refetch(); void bins.refetch(); }}>Retry</button></p>}
       {warehouses.data?.length === 0 && <p className="text-sm text-muted-foreground">Add a warehouse from <Link href="/inventory" className="underline">Inventory</Link> to start tracking bins.</p>}
       {!!warehouses.data?.length && <label className="block max-w-sm space-y-1 text-sm font-medium">Warehouse
-        <select className={inventorySelect} value={selected?.id ?? ""} onChange={(event) => update({ warehouse: event.target.value, bin: null })}>
+        <select className={inventorySelect} value={selected?.id ?? ""} onChange={(event) => update({ warehouse: event.target.value, bin: null, count: null })}>
           {!selected && <option value="" disabled>Choose a warehouse</option>}
           {warehouses.data?.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
         </select>

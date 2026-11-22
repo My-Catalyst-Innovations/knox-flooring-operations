@@ -52,20 +52,21 @@ function agingBand(days: number): AgingBand {
   return days <= 90 ? "pastDue61To90" : "pastDue91Plus";
 }
 
-export function invoiceAging(
-  invoices: ReadonlyArray<{
-    status: string;
-    dueDate: string;
-    balanceAmount: number;
-  }>,
-  asOfDate: string,
-) {
+export function invoiceAging<
+  T extends { status: string; dueDate: string; balanceAmount: number },
+>(invoices: readonly T[], asOfDate: string) {
   const buckets = agingBands.map((band) => ({
     band,
     invoiceCount: 0,
     cents: 0,
   }));
   const byBand = new Map(buckets.map((bucket) => [bucket.band, bucket]));
+  const records: {
+    invoice: T;
+    band: AgingBand;
+    balance: number;
+    dueDate: string | null;
+  }[] = [];
   for (const invoice of invoices) {
     if (
       !["Sent", "Partial", "Overdue"].includes(invoice.status) ||
@@ -77,48 +78,80 @@ export function invoiceAging(
     const daysPastDue = dueDate
       ? (Date.parse(asOfDate) - Date.parse(dueDate)) / dayMs
       : NaN;
-    const bucket = byBand.get(agingBand(daysPastDue))!;
+    const band = agingBand(daysPastDue);
+    const cents = Math.round(invoice.balanceAmount * 100);
+    const bucket = byBand.get(band)!;
     bucket.invoiceCount += 1;
-    bucket.cents += Math.round(invoice.balanceAmount * 100);
+    bucket.cents += cents;
+    records.push({ invoice, band, balance: cents / 100, dueDate });
   }
-  return buckets.map(({ band, invoiceCount, cents }) => ({
-    band,
-    invoiceCount,
-    balance: cents / 100,
-  }));
+  return {
+    buckets: buckets.map(({ band, invoiceCount, cents }) => ({
+      band,
+      invoiceCount,
+      balance: cents / 100,
+    })),
+    records,
+  };
 }
 
-export function completionTimeliness(
-  jobs: ReadonlyArray<{
+export function completionTimeliness<
+  T extends {
     recordedCompletion: string;
     committedCompletionDate: string | null;
     committedCompletionRecordedAt: string | null;
     estCompletionDate: string | null;
-  }>,
-) {
+  },
+>(jobs: readonly T[]) {
   const committed = { onTime: 0, late: 0 };
   const estimated = { onTime: 0, late: 0 };
   let unknown = 0;
+  const records: {
+    job: T;
+    completedOn: string;
+    targetOn: string | null;
+    basis: "committed" | "estimated" | "unknown";
+    outcome: "onTime" | "late" | "unknown";
+  }[] = [];
   for (const job of jobs) {
     const completionDay = recordedBusinessDate(job.recordedCompletion);
     const commitmentDay = recordedBusinessDate(job.committedCompletionDate);
     const recordedAt = Date.parse(job.committedCompletionRecordedAt ?? "");
     const completedAt = Date.parse(job.recordedCompletion);
-    if (
+    const committedTarget =
       completionDay &&
       commitmentDay &&
       Number.isFinite(recordedAt) &&
       recordedAt <= completedAt
-    ) {
-      committed[completionDay <= commitmentDay ? "onTime" : "late"] += 1;
-      continue;
+        ? commitmentDay
+        : null;
+    const estimateTarget = completionDay
+      ? recordedBusinessDate(job.estCompletionDate)
+      : null;
+    const targetOn = committedTarget ?? estimateTarget;
+    if (!completionDay || !targetOn) {
+      unknown += 1;
+      records.push({
+        job,
+        completedOn: completionDay ?? job.recordedCompletion,
+        targetOn: null,
+        basis: "unknown",
+        outcome: "unknown",
+      });
+    } else {
+      const basis = committedTarget ? "committed" : "estimated";
+      const outcome = completionDay <= targetOn ? "onTime" : "late";
+      (basis === "committed" ? committed : estimated)[outcome] += 1;
+      records.push({
+        job,
+        completedOn: completionDay,
+        targetOn,
+        basis,
+        outcome,
+      });
     }
-    const estimateDay = recordedBusinessDate(job.estCompletionDate);
-    if (completionDay && estimateDay)
-      estimated[completionDay <= estimateDay ? "onTime" : "late"] += 1;
-    else unknown += 1;
   }
-  return { committed, estimated, unknown };
+  return { committed, estimated, unknown, records };
 }
 
 export const movementWindows = [30, 60, 90] as const;
@@ -177,22 +210,19 @@ export function inventoryActivity(
 
 export function stockAuditSummary(
   rows: ReadonlyArray<{
-    reason: string;
     productId: string;
     sku: string;
     productName: string;
     unit: string;
     entries: number;
-    matches: number;
     quantity: number;
     jobId?: string | null;
     jobNumber?: string | null;
     crewId?: string | null;
     crewName?: string | null;
   }>,
+  postedCounts: readonly { bookedQuantity: number; countedQuantity: number }[],
 ) {
-  let checked = 0;
-  let matched = 0;
   type Waste = {
     productId: string;
     sku: string;
@@ -213,53 +243,50 @@ export function stockAuditSummary(
   const waste = new Map<string, Waste>();
   const wasteByJob = new Map<string, Assignment>();
   for (const row of rows) {
-    if (row.reason === "count") {
-      checked += row.entries;
-      matched += row.matches;
-    } else if (row.reason === "waste") {
-      const productKey = JSON.stringify([
-        row.productId,
-        row.sku,
-        row.productName,
-        row.unit,
-      ]);
-      const product = waste.get(productKey) ?? {
-        productId: row.productId,
-        sku: row.sku,
-        productName: row.productName,
-        unit: row.unit,
-        entries: 0,
-        quantity: 0,
-      };
-      product.entries += row.entries;
-      product.quantity += row.quantity;
-      waste.set(productKey, product);
-      const jobKey = JSON.stringify([
-        row.jobId ?? null,
-        row.crewId ?? null,
-        row.unit,
-      ]);
-      const assignment = wasteByJob.get(jobKey) ?? {
-        jobId: row.jobId ?? null,
-        jobNumber: row.jobNumber ?? null,
-        crewId: row.crewId ?? null,
-        crewName: row.crewName ?? null,
-        unit: row.unit,
-        entries: 0,
-        quantity: 0,
-      };
-      assignment.entries += row.entries;
-      assignment.quantity += row.quantity;
-      wasteByJob.set(jobKey, assignment);
-    }
+    const productKey = JSON.stringify([
+      row.productId,
+      row.sku,
+      row.productName,
+      row.unit,
+    ]);
+    const product = waste.get(productKey) ?? {
+      productId: row.productId,
+      sku: row.sku,
+      productName: row.productName,
+      unit: row.unit,
+      entries: 0,
+      quantity: 0,
+    };
+    product.entries += row.entries;
+    product.quantity += row.quantity;
+    waste.set(productKey, product);
+    const jobKey = JSON.stringify([
+      row.jobId ?? null,
+      row.crewId ?? null,
+      row.unit,
+    ]);
+    const assignment = wasteByJob.get(jobKey) ?? {
+      jobId: row.jobId ?? null,
+      jobNumber: row.jobNumber ?? null,
+      crewId: row.crewId ?? null,
+      crewName: row.crewName ?? null,
+      unit: row.unit,
+      entries: 0,
+      quantity: 0,
+    };
+    assignment.entries += row.entries;
+    assignment.quantity += row.quantity;
+    wasteByJob.set(jobKey, assignment);
   }
   const roundQuantity = <T extends { quantity: number }>(row: T) => ({
     ...row,
     quantity: Math.round(row.quantity * 1e6) / 1e6,
   });
   return {
-    checked,
-    matched,
+    checked: postedCounts.length,
+    matched: postedCounts.filter(
+      (row) => row.bookedQuantity === row.countedQuantity,
+    ).length,
     waste: [...waste.values()].map(roundQuantity),
     wasteByJob: [...wasteByJob.values()].map(roundQuantity),
   };
@@ -285,8 +312,8 @@ export function upcomingInstallationJobs(
   const today = reportBusinessDate(now);
   const endDate = reportBusinessDate(end);
   const scheduledJobs = new Set<string>();
-  const bookedInWindow = new Set<string>();
-  const activeInWindow = new Set<string>();
+  const bookedInWindow = new Map<string, number>();
+  const activeInWindow = new Map<string, number>();
   for (const booking of bookings) {
     const start = Date.parse(booking.startAt);
     const finish = Date.parse(booking.endAt);
@@ -298,20 +325,31 @@ export function upcomingInstallationJobs(
     const active = activeCrews.has(booking.crewId);
     if (active) scheduledJobs.add(booking.jobId);
     if (start >= end.getTime()) continue;
-    bookedInWindow.add(booking.jobId);
-    if (active) activeInWindow.add(booking.jobId);
+    bookedInWindow.set(
+      booking.jobId,
+      Math.min(start, bookedInWindow.get(booking.jobId) ?? Infinity),
+    );
+    if (active)
+      activeInWindow.set(
+        booking.jobId,
+        Math.min(start, activeInWindow.get(booking.jobId) ?? Infinity),
+      );
   }
   const confirmedJobIds: string[] = [];
-  let needsCrew = 0;
+  const needsCrewJobIds: string[] = [];
+  const datesByJob = new Map<string, string>();
   for (const job of jobs) {
     if (["Completed", "Invoiced"].includes(job.status)) continue;
-    if (activeInWindow.has(job.id)) {
+    const confirmed = activeInWindow.get(job.id);
+    if (confirmed !== undefined) {
       confirmedJobIds.push(job.id);
+      datesByJob.set(job.id, reportBusinessDate(new Date(confirmed)));
       continue;
     }
     const plannedDay = recordedBusinessDate(job.estStartDate);
+    const booked = bookedInWindow.get(job.id);
     if (
-      bookedInWindow.has(job.id) ||
+      booked !== undefined ||
       (!scheduledJobs.has(job.id) &&
         plannedDay &&
         plannedDay >= today &&
@@ -323,8 +361,14 @@ export function upcomingInstallationJobs(
           "Scheduled",
           "In Progress",
         ].includes(job.status))
-    )
-      needsCrew += 1;
+    ) {
+      needsCrewJobIds.push(job.id);
+      const date =
+        booked === undefined
+          ? plannedDay
+          : reportBusinessDate(new Date(booked));
+      if (date) datesByJob.set(job.id, date);
+    }
   }
-  return { confirmedJobIds, needsCrew };
+  return { confirmedJobIds, needsCrewJobIds, datesByJob };
 }

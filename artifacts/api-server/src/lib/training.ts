@@ -1,8 +1,9 @@
-export const TRAINING_MANIFEST_VERSION = "2026.3";
+export const TRAINING_MANIFEST_VERSION = "2026.4";
 
 export type TrainingRole = "owner" | "sales" | "operations" | "installer";
 export type TrainingPlacement = "top" | "right" | "bottom" | "left" | "center";
 export type TrainingStepKind = "info" | "action";
+export type TrainingOutcome = "lead" | "measured-estimate" | "proposal";
 
 export type TrainingStep = {
   id: string;
@@ -10,6 +11,7 @@ export type TrainingStep = {
   target: string;
   placement: TrainingPlacement;
   kind: TrainingStepKind;
+  outcome?: TrainingOutcome;
   title: string;
   explanation: string;
   instruction: string;
@@ -49,6 +51,7 @@ const info = (
 ): TrainingStep => ({ id, route, target, placement, kind: "info", title, explanation, instruction, narration, seconds });
 
 const action = (
+  outcome: TrainingOutcome,
   id: string,
   route: string,
   target: string,
@@ -58,7 +61,7 @@ const action = (
   narration: string,
   placement: TrainingPlacement = "bottom",
   seconds = 32,
-): TrainingStep => ({ id, route, target, placement, kind: "action", title, explanation, instruction, narration, seconds });
+): TrainingStep => ({ id, route, target, placement, kind: "action", outcome, title, explanation, instruction, narration, seconds });
 
 export const TRAINING_MISSIONS: MissionDefinition[] = [
   {
@@ -71,7 +74,7 @@ export const TRAINING_MISSIONS: MissionDefinition[] = [
       info("executive-dashboard", "/", "nav-dashboard", "Your command center", "The dashboard brings sales, production, cash, crew load, and urgent exceptions into one owner view.", "Review the priority cards before moving into the sales pipeline.", "Welcome to the Knoxville Flooring command center. This page answers the owner's first questions every morning: what needs attention, what revenue is moving, and where a job may be at risk."),
       info("executive-pipeline", "/pipeline", "nav-pipeline", "From lead to won", "The pipeline makes every opportunity visible by stage so follow-ups do not disappear in email or paper notes.", "Notice how value and next actions move with each lead.", "The sales pipeline follows every opportunity from the first conversation through a won or lost decision. It gives the team a shared process and gives leadership a reliable forecast."),
       info("executive-ai", "/estimator", "estimator-ai", "AI-assisted estimating", "The copilot drafts scope, risk, labor, waste, and product guidance while Knox keeps final pricing and calculations authoritative.", "Review the AI control and the approval boundary around its suggestions.", "The quote copilot helps the estimator think faster without giving up control. It can suggest scope, waste, labor, and risks, but a person approves every recommendation and Knox performs the final math."),
-      info("executive-job", "/jobs/4", "job-overview", "Follow the installation", "The job record connects scope, crew, schedule, material readiness, costs, notes, and progress photos.", "Review the commercial demonstration job and its current status.", "Once work is approved, the job record becomes the operating source of truth. Sales, operations, installers, and the owner can see the same scope, schedule, materials, and progress."),
+      info("executive-job", "/jobs", "nav-jobs", "Follow the installation", "The job record connects scope, crew, schedule, material readiness, costs, notes, and progress photos.", "Review the jobs list and open a fictional sample job if one is available.", "Once work is approved, the job record becomes the operating source of truth. Sales, operations, installers, and the owner can see the same scope, schedule, materials, and progress."),
       info("executive-invoice", "/invoices", "nav-invoices", "Invoice and payment visibility", "Invoices show deposits, paid amounts, balances, due dates, credits, and overdue risk.", "Review how accounting outcomes return to Knox without replacing its local records.", "The finance area keeps invoice status and customer balances visible to the owner. QuickBooks can remain the accounting authority while Knox shows the operational team exactly what has been paid and what remains."),
       info("executive-integrations", "/integration-health", "integration-health", "Trust every connection", "Integration Health distinguishes live, sandbox, simulated, disconnected, and error states so the demonstration never overstates a connection.", "Review OpenAI, QuickBooks, calendar, measurement, and communication status.", "The integration health page makes the system honest and supportable. Every connection is labeled clearly, with live AI usage and simulated demonstration services separated from production services.", "left"),
     ],
@@ -87,7 +90,7 @@ export const TRAINING_MISSIONS: MissionDefinition[] = [
       info("owner-reports", "/reports", "nav-reports", "Profitability and trends", "Reports connect completed work to revenue, margin, flooring type, crews, and material delays.", "Compare revenue and profit rather than relying on sales volume alone.", "Reports turn completed work into operating insight. Revenue matters, but margin, crew performance, and recurring material delays reveal whether growth is healthy."),
       info("owner-receivables", "/invoices", "nav-invoices", "Protect cash flow", "The invoice view separates drafts, sent invoices, partial payments, paid work, and overdue balances.", "Locate an overdue or partially paid invoice and review its balance.", "Cash flow depends on knowing the difference between revenue booked and money collected. This view makes deposits, partial payments, balances, and overdue invoices easy to act on."),
       info("owner-commissions", "/commissions", "nav-commissions", "Commission control", "Commission reporting ties salesperson compensation to approved performance and the configured commission basis.", "Review the calculation basis before approving payouts.", "Commission reporting helps the owner reward performance without spreadsheet guesswork. The configured basis and rate stay visible so every payout can be explained."),
-      action("owner-quickbooks", "/settings", "quickbooks-demo", "Approve accounting deliberately", "QuickBooks activity is approval-based. Operational edits do not silently become accounting transactions.", "Open the simulated QuickBooks review and select a pending record before continuing.", "The QuickBooks review queue is where the owner controls what reaches accounting. Each proposed customer, project, estimate, invoice, payment, or cost can be inspected before approval."),
+      info("owner-quickbooks", "/settings", "nav-settings", "Approve accounting deliberately", "QuickBooks activity is approval-based. Operational edits do not silently become accounting transactions.", "Review where to find accounting settings and the review queue.", "The QuickBooks review queue is where the owner controls what reaches accounting. Each proposed customer, project, estimate, invoice, payment, or cost can be inspected before approval."),
     ],
   },
   {
@@ -97,11 +100,11 @@ export const TRAINING_MISSIONS: MissionDefinition[] = [
     minutes: 12,
     summary: "Capture a lead, measure rooms, create an AI quote, protect margin, and prepare a proposal.",
     steps: [
-      action("sales-lead", "/leads", "leads-new", "Capture the opportunity", "A complete lead record creates accountability for the customer, source, next follow-up, and estimated value.", "Select New Lead and review the fields required to create a training lead. You may cancel without changing normal demo data.", "Start by capturing the opportunity while the conversation is fresh. Customer details, source, project type, value, and next action give the entire team a clean handoff."),
-      action("sales-measure", "/estimator", "estimator-rooms", "Enter verified measurements", "Room measurements establish the quantity baseline used by waste, material, labor, and pricing calculations.", "Add or review a room and confirm that the square footage updates.", "Measurements are the foundation of a trustworthy flooring quote. Enter each room carefully and verify the total before asking AI or pricing tools to make recommendations."),
-      action("sales-ai", "/estimator", "estimator-ai", "Ask the Quote Copilot", "AI analyzes supplied facts and catalog context but never invents prices, products, tax, or measurements.", "Generate AI recommendations, then review facts, assumptions, risks, and confidence.", "Now use the quote copilot to turn measurements and project notes into a structured recommendation. Pay attention to the distinction between supplied facts, calculated values, and AI assumptions."),
+      action("lead", "sales-lead", "/leads", "leads-new", "Capture the opportunity", "A complete lead record creates accountability for the customer, source, next follow-up, and estimated value.", "Save a new lead using the practice customer name shown below. Use fictional project details and leave phone and email blank.", "Start by capturing the opportunity while the conversation is fresh. Customer details, source, project type, value, and next action give the entire team a clean handoff."),
+      action("measured-estimate", "sales-measure", "/estimator", "estimator-rooms", "Enter verified measurements", "Room measurements establish the quantity baseline used by waste, material, labor, and pricing calculations.", "Select the practice customer or enter the exact name below. Enter a 10 by 12 foot room, confirm the 120 square foot total and let the estimate save.", "Measurements are the foundation of a trustworthy flooring quote. Enter each room carefully and verify the total before asking AI or pricing tools to make recommendations."),
+      info("sales-ai", "/estimator", "estimator-ai", "Review the Quote Copilot", "AI summarizes scope and highlights assumptions, risks, and missing facts. Pricing and measurements require review.", "Locate the copilot. This lesson explains how to review its suggestions.", "The quote copilot turns measurements and project notes into a structured recommendation. Pay attention to the distinction between supplied facts, calculated values, and AI assumptions."),
       info("sales-margin", "/estimator", "estimator-summary", "Protect the margin", "The pricing summary remains deterministic and shows material, labor, additional costs, selling price, and expected margin.", "Review the total and margin before creating a customer document.", "Before presenting a quote, confirm both the customer's total and the company's expected margin. AI can flag risk, but Knox remains responsible for every price extension and final total."),
-      action("sales-proposal", "/estimator", "estimator-proposal", "Prepare the proposal", "Converting creates a branded proposal that can be reviewed before any customer communication is sent.", "Select Convert to Proposal only after the scope and pricing are ready. Training mode will not send externally.", "A proposal should communicate scope and value clearly, not just show a number. Conversion carries the approved estimate into a branded document for final review and customer acceptance."),
+      action("proposal", "sales-proposal", "/estimator", "estimator-proposal", "Prepare the proposal", "Converting creates a branded draft for review before any customer communication.", "Complete the practice estimate, convert it to a proposal, and verify the saved draft.", "A proposal should communicate scope and value clearly, not just show a number. Conversion carries the approved estimate into a branded document for final review and customer acceptance."),
       info("sales-outbox", "/demo-outbox", "nav-demo-outbox", "Practice communication safely", "Demo emails and text messages are captured internally so training cannot contact a real customer.", "Review the safe outbox and confirm the simulated delivery label.", "The Demo Outbox makes customer communication safe to rehearse. Messages remain visible for review, but no email or text leaves the demonstration environment."),
     ],
   },
@@ -114,7 +117,7 @@ export const TRAINING_MISSIONS: MissionDefinition[] = [
     steps: [
       info("operations-accepted", "/jobs", "nav-jobs", "Find accepted work", "The jobs tracker shows the lifecycle after a customer accepts the work.", "Filter mentally for approved or material-stage work that needs an operational next action.", "Operations begins when sold work becomes executable work. The jobs tracker shows which projects need materials, dates, crews, or exception handling."),
       info("operations-materials", "/materials", "nav-materials", "Confirm material readiness", "Material readiness prevents a crew from arriving before product, transitions, padding, or sundries are available.", "Review ordered, received, ready, and delayed material states.", "Before promising an installation date, verify every required material. A single missing transition or delayed product can waste a crew day and damage the customer experience."),
-      action("operations-crew", "/jobs", "jobs-new", "Assign responsibility", "Every scheduled job needs an accountable crew and a scope they can understand.", "Open the job editor and review the crew assignment control. Cancel to preserve normal demo data.", "Crew assignment makes ownership explicit. Match job complexity, product type, and timing to the appropriate team before committing the schedule."),
+      info("operations-crew", "/calendar", "nav-calendar", "Assign responsibility", "Every scheduled job needs an accountable crew and a scope they can understand.", "Review the crew schedule and how crew assignments are shown.", "Crew assignment makes ownership explicit. Match job complexity, product type, and timing to the appropriate team before committing the schedule."),
       info("operations-schedule", "/schedule", "nav-schedule", "Build a realistic schedule", "The crew schedule combines dates, workload, risk, and material readiness.", "Check for overlaps and warning badges before treating a date as committed.", "Scheduling is more than placing a job on a calendar. It requires a ready scope, ready materials, adequate labor, and room for known risks."),
       info("operations-exceptions", "/materials", "materials-overview", "Resolve exceptions early", "Delayed or incomplete material records stay visible until the responsible person can act.", "Identify a delayed order and the supplier or next action attached to it.", "Exception visibility keeps small issues from becoming missed installations. Delayed materials should have an owner, a supplier update, and a next decision date."),
     ],
@@ -126,12 +129,12 @@ export const TRAINING_MISSIONS: MissionDefinition[] = [
     minutes: 9,
     summary: "Run an assigned installation from scope review through documented completion.",
     steps: [
-      info("installer-job", "/jobs/4", "job-overview", "Open the assigned job", "The job header confirms the customer, address, stage, crew, and expected timing.", "Verify that you are working in the correct job before recording field activity.", "The installer starts with the assigned job. Confirm the address, schedule, crew, and job number before reviewing the detailed scope."),
-      info("installer-scope", "/jobs/4", "job-scope", "Review scope before work", "Scope, flooring type, rooms, risks, and material notes define what the customer approved.", "Read the scope and risk notes before recording labor or progress.", "A clear scope prevents surprises in the field. Review rooms, product, preparation, transitions, risks, and customer expectations before installation begins."),
-      action("installer-labor", "/jobs/4", "job-log-labor", "Record labor accurately", "Labor entries support costing, crew performance, payroll review, and project profitability.", "Open Log Labor, review the date, crew, hours, and notes, then close the practice dialog.", "Record labor on the day it occurs. Accurate crew and hour entries make job costing useful and help operations plan future work realistically."),
-      action("installer-usage", "/jobs/4", "job-log-material", "Record material usage", "Actual usage explains waste, shortages, returns, and differences between estimate and final job cost.", "Open Log Usage and review the required material, quantity, unit, and cost fields.", "Material usage connects the warehouse and the job site. Recording actual quantities helps explain variance and improves future estimates."),
-      action("installer-photos", "/jobs/4", "job-photos", "Document the work", "Progress and completion photos create a visual record for operations, the owner, and the customer portal.", "Review the photo stage, caption, and upload controls. Use only an approved training image.", "Photos make progress visible and protect everyone involved. Capture preparation, installation, details, and the completed room with useful captions."),
-      info("installer-complete", "/jobs/4", "job-stage", "Request completion", "Completion should follow recorded labor, material usage, photos, notes, and a final scope check.", "Review the lifecycle control and confirm what evidence operations needs for closeout.", "Completion is a documented handoff, not just the end of installation. Confirm scope, notes, actuals, photos, and any remaining customer item before requesting closeout."),
+      info("installer-job", "/jobs", "nav-jobs", "Open the assigned job", "The job header confirms the customer, address, stage, crew, and expected timing.", "Find a fictional practice job in the jobs list if one is available.", "The installer starts with the assigned job. Confirm the address, schedule, crew, and job number before reviewing the detailed scope."),
+      info("installer-scope", "/jobs", "nav-jobs", "Review scope before work", "Scope, flooring type, rooms, risks, and material notes define what the customer approved.", "Read the scope and risk notes before recording labor or progress.", "A clear scope prevents surprises in the field. Review rooms, product, preparation, transitions, risks, and customer expectations before installation begins."),
+      info("installer-labor", "/jobs", "nav-jobs", "Record labor accurately", "Labor entries support costing, crew performance, payroll review, and project profitability.", "Job actuals record the work date, crew, hours, and notes.", "Record labor on the day it occurs. Accurate crew and hour entries make job costing useful and help operations plan future work realistically."),
+      info("installer-usage", "/jobs", "nav-jobs", "Record material usage", "Actual usage explains waste, shortages, returns, and differences between estimate and final job cost.", "Job actuals record the material, quantity, unit, and cost.", "Material usage connects the warehouse and the job site. Recording actual quantities helps explain variance and improves future estimates."),
+      info("installer-photos", "/jobs", "nav-jobs", "Document the work", "Progress and completion photos create a visual record for operations, the owner, and the customer portal.", "Photo captions should identify the work stage and location in the job scope.", "Photos make progress visible and protect everyone involved. Capture preparation, installation, details, and the completed room with useful captions."),
+      info("installer-complete", "/jobs", "nav-jobs", "Request completion", "Completion should follow recorded labor, material usage, photos, notes, and a final scope check.", "Confirm what evidence operations needs for closeout.", "Completion is a documented handoff, not just the end of installation. Confirm scope, notes, actuals, photos, and any remaining customer item before requesting closeout."),
     ],
   },
 ];
@@ -172,6 +175,6 @@ export function findTrainingStep(stepId: string) {
   return guide ? { guide, step: { id: stepId, narration: guide.narration } } : null;
 }
 
-export function canCompleteTrainingStep(step: Pick<TrainingStep, "kind">, targetInteracted: boolean, skipped = false) {
-  return skipped || step.kind === "info" || targetInteracted;
+export function canCompleteTrainingStep(step: Pick<TrainingStep, "kind">, persistedOutcome: boolean, skipped = false) {
+  return skipped || step.kind === "info" || persistedOutcome;
 }

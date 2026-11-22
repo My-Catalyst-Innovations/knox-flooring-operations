@@ -35,6 +35,7 @@ export const navGroups: NavGroup[] = [
   ] },
 ];
 export const utilityItems: NavItem[] = [
+  { name: "Messages", href: "/communications", icon: Send, keywords: "texts sms replies email inbox unassigned", roles: ["owner", "sales"] },
   { name: "Settings", href: "/settings", icon: Settings, keywords: "config company preferences", roles: ["owner"] },
   { name: "Integrations", href: "/integration-health", icon: Activity, keywords: "health connections quickbooks calendar", roles: ["owner", "operations"] },
   { name: "Demo messages", href: "/demo-outbox", icon: Send, keywords: "outbox email sms preview", roles: ["owner", "sales"] },

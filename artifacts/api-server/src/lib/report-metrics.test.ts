@@ -19,29 +19,30 @@ describe("operational report metrics", () => {
       unit: "box",
     };
     expect(
-      stockAuditSummary([
-        { ...product, reason: "count", entries: 3, matches: 2, quantity: 20 },
-        { ...product, reason: "damage", entries: 30, matches: 0, quantity: 60 },
-        {
-          ...product,
-          reason: "waste",
-          entries: 2,
-          matches: 0,
-          quantity: 3,
-          jobId: "job-1",
-          jobNumber: "J-1",
-          crewId: "crew-1",
-          crewName: "Crew One",
-        },
-        {
-          ...product,
-          unit: "sqft",
-          reason: "waste",
-          entries: 1,
-          matches: 0,
-          quantity: 12.5,
-        },
-      ]),
+      stockAuditSummary(
+        [
+          {
+            ...product,
+            entries: 2,
+            quantity: 3,
+            jobId: "job-1",
+            jobNumber: "J-1",
+            crewId: "crew-1",
+            crewName: "Crew One",
+          },
+          {
+            ...product,
+            unit: "sqft",
+            entries: 1,
+            quantity: 12.5,
+          },
+        ],
+        [
+          { bookedQuantity: 1, countedQuantity: 1 },
+          { bookedQuantity: 2, countedQuantity: 2 },
+          { bookedQuantity: 3, countedQuantity: 2.5 },
+        ],
+      ),
     ).toEqual({
       checked: 3,
       matched: 2,
@@ -114,7 +115,15 @@ describe("operational report metrics", () => {
         now,
         until,
       ),
-    ).toEqual({ confirmedJobIds: ["ready"], needsCrew: 2 });
+    ).toEqual({
+      confirmedJobIds: ["ready"],
+      needsCrewJobIds: ["inactive-crew", "ask"],
+      datesByJob: new Map([
+        ["ready", "2026-11-25"],
+        ["inactive-crew", "2026-11-25"],
+        ["ask", "2026-11-22"],
+      ]),
+    });
   });
 
   it("uses Eastern business days and validates the calendar dates used for aging", () => {
@@ -133,7 +142,7 @@ describe("operational report metrics", () => {
       dueDate,
       balanceAmount,
     });
-    const buckets = invoiceAging(
+    const { buckets, records } = invoiceAging(
       [
         open(today, 10),
         open(shiftReportDate(today, 1), 4),
@@ -161,6 +170,16 @@ describe("operational report metrics", () => {
       { band: "pastDue91Plus", invoiceCount: 1, balance: 15 },
       { band: "unknown", invoiceCount: 2, balance: 13.71 },
     ]);
+    for (const bucket of buckets) {
+      const sources = records.filter(({ band }) => band === bucket.band);
+      expect(sources).toHaveLength(bucket.invoiceCount);
+      expect(
+        sources.reduce((total, row) => total + row.balance, 0),
+      ).toBeCloseTo(bucket.balance, 2);
+    }
+    expect(
+      records.find(({ invoice }) => invoice.dueDate === "2026-02-31"),
+    ).toMatchObject({ band: "unknown", dueDate: null });
   });
 
   it("classifies committed and estimated outcomes by local completion date and leaves unknown targets separate", () => {
@@ -170,35 +189,49 @@ describe("operational report metrics", () => {
       committedCompletionRecordedAt: null,
       estCompletionDate: null,
     };
-    expect(
-      completionTimeliness([
-        {
-          ...job,
-          committedCompletionDate: "2026-11-20",
-          committedCompletionRecordedAt: "2026-11-10T15:00:00Z",
-          estCompletionDate: "2026-11-19",
-        },
-        {
-          ...job,
-          committedCompletionDate: "2026-11-19",
-          committedCompletionRecordedAt: "2026-11-10T15:00:00Z",
-          estCompletionDate: "2026-11-25",
-        },
-        {
-          ...job,
-          estCompletionDate: "2026-11-21",
-          committedCompletionDate: "2026-11-19",
-          committedCompletionRecordedAt: "2026-11-21T04:00:00Z",
-        },
-        { ...job, estCompletionDate: "2026-11-19" },
-        { ...job, committedCompletionDate: "2026-11-20" },
-        { ...job, estCompletionDate: "2026-11-31" },
-      ]),
-    ).toEqual({
+    const outcomes = completionTimeliness([
+      {
+        ...job,
+        committedCompletionDate: "2026-11-20",
+        committedCompletionRecordedAt: "2026-11-10T15:00:00Z",
+        estCompletionDate: "2026-11-19",
+      },
+      {
+        ...job,
+        committedCompletionDate: "2026-11-19",
+        committedCompletionRecordedAt: "2026-11-10T15:00:00Z",
+        estCompletionDate: "2026-11-25",
+      },
+      {
+        ...job,
+        estCompletionDate: "2026-11-21",
+        committedCompletionDate: "2026-11-19",
+        committedCompletionRecordedAt: "2026-11-21T04:00:00Z",
+      },
+      { ...job, estCompletionDate: "2026-11-19" },
+      { ...job, committedCompletionDate: "2026-11-20" },
+      { ...job, estCompletionDate: "2026-11-31" },
+    ]);
+    expect(outcomes).toMatchObject({
       committed: { onTime: 1, late: 1 },
       estimated: { onTime: 1, late: 1 },
       unknown: 2,
     });
+    expect(
+      outcomes.records.map(({ basis, outcome, completedOn, targetOn }) => [
+        basis,
+        outcome,
+        completedOn,
+        targetOn,
+      ]),
+    ).toEqual([
+      ["committed", "onTime", "2026-11-20", "2026-11-20"],
+      ["committed", "late", "2026-11-20", "2026-11-19"],
+      ["estimated", "onTime", "2026-11-20", "2026-11-21"],
+      ["estimated", "late", "2026-11-20", "2026-11-19"],
+      ["unknown", "unknown", "2026-11-20", null],
+      ["unknown", "unknown", "2026-11-20", null],
+    ]);
   });
 
   it("keeps warehouse transfer, bin transfer, receipts, and unknown records separate in each rolling window", () => {

@@ -15,6 +15,8 @@ import {
   usersTable,
   inventoryMovementsTable,
   inventoryStockCountsTable,
+  warehousesTable,
+  warehouseBinsTable,
   auditEventsTable,
 } from "@workspace/db";
 import { requireRole } from "../middlewares/auth";
@@ -326,6 +328,7 @@ router.get(
         Number,
       );
     const counts = inventoryStockCountsTable;
+    const postedInPeriod = and(eq(counts.status, "Reconciled"), gte(counts.resolvedAt, from), lt(counts.resolvedAt, to));
     const jobId = sql<string | null>`${auditEventsTable.details}->>'jobId'`;
     const jobNumber = sql<string | null>`${auditEventsTable.details}->>'jobNumber'`;
     const crewId = sql<string | null>`${auditEventsTable.details}->>'crewId'`;
@@ -339,10 +342,13 @@ router.get(
       labor,
       movements,
       audits,
+      postedCounts,
     ] = await Promise.all([
       db
         .select({
           id: jobsTable.id,
+          jobNumber: jobsTable.jobNumber,
+          customerName: jobsTable.customerName,
           status: jobsTable.status,
           estRevenue: jobsTable.estRevenue,
           soldAt: jobsTable.soldAt,
@@ -357,6 +363,9 @@ router.get(
         .from(jobsTable),
       db
         .select({
+          id: invoicesTable.id,
+          invoiceNumber: invoicesTable.invoiceNumber,
+          customerName: invoicesTable.customerName,
           status: invoicesTable.status,
           total: invoicesTable.total,
           balanceAmount: invoicesTable.balanceAmount,
@@ -385,17 +394,12 @@ router.get(
         .groupBy(inventoryMovementsTable.kind),
       db
         .select({
-          reason: counts.reason,
-            productId: counts.productId,
+          productId: counts.productId,
           sku: counts.sku,
           productName: counts.productName,
           unit: counts.unit,
           jobId, jobNumber, crewId, crewName,
           entries: sql<number>`count(*)`.mapWith(Number),
-          matches:
-            sql<number>`count(*) filter (where ${counts.bookedQuantity} = ${counts.countedQuantity})`.mapWith(
-              Number,
-            ),
           quantity:
             sql<number>`round(sum(${counts.bookedQuantity}::numeric - ${counts.countedQuantity}::numeric), 6)`.mapWith(
               Number,
@@ -403,18 +407,23 @@ router.get(
         })
         .from(counts)
         .leftJoin(auditEventsTable, and(eq(auditEventsTable.entityId, counts.id), eq(auditEventsTable.entityType, "stock_count"), eq(auditEventsTable.action, "inventory.waste_attributed")))
-        .where(
-          and(
-            eq(counts.status, "Reconciled"),
-            gte(counts.resolvedAt, from),
-            lt(counts.resolvedAt, to),
-          ),
-        )
-        .groupBy(counts.reason, counts.productId, counts.sku, counts.productName, counts.unit, jobId, jobNumber, crewId, crewName)
+        .where(and(postedInPeriod, eq(counts.reason, "waste")))
+        .groupBy(counts.productId, counts.sku, counts.productName, counts.unit, jobId, jobNumber, crewId, crewName)
         .orderBy(asc(counts.productName), asc(counts.sku), asc(counts.unit)),
+      db.select({
+        id: counts.id, sku: counts.sku, productName: counts.productName, unit: counts.unit,
+        warehouseId: counts.warehouseId, warehouseName: warehousesTable.name,
+        binCode: warehouseBinsTable.code, postedAt: counts.resolvedAt,
+        bookedQuantity: counts.bookedQuantity, countedQuantity: counts.countedQuantity,
+      })
+        .from(counts)
+        .innerJoin(warehousesTable, eq(counts.warehouseId, warehousesTable.id))
+        .leftJoin(warehouseBinsTable, eq(counts.binId, warehouseBinsTable.id))
+        .where(and(postedInPeriod, eq(counts.reason, "count")))
+        .orderBy(desc(counts.resolvedAt), desc(counts.id)),
     ]);
     const installationUntil = shiftReportDate(businessToday, 14);
-    const { confirmedJobIds, needsCrew } = upcomingInstallationJobs(
+    const { confirmedJobIds, needsCrewJobIds, datesByJob } = upcomingInstallationJobs(
       jobs,
       bookings,
       new Set(crews.filter((crew) => crew.active).map((crew) => crew.id)),
@@ -426,10 +435,16 @@ router.get(
         ? await db.transaction((tx) =>
             installationMaterialMessages(tx, confirmedJobIds),
           )
-        : new Map();
-    const materialsNeedAttention = confirmedJobIds.filter(
-      (jobId) => (materialIssues.get(jobId)?.length ?? 0) > 0,
-    ).length;
+        : null;
+    const confirmed = new Set(confirmedJobIds);
+    const missingCrew = new Set(needsCrewJobIds);
+    const jobSource = (job: { id: string; jobNumber: string; customerName: string }) =>
+      ({ jobId: job.id, jobNumber: job.jobNumber, customerName: job.customerName });
+    const installations = jobs.filter((job) => confirmed.has(job.id) || missingCrew.has(job.id)).map((job) => {
+      const issues = materialIssues?.get(job.id)?.map(({ message }) => message) ?? [];
+      const status = missingCrew.has(job.id) ? "needsCrew" : issues.length > 0 ? "materialsNeedAttention" : "ready";
+      return { ...jobSource(job), scheduledOn: datesByJob.get(job.id) ?? null, status, issues };
+    }).sort((a, b) => (a.scheduledOn ?? "").localeCompare(b.scheduledOn ?? "") || a.jobNumber.localeCompare(b.jobNumber));
     const recordedBoundary = (value: string | null) => {
       try {
         return value ? boundary(value) : null;
@@ -509,6 +524,8 @@ router.get(
       .filter((l) => l.crewId)
       .reduce((sum, l) => sum + l.hours, 0);
     const materialUsageReport = await reportMaterialUsage(completed);
+    const aging = invoiceAging(invoices, businessToday);
+    const { records: completionRecords, ...completionSummary } = completionTimeliness(completed);
     res.json({
       from,
       to,
@@ -521,16 +538,25 @@ router.get(
         .filter((i) => ["Sent", "Partial", "Overdue"].includes(i.status))
         .reduce((sum, i) => sum + Math.max(0, i.balanceAmount), 0),
       asOfDate: businessToday,
-      invoiceAging: invoiceAging(invoices, businessToday),
+      invoiceAging: aging.buckets,
       inventoryActivity: inventoryActivity(movements),
-      completionTimeliness: completionTimeliness(completed),
-      stockAudit: stockAuditSummary(audits),
+      completionTimeliness: completionSummary,
+      stockAudit: stockAuditSummary(audits, postedCounts),
       materialUsageReport,
       installationReadiness: {
         through: shiftReportDate(installationUntil, -1),
-        ready: confirmedJobIds.length - materialsNeedAttention,
-        materialsNeedAttention,
-        needsCrew,
+        ready: installations.filter(({ status }) => status === "ready").length,
+        materialsNeedAttention: installations.filter(({ status }) => status === "materialsNeedAttention").length,
+        needsCrew: needsCrewJobIds.length,
+      },
+      sourceRecords: {
+        invoices: aging.records.map(({ invoice, ...detail }) => ({
+          invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, customerName: invoice.customerName, ...detail,
+        })).sort((a, b) => (a.dueDate ?? "").localeCompare(b.dueDate ?? "") || a.invoiceNumber.localeCompare(b.invoiceNumber)),
+        completions: completionRecords.map(({ job, ...detail }) => ({ ...jobSource(job), ...detail }))
+          .sort((a, b) => b.completedOn.localeCompare(a.completedOn) || a.jobNumber.localeCompare(b.jobNumber)),
+        installations,
+        postedCounts,
       },
       capacityHours: capacityKnown ? capacity : null,
       plannedLaborHours: plannedHours,

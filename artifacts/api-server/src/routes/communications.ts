@@ -23,8 +23,18 @@ import {
   emailAddress,
   sendEmail,
   sendSms,
+  signalWirePendingKey,
+  smsConfig,
+  smsDeliveryCapability,
   smsNumber,
 } from "../lib/comms";
+import {
+  isPendingSignalWireMessage,
+  reconcileCommunicationOutcome,
+  type CommunicationOutcome,
+} from "../lib/communication-outcome";
+import { emailRecipientSuppressed } from "../lib/email-webhooks";
+import { smsRecipientSuppressed } from "../lib/sms-consent";
 import { customerKey } from "../lib/customer-key";
 import { domainRoute, parse } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
@@ -32,6 +42,8 @@ import { DomainError } from "../lib/operations-rules";
 const router: IRouter = Router();
 
 function presentCommunication(row: CommunicationRow) {
+  if (isPendingSignalWireMessage(row.providerMessageId))
+    row = { ...row, providerMessageId: null };
   if (
     row.status === "queued" &&
     !row.providerMessageId &&
@@ -46,6 +58,14 @@ function presentCommunication(row: CommunicationRow) {
   }
   return stripNulls(row);
 }
+
+router.get("/communications/sms/status", (_req, res) => {
+  const capability = smsDeliveryCapability();
+  res.set("Cache-Control", "no-store").json({
+    ...capability,
+    serverSendAvailable: capability.serverSendAvailable && process.env.READ_ONLY_RECOVERY !== "true",
+  });
+});
 
 router.get(
   "/communications",
@@ -165,6 +185,8 @@ function matchesFields(
 function submit(channel: CommunicationChannel) {
   return domainRoute(async (req, res) => {
     const { id, capture, fields } = messageFields(req, channel);
+    const texting = !capture && channel === "sms" ? smsConfig() : null;
+    const signalWire = texting?.provider === "signalwire" ? texting : null;
     const now = new Date().toISOString();
     const claimed = await db.transaction(async (tx) => {
       const [first] = await tx
@@ -172,9 +194,13 @@ function submit(channel: CommunicationChannel) {
         .values({
           id,
           ...fields,
-          fromAddress: capture ? "Demo Outbox" : "",
+          fromAddress: capture ? "Demo Outbox" : (signalWire?.from ?? ""),
           status: capture ? "captured" : "queued",
-          providerMessageId: capture ? `demo:${id}` : null,
+          providerMessageId: capture
+            ? `demo:${id}`
+            : signalWire
+              ? signalWirePendingKey(signalWire.account)
+              : null,
           createdAt: now,
         })
         .onConflictDoNothing({ target: communicationsTable.id })
@@ -215,11 +241,24 @@ function submit(channel: CommunicationChannel) {
         .json(ListCommunicationsResponseItem.parse(stripNulls(claimed)));
       return;
     }
-    let outcome: Pick<
-      CommunicationInsert,
-      "status" | "providerMessageId" | "fromAddress" | "errorMessage"
-    >;
+    let outcome: CommunicationOutcome;
     try {
+      if (
+        channel === "email" &&
+        (await emailRecipientSuppressed(fields.toAddress))
+      )
+        throw new CommsError(
+          "This address is suppressed after an email delivery failure or spam report. Verify a different address before sending.",
+          409,
+        );
+      if (
+        texting?.from &&
+        (await smsRecipientSuppressed(texting.from, fields.toAddress))
+      )
+        throw new CommsError(
+          "This phone number has opted out of texts from this sender. Use another contact channel until they reply START or UNSTOP.",
+          409,
+        );
       const response =
         channel === "email"
           ? await sendEmail({
@@ -227,8 +266,14 @@ function submit(channel: CommunicationChannel) {
               subject: fields.subject,
               body: fields.body,
               idempotencyKey: `outbound/${id}`,
+              communicationId: id,
             })
-          : await sendSms({ to: fields.toAddress, body: fields.body });
+          : await sendSms(
+              { to: fields.toAddress, body: fields.body, communicationId: id },
+              undefined,
+              undefined,
+              texting,
+            );
       outcome = response;
     } catch (error) {
       outcome =
@@ -243,14 +288,26 @@ function submit(channel: CommunicationChannel) {
                 "The provider did not confirm the submission. Check the provider before sending again.",
             };
     }
-    const [recorded] = await db
-      .update(communicationsTable)
-      .set(outcome)
-      .where(eq(communicationsTable.id, id))
-      .returning();
+    const recorded = await db.transaction(async (tx) => {
+      const [previous] = await tx
+        .select()
+        .from(communicationsTable)
+        .where(eq(communicationsTable.id, id))
+        .for("update");
+      const merged = reconcileCommunicationOutcome(previous, outcome);
+      if (!merged.status) return previous;
+      const [saved] = await tx
+        .update(communicationsTable)
+        .set(merged)
+        .where(eq(communicationsTable.id, id))
+        .returning();
+      return saved;
+    });
     res
       .status(201)
-      .json(ListCommunicationsResponseItem.parse(stripNulls(recorded)));
+      .json(
+        ListCommunicationsResponseItem.parse(presentCommunication(recorded)),
+      );
   });
 }
 

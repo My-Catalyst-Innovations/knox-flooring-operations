@@ -1,4 +1,9 @@
-import { db, inventoryMovementsTable, productsTable } from "@workspace/db";
+import {
+  db,
+  inventoryMovementsTable,
+  productsTable,
+  warehousesTable,
+} from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { inventoryAcquisitionValue } from "./inventory-costing";
 import { roundStock } from "./inventory-stock";
@@ -7,6 +12,7 @@ import { movementWindows, reportBusinessDate } from "./report-metrics";
 type Balance = {
   productId: string;
   warehouseId: string | null;
+  warehouseName: string | null;
   onHand: number;
   lastMovement: string | null;
 };
@@ -17,7 +23,30 @@ type Valuation = {
   trackedValue: number;
   receiptValue: number;
 };
-type StockProduct = { id: string; onHand: number; catalogCost: number };
+type StockProduct = {
+  id: string;
+  sku: string;
+  name: string;
+  unit: string;
+  active: boolean;
+  onHand: number;
+  catalogCost: number;
+};
+type StagnantRecord = {
+  productId: string;
+  sku: string;
+  productName: string;
+  unit: string;
+  active: boolean;
+  warehouseId: string | null;
+  warehouseName: string | null;
+  onHand: number;
+  inactiveDays: number;
+  lastMovedOn: string;
+  receiptValue: number;
+  estimatedValue: number;
+  incompleteValue: boolean;
+};
 
 const dayMs = 86_400_000;
 const locationKey = (productId: string, warehouseId: string | null) =>
@@ -49,12 +78,14 @@ export function summarizeStagnantInventory(
     unvaluedLocations: 0,
   }));
   let unknownMovementLocations = 0;
+  const records: StagnantRecord[] = [];
   for (const product of products) {
     const ledger = balancesByProduct.get(product.id) ?? [];
     const named = ledger.filter((row) => row.warehouseId !== null);
     const unassigned = {
       productId: product.id,
       warehouseId: null,
+      warehouseName: null,
       onHand: roundStock(
         product.onHand - named.reduce((total, row) => total + row.onHand, 0),
       ),
@@ -64,8 +95,8 @@ export function summarizeStagnantInventory(
     for (const location of [...named, unassigned]) {
       const onHand = roundStock(location.onHand);
       if (onHand <= 0) continue;
-      const age =
-        (now.getTime() - Date.parse(location.lastMovement ?? "")) / dayMs;
+      const lastMovement = Date.parse(location.lastMovement ?? "");
+      const age = (now.getTime() - lastMovement) / dayMs;
       if (!Number.isFinite(age) || age < 0) {
         unknownMovementLocations += 1;
         continue;
@@ -92,11 +123,26 @@ export function summarizeStagnantInventory(
         receipt >= 0 &&
         Number.isSafeInteger(estimated) &&
         estimated >= 0;
+      const incompleteValue = !valid || (!hasCatalogRate && unpriced > 0);
+      records.push({
+        productId: product.id,
+        sku: product.sku,
+        productName: product.name,
+        unit: product.unit,
+        active: product.active,
+        warehouseId: location.warehouseId,
+        warehouseName: location.warehouseName,
+        onHand,
+        inactiveDays: Math.floor(age),
+        lastMovedOn: reportBusinessDate(new Date(lastMovement)),
+        receiptValue: valid ? receipt / 100 : 0,
+        estimatedValue: valid ? estimated / 100 : 0,
+        incompleteValue,
+      });
       for (const window of windows) {
         if (age < window.days) continue;
         window.locations += 1;
-        if (!valid || (!hasCatalogRate && unpriced > 0))
-          window.unvaluedLocations += 1;
+        if (incompleteValue) window.unvaluedLocations += 1;
         if (valid) {
           window.receiptCents += receipt;
           window.estimateCents += estimated;
@@ -107,6 +153,12 @@ export function summarizeStagnantInventory(
   return {
     asOfDate: reportBusinessDate(now),
     unknownMovementLocations,
+    records: records.sort(
+      (a, b) =>
+        b.inactiveDays - a.inactiveDays ||
+        a.sku.localeCompare(b.sku) ||
+        (a.warehouseName ?? "").localeCompare(b.warehouseName ?? ""),
+    ),
     windows: windows.map(({ receiptCents, estimateCents, ...window }) => ({
       ...window,
       receiptValue: receiptCents / 100,
@@ -123,6 +175,10 @@ export async function stagnantInventory(now = new Date()) {
         tx
           .select({
             id: productsTable.id,
+            sku: productsTable.sku,
+            name: productsTable.name,
+            unit: productsTable.unit,
+            active: productsTable.active,
             onHand: productsTable.quantityOnHand,
             catalogCost: productsTable.cost,
           })
@@ -132,13 +188,22 @@ export async function stagnantInventory(now = new Date()) {
           .select({
             productId: movement.productId,
             warehouseId: movement.warehouseId,
+            warehouseName: warehousesTable.name,
             onHand: sql<number>`sum(${movement.quantity})`.mapWith(Number),
             lastMovement: sql<
               string | null
             >`max(${movement.createdAt}) filter (where ${movement.kind} not in ('bin_in', 'bin_out'))`,
           })
           .from(movement)
-          .groupBy(movement.productId, movement.warehouseId),
+          .leftJoin(
+            warehousesTable,
+            eq(warehousesTable.id, movement.warehouseId),
+          )
+          .groupBy(
+            movement.productId,
+            movement.warehouseId,
+            warehousesTable.name,
+          ),
         inventoryAcquisitionValue(tx),
       ]),
     { isolationLevel: "repeatable read", accessMode: "read only" },

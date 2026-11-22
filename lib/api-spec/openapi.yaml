@@ -441,6 +441,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /communications/sms/status:
+    get:
+      operationId: getSmsDeliveryStatus
+      tags: [communications]
+      summary: Determine whether company SMS submission is available
+      responses:
+        "200":
+          description: The active messaging mode and provider status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmsDeliveryStatus"
   /measurements:
     get:
       operationId: listMeasurements
@@ -5128,6 +5140,19 @@ components:
         message:
           type: string
           nullable: true
+    SmsDeliveryStatus:
+      type: object
+      required: [mode, provider, serverSendAvailable]
+      properties:
+        mode:
+          type: string
+          enum: [capture, allowlist, live]
+        provider:
+          type: string
+          enum: [signalwire, twilio]
+          nullable: true
+        serverSendAvailable:
+          type: boolean
     CommunicationChannel:
       type: string
       enum: [ email, sms ]
@@ -5869,6 +5894,8 @@ components:
           $ref: "#/components/schemas/CompletedJobMaterialUsage"
         installationReadiness:
           $ref: "#/components/schemas/InstallationReadinessMetrics"
+        sourceRecords:
+          $ref: "#/components/schemas/OperationalMetricSources"
         capacityHours: &a3
           type: number
           nullable: true
@@ -5896,6 +5923,75 @@ components:
           type: integer
         balance:
           type: number
+    OperationalMetricSources:
+      type: object
+      required: [invoices, completions, installations, postedCounts]
+      properties:
+        invoices:
+          type: array
+          items:
+            type: object
+            required: [invoiceId, invoiceNumber, customerName, band, balance, dueDate]
+            properties:
+              invoiceId: *a1
+              invoiceNumber: *a1
+              customerName: *a1
+              band:
+                type: string
+                enum: [current, pastDue1To30, pastDue31To60, pastDue61To90, pastDue91Plus, unknown]
+              balance: *a2
+              dueDate: &nullableReportText
+                type: string
+                nullable: true
+        completions:
+          type: array
+          items:
+            type: object
+            required: [jobId, jobNumber, customerName, completedOn, targetOn, basis, outcome]
+            properties:
+              jobId: *a1
+              jobNumber: *a1
+              customerName: *a1
+              completedOn: *a1
+              targetOn: *nullableReportText
+              basis:
+                type: string
+                enum: [committed, estimated, unknown]
+              outcome:
+                type: string
+                enum: [onTime, late, unknown]
+        installations:
+          type: array
+          items:
+            type: object
+            required: [jobId, jobNumber, customerName, scheduledOn, status, issues]
+            properties:
+              jobId: *a1
+              jobNumber: *a1
+              customerName: *a1
+              scheduledOn: *nullableReportText
+              status:
+                type: string
+                enum: [ready, materialsNeedAttention, needsCrew]
+              issues:
+                type: array
+                items: *a1
+        postedCounts:
+          type: array
+          items:
+            type: object
+            required: [id, sku, productName, unit, warehouseId, warehouseName, binCode, postedAt, bookedQuantity, countedQuantity]
+            properties:
+              id: *a1
+              sku: *a1
+              productName: *a1
+              unit: *a1
+              warehouseId: *a1
+              warehouseName: *a1
+              binCode: *nullableReportText
+              postedAt: *nullableReportText
+              bookedQuantity: *a2
+              countedQuantity: *a2
     InventoryActivityWindow:
       type: object
       required: [days, movements, receipts, issued, returns, transfers, binMoves, adjustments, other]
@@ -5947,6 +6043,28 @@ components:
           type: string
         unknownMovementLocations:
           type: integer
+        records:
+          type: array
+          items:
+            type: object
+            required: [productId, sku, productName, unit, active, warehouseId, warehouseName, onHand, inactiveDays, lastMovedOn, receiptValue, estimatedValue, incompleteValue]
+            properties:
+              productId: *a1
+              sku: *a1
+              productName: *a1
+              unit: *a1
+              active:
+                type: boolean
+              warehouseId: *nullableReportText
+              warehouseName: *nullableReportText
+              onHand: *a2
+              inactiveDays:
+                type: integer
+              lastMovedOn: *a1
+              receiptValue: *a2
+              estimatedValue: *a2
+              incompleteValue:
+                type: boolean
         windows:
           type: array
           items:

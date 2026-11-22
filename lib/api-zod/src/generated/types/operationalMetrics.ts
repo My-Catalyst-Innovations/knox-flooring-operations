@@ -10,6 +10,7 @@ import type { CompletionTimeliness } from './completionTimeliness';
 import type { InstallationReadinessMetrics } from './installationReadinessMetrics';
 import type { InventoryActivityWindow } from './inventoryActivityWindow';
 import type { InvoiceAgingBucket } from './invoiceAgingBucket';
+import type { OperationalMetricSources } from './operationalMetricSources';
 import type { StockAuditMetrics } from './stockAuditMetrics';
 
 export interface OperationalMetrics {
@@ -29,6 +30,7 @@ export interface OperationalMetrics {
   stockAudit: StockAuditMetrics;
   materialUsageReport: CompletedJobMaterialUsage;
   installationReadiness: InstallationReadinessMetrics;
+  sourceRecords?: OperationalMetricSources;
   capacityHours: number | null;
   plannedLaborHours: number;
   actualLaborHours: number;

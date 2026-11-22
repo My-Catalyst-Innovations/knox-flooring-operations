@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHmac } from "node:crypto";
 import {
   availableCommunicationProviders,
   canSendCommunication,
@@ -8,6 +9,7 @@ import {
   sendEmail,
   sendPasswordResetEmail,
   sendSms,
+  smsDeliveryCapability,
   smsNumber,
 } from "./comms";
 
@@ -15,12 +17,23 @@ const emailEnv = {
   RESEND_API_KEY: "fake_send_only_key",
   RESEND_FROM_EMAIL: "Catalyst Works <service@example.com>",
   RESEND_REPLY_TO_EMAIL: "help@example.com",
+  RESEND_WEBHOOK_SECRET: "whsec_fixture",
 };
 const smsEnv = {
   TWILIO_ACCOUNT_SID: `AC${"a".repeat(32)}`,
   TWILIO_API_KEY_SID: `SK${"b".repeat(32)}`,
   TWILIO_API_KEY_SECRET: "fake_api_key_secret",
   TWILIO_MESSAGING_SERVICE_SID: `MG${"c".repeat(32)}`,
+};
+const companySms = {
+  DEMO_MODE: "false",
+  COMMS_DELIVERY_MODE: "allowlist",
+  APP_BASE_URL: "https://knox.example.com",
+  SIGNALWIRE_SPACE_URL: "https://knox-space.signalwire.com",
+  SIGNALWIRE_PROJECT_ID: "ea108133-d6b3-407c-9536-9fad8a929a6a",
+  SIGNALWIRE_API_TOKEN: "mock-signalwire-token",
+  SIGNALWIRE_SIGNING_KEY: "mock-signing-key",
+  SIGNALWIRE_FROM_NUMBER: "+18655550100",
 };
 
 describe("outbound delivery controls", () => {
@@ -94,6 +107,50 @@ describe("outbound delivery controls", () => {
       }),
     ).toEqual({ email: false, sms: false });
   });
+
+  it("prefers configured SignalWire and keeps capture and provider selection explicit", () => {
+    expect(smsDeliveryCapability({ ...smsEnv, ...companySms })).toEqual({
+      mode: "allowlist",
+      provider: "signalwire",
+      serverSendAvailable: true,
+    });
+    expect(
+      smsDeliveryCapability({
+        ...smsEnv,
+        ...companySms,
+        COMMS_SMS_PROVIDER: "twilio",
+      }),
+    ).toMatchObject({ provider: "twilio", serverSendAvailable: true });
+    expect(
+      smsDeliveryCapability({
+        ...smsEnv,
+        ...companySms,
+        COMMS_DELIVERY_MODE: "capture",
+      }),
+    ).toMatchObject({ provider: "signalwire", serverSendAvailable: false });
+    expect(
+      smsDeliveryCapability({
+        ...smsEnv,
+        ...companySms,
+        DEMO_ACCESS_ENABLED: "true",
+        COMMS_DELIVERY_MODE: "live",
+      }),
+    ).toEqual({ mode: "capture", provider: null, serverSendAvailable: false });
+    expect(
+      smsDeliveryCapability({
+        ...smsEnv,
+        ...companySms,
+        SIGNALWIRE_SIGNING_KEY: undefined,
+      }),
+    ).toMatchObject({ provider: null, serverSendAvailable: false });
+    expect(
+      smsDeliveryCapability({
+        ...companySms,
+        SIGNALWIRE_SPACE_URL:
+          "https://attacker.example/knox-space.signalwire.com",
+      }),
+    ).toMatchObject({ provider: null, serverSendAvailable: false });
+  });
 });
 
 describe("direct provider requests", () => {
@@ -107,6 +164,7 @@ describe("direct provider requests", () => {
         subject: "Flooring update",
         body: "Use <sample> & tile",
         idempotencyKey: "outbound/request",
+        communicationId: "a".repeat(64),
       },
       emailEnv,
       fetch,
@@ -132,6 +190,15 @@ describe("direct provider requests", () => {
       reply_to: "help@example.com",
       text: "Use <sample> & tile",
       html: expect.stringContaining("Use &lt;sample&gt; &amp; tile"),
+      tags: [
+        { name: "communication_id", value: "a".repeat(64) },
+        {
+          name: "communication_signature",
+          value: createHmac("sha256", emailEnv.RESEND_WEBHOOK_SECRET)
+            .update("a".repeat(64))
+            .digest("hex"),
+        },
+      ],
     });
   });
 
@@ -177,6 +244,63 @@ describe("direct provider requests", () => {
       sendSms({ to: "865-555-0123", body: "Crew update" }, smsEnv, fetch),
     ).rejects.toMatchObject({ ambiguous: false });
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses SignalWire project authentication and an exact outbound callback URL", async () => {
+    const id = "a".repeat(64);
+    const sid = "0a059168-ead0-41af-9d1f-343dae832527";
+    const from = companySms.SIGNALWIRE_FROM_NUMBER;
+    const to = "+18655550122";
+    const response = {
+      account_sid: companySms.SIGNALWIRE_PROJECT_ID,
+      sid,
+      from,
+      to,
+      status: "queued",
+    };
+    const send = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(response));
+    await expect(
+      sendSms(
+        { to, body: "SignalWire test", communicationId: id },
+        companySms,
+        send,
+      ),
+    ).resolves.toEqual({
+      providerMessageId: `signalwire:${response.account_sid}:${sid}`,
+      fromAddress: from,
+      status: "queued",
+    });
+    const [url, options] = send.mock.calls[0];
+    expect(url).toBe(
+      `${companySms.SIGNALWIRE_SPACE_URL}/api/laml/2010-04-01/Accounts/${response.account_sid}/Messages`,
+    );
+    expect(options?.headers).toMatchObject({
+      Authorization: `Basic ${Buffer.from(`${response.account_sid}:${companySms.SIGNALWIRE_API_TOKEN}`).toString("base64")}`,
+    });
+    expect(Object.fromEntries(options?.body as URLSearchParams)).toEqual({
+      To: to,
+      From: from,
+      Body: "SignalWire test",
+      StatusCallback: expect.stringMatching(
+        new RegExp(`/status/${id}\\?proof=[a-f0-9]{64}$`),
+      ),
+    });
+    send.mockResolvedValueOnce(
+      Response.json({ ...response, to: "+18655550990" }),
+    );
+    await expect(
+      sendSms(
+        { to, body: "SignalWire test", communicationId: id },
+        companySms,
+        send,
+      ),
+    ).rejects.toMatchObject({ ambiguous: true });
+    await expect(
+      sendSms({ to, body: "Missing saved record" }, companySms, send),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(send).toHaveBeenCalledTimes(2);
   });
 });
 

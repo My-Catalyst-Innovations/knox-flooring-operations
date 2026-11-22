@@ -1,7 +1,9 @@
 import { Link } from "wouter";
 import type { OperationalMetrics } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { currency } from "@/lib/operations";
+import { currency, quantity } from "@/lib/operations";
+import { businessDate } from "@/lib/reporting";
+import { ReportRecordLink, ReportSourceList } from "./ReportSourceList";
 
 const agingLabels = {
   current: "Current",
@@ -10,6 +12,18 @@ const agingLabels = {
   pastDue61To90: "61–90 days overdue",
   pastDue91Plus: "91+ days overdue",
   unknown: "Due date unknown",
+};
+
+const readinessLabels = {
+  ready: "Ready",
+  materialsNeedAttention: "Materials need attention",
+  needsCrew: "Crew needs confirmation",
+};
+
+const completionLabels = {
+  onTime: "On time",
+  late: "Late",
+  unknown: "No comparable target",
 };
 
 const activityRows = [
@@ -65,6 +79,7 @@ export function OperationsReportMetrics({
     | "missingCompletionDates"
     | "stockAudit"
     | "installationReadiness"
+    | "sourceRecords"
   >;
 }) {
   const {
@@ -74,6 +89,7 @@ export function OperationsReportMetrics({
     completionTimeliness,
     stockAudit,
     installationReadiness,
+    sourceRecords,
   } = metrics;
   const countAccuracy =
     stockAudit.checked > 0
@@ -123,6 +139,25 @@ export function OperationsReportMetrics({
               ))}
             </tbody>
           </table>
+          <ReportSourceList
+            label="View source invoices"
+            records={sourceRecords?.invoices ?? []}
+            recordKey={(row) => row.invoiceId}
+          >
+            {(row) => (
+              <>
+                <ReportRecordLink
+                  href={`/invoices?invoice=${encodeURIComponent(row.invoiceId)}`}
+                >
+                  {row.invoiceNumber} · {row.customerName}
+                </ReportRecordLink>
+                <p className="text-xs text-muted-foreground">
+                  {agingLabels[row.band]} · {row.dueDate ?? "No due date"} ·{" "}
+                  {currency(row.balance)} open
+                </p>
+              </>
+            )}
+          </ReportSourceList>
           <Link
             href="/invoices"
             className="text-xs font-medium text-primary hover:underline"
@@ -214,6 +249,26 @@ export function OperationsReportMetrics({
             Record customer commitments in Job Details before completion.
             Current estimates can change.
           </p>
+          <ReportSourceList
+            label="View completed jobs"
+            records={sourceRecords?.completions ?? []}
+            recordKey={(row) => row.jobId}
+          >
+            {(row) => (
+              <>
+                <ReportRecordLink
+                  href={`/jobs/${encodeURIComponent(row.jobId)}`}
+                >
+                  {row.jobNumber} · {row.customerName}
+                </ReportRecordLink>
+                <p className="text-xs text-muted-foreground">
+                  {completionLabels[row.outcome]} · Completed {row.completedOn}
+                  {row.targetOn &&
+                    ` · ${row.basis === "committed" ? "Committed" : "Estimated"} ${row.targetOn}`}
+                </p>
+              </>
+            )}
+          </ReportSourceList>
         </CardContent>
       </Card>
       <Card>
@@ -245,6 +300,30 @@ export function OperationsReportMetrics({
               </dd>
             </div>
           </dl>
+          <ReportSourceList
+            label="View installation jobs"
+            records={sourceRecords?.installations ?? []}
+            recordKey={(row) => row.jobId}
+          >
+            {(row) => (
+              <>
+                <ReportRecordLink
+                  href={`/jobs/${encodeURIComponent(row.jobId)}`}
+                >
+                  {row.jobNumber} · {row.customerName}
+                </ReportRecordLink>
+                <p className="text-xs text-muted-foreground">
+                  {readinessLabels[row.status]}
+                  {row.scheduledOn && ` · ${row.scheduledOn}`}
+                </p>
+                {row.issues.map((issue, index) => (
+                  <p key={index} className="text-xs text-muted-foreground">
+                    {issue}
+                  </p>
+                ))}
+              </>
+            )}
+          </ReportSourceList>
           <Link
             href="/calendar"
             className="text-xs font-medium text-primary hover:underline"
@@ -267,6 +346,31 @@ export function OperationsReportMetrics({
               ? `${stockAudit.matched} of ${stockAudit.checked} posted counts matched the book quantity.`
               : "No posted physical counts in this period."}
           </p>
+          <ReportSourceList
+            label="View posted stock counts"
+            records={sourceRecords?.postedCounts ?? []}
+            recordKey={(row) => row.id}
+          >
+            {(row) => (
+              <>
+                <ReportRecordLink
+                  href={`/inventory/bins?${new URLSearchParams({ warehouse: row.warehouseId, count: row.id })}`}
+                >
+                  {row.sku} · {row.productName}
+                </ReportRecordLink>
+                <p className="text-xs text-muted-foreground">
+                  {row.warehouseName} · {row.binCode ?? "No bin"}
+                  {row.postedAt &&
+                    Number.isFinite(Date.parse(row.postedAt)) &&
+                    ` · Posted ${businessDate(new Date(row.postedAt))}`}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Booked {quantity(row.bookedQuantity)} · Counted{" "}
+                  {quantity(row.countedQuantity)} {row.unit}
+                </p>
+              </>
+            )}
+          </ReportSourceList>
           <Link
             href="/inventory"
             className="text-xs font-medium text-primary hover:underline"

@@ -34,6 +34,53 @@ it("shows statement aging, the three ledger windows, and unknown completion data
           materialsNeedAttention: 2,
           needsCrew: 3,
         },
+        sourceRecords: {
+          invoices: [
+            {
+              invoiceId: "invoice one",
+              invoiceNumber: "INV-1",
+              customerName: "Test invoice customer",
+              band: "pastDue31To60",
+              balance: 75,
+              dueDate: "2026-10-01",
+            },
+          ],
+          completions: [
+            {
+              jobId: "completed one",
+              jobNumber: "J-COMP",
+              customerName: "Test completion customer",
+              completedOn: "2026-11-16",
+              targetOn: "2026-11-15",
+              basis: "committed",
+              outcome: "late",
+            },
+          ],
+          installations: [
+            {
+              jobId: "upcoming one",
+              jobNumber: "J-UP",
+              customerName: "Test upcoming customer",
+              scheduledOn: "2026-12-02",
+              status: "materialsNeedAttention",
+              issues: ["Synthetic cartons missing"],
+            },
+          ],
+          postedCounts: [
+            {
+              id: "count one",
+              sku: "COUNT-1",
+              productName: "Counted tile",
+              warehouseId: "test warehouse",
+              warehouseName: "Test warehouse",
+              binCode: "A1",
+              postedAt: "2026-11-19T10:00:00.000Z",
+              bookedQuantity: 2,
+              countedQuantity: 1,
+              unit: "box",
+            },
+          ],
+        },
         stockAudit: {
           matched: 1,
           checked: 2,
@@ -95,4 +142,18 @@ it("shows statement aging, the three ledger windows, and unknown completion data
     ).getByText("1.5 box"),
   ).toBeInTheDocument();
   expect(screen.getByText("Waste by job and crew")).toBeInTheDocument();
+  for (const [label, href] of [
+    ["View source invoices", "/invoices?invoice=invoice%20one"],
+    ["View completed jobs", "/jobs/completed%20one"],
+    ["View installation jobs", "/jobs/upcoming%20one"],
+    [
+      "View posted stock counts",
+      "/inventory/bins?warehouse=test+warehouse&count=count+one",
+    ],
+  ]) {
+    const details = screen.getByText(`${label} (1)`).closest("details")!;
+    details.open = true;
+    expect(within(details).getByRole("link")).toHaveAttribute("href", href);
+  }
+  expect(screen.getByText("Synthetic cartons missing")).toBeInTheDocument();
 });

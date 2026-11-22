@@ -2,7 +2,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DemoCenter } from "./DemoCenter";
 import type { TrainingStatus } from "./training-types";
-import { Button } from "@/components/ui/button";
 
 const mocks = vi.hoisted(() => ({ api: vi.fn(), navigate: vi.fn(), switchPersona: vi.fn(), user: { role: "owner" as const, actualRole: "owner" as "owner" | undefined, previewRole: null as null | "sales" } }));
 vi.mock("@workspace/api-client-react", () => ({ customFetch: mocks.api }));
@@ -17,7 +16,7 @@ const mission = {
 
 function status(kind: "info" | "action" = "info"): TrainingStatus {
   return {
-    enabled: true, manifestVersion: "test", preferences, runs: [], pageGuides: [{ key: "dashboard", name: "Dashboard", route: "/", role: ["owner"], summary: "Daily priorities", target: "nav-dashboard", narration: "Dashboard help" }],
+    enabled: true, practice: { enabled: true, url: null }, lessons: [], manifestVersion: "test", preferences, runs: [], pageGuides: [{ key: "dashboard", name: "Dashboard", route: "/", role: ["owner"], summary: "Daily priorities", target: "nav-dashboard", narration: "Dashboard help" }],
     narration: { provider: "ElevenLabs", voice: "Adam - Engaging, Friendly and Bright", model: "eleven_multilingual_v2" },
     missions: [{ ...mission, steps: [{ ...mission.steps[0], kind }] }],
   };
@@ -72,40 +71,33 @@ describe("DemoCenter", () => {
     expect(await screen.findByText("Training Center")).toBeInTheDocument();
   });
 
-  it("requires interaction with an action target before verification", async () => {
+  it("asks the server to verify a saved practice record without supplying a client interaction result", async () => {
     installApi("action");
-    render(<><button data-training-id="nav-dashboard">Dashboard target</button><DemoCenter /></>);
+    render(<><button data-training-id="nav-dashboard">Save practice record</button><DemoCenter /></>);
     await waitFor(() => expect(mocks.api).toHaveBeenCalled());
     fireEvent(window, new Event("knox:demo-center"));
     fireEvent.click(await screen.findByRole("button", { name: /start silently/i }));
-    expect(await screen.findByText("Your command center")).toBeInTheDocument();
-    const verify = await screen.findByRole("button", { name: /verify & complete/i });
-    expect(verify).toBeDisabled();
-    fireEvent.click(screen.getByText("Dashboard target"));
-    expect(verify).toBeEnabled();
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "Save practice record" }));
+    expect(await screen.findByText(/verification checks the saved practice record/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /verify & complete/i }));
+    await waitFor(() => expect(mocks.api).toHaveBeenCalledWith(expect.stringMatching(/verify$/), expect.objectContaining({
+      body: JSON.stringify({ runId: "run-1", stepId: "executive-dashboard", skipped: false }),
+    })));
   });
 
-  it("captures pointer interaction before an action control can re-render", async () => {
-    installApi("action");
-    render(<><button data-training-id="nav-dashboard">Generate AI recommendations</button><DemoCenter /></>);
+  it("shows live lesson outlines and links to separate practice without starting a mission", async () => {
+    const training = status();
+    mocks.api.mockResolvedValue({
+      ...training, practice: { enabled: false, url: "https://practice.example.test" },
+      missions: [], lessons: [mission],
+    });
+    render(<DemoCenter />);
     await waitFor(() => expect(mocks.api).toHaveBeenCalled());
     fireEvent(window, new Event("knox:demo-center"));
-    fireEvent.click(await screen.findByRole("button", { name: /start silently/i }));
-    const target = await screen.findByRole("button", { name: "Generate AI recommendations" });
-    fireEvent.pointerDown(target);
-    expect(await screen.findByText(/highlighted control used/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /verify & complete/i })).toBeEnabled();
-  });
-
-  it("accepts the registered interaction emitted by trained action buttons", async () => {
-    installApi("action");
-    render(<><Button data-training-id="nav-dashboard">Generate AI recommendations</Button><DemoCenter /></>);
-    await waitFor(() => expect(mocks.api).toHaveBeenCalled());
-    fireEvent(window, new Event("knox:demo-center"));
-    fireEvent.click(await screen.findByRole("button", { name: /start silently/i }));
-    fireEvent.click(await screen.findByRole("button", { name: "Generate AI recommendations" }));
-    expect(await screen.findByText(/highlighted control used/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /verify & complete/i })).toBeEnabled();
+    expect(await screen.findByText("Executive Tour")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /open fictional practice workspace/i })).toHaveAttribute("href", "https://practice.example.test");
+    expect(screen.queryByRole("button", { name: /start silently/i })).toBeNull();
+    expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
   it("keeps a contextual Page Guide available outside missions", async () => {

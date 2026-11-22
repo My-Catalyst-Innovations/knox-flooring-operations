@@ -1,4 +1,5 @@
 import { workspaceEnvironment } from "@workspace/db/workspace";
+import { createHmac } from "node:crypto";
 import { logger } from "./logger";
 
 type Channel = "email" | "sms";
@@ -74,7 +75,7 @@ function emailConfig(env = workspaceEnvironment()) {
   return { key, from, replyTo };
 }
 
-function smsConfig(env = workspaceEnvironment()) {
+function twilioConfig(env = workspaceEnvironment()) {
   const account = env.TWILIO_ACCOUNT_SID?.trim() ?? "";
   const key = env.TWILIO_API_KEY_SID?.trim() ?? "";
   const secret = env.TWILIO_API_KEY_SECRET?.trim();
@@ -93,7 +94,152 @@ function smsConfig(env = workspaceEnvironment()) {
       : !from || !configuredFrom.startsWith("+")
   )
     return null;
-  return { account, key, secret, service, from };
+  return { provider: "twilio" as const, account, key, secret, service, from };
+}
+
+export const signalWireWebhookPath = "/communications/webhooks/signalwire";
+export const signalWireMessageSid = /^[a-z\d-]{8,96}$/i;
+const projectId = /^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i;
+
+export function signalWireWebhookConfig(env = workspaceEnvironment()) {
+  const account = env.SIGNALWIRE_PROJECT_ID?.trim().toLowerCase() ?? "";
+  const signingKey = env.SIGNALWIRE_SIGNING_KEY?.trim();
+  const from = env.SIGNALWIRE_FROM_NUMBER?.trim() ?? "";
+  if (
+    isDemoDeliveryEnvironment(env) ||
+    !projectId.test(account) ||
+    !signingKey ||
+    smsNumber(from) !== from
+  )
+    return null;
+  try {
+    const base = new URL(env.APP_BASE_URL ?? "");
+    if (
+      base.protocol !== "https:" ||
+      base.username ||
+      base.password ||
+      base.search ||
+      base.hash ||
+      base.pathname !== "/"
+    )
+      return null;
+    return { account, signingKey, from, callbackOrigin: base.origin };
+  } catch {
+    return null;
+  }
+}
+
+function signalWireConfig(env = workspaceEnvironment()) {
+  const space = env.SIGNALWIRE_SPACE_URL?.trim() ?? "";
+  const match =
+    /^(?:https:\/\/)?([a-z\d][a-z\d-]{0,62}\.signalwire\.com)\/?$/i.exec(space);
+  const webhook = signalWireWebhookConfig(env);
+  const token = env.SIGNALWIRE_API_TOKEN?.trim();
+  if (!match || !webhook || !token) return null;
+  return {
+    ...webhook,
+    provider: "signalwire" as const,
+    host: match[1].toLowerCase(),
+    key: webhook.account,
+    secret: token,
+  };
+}
+
+export function smsConfig(env = workspaceEnvironment()) {
+  const selected = env.COMMS_SMS_PROVIDER?.trim();
+  if (selected === "twilio") return twilioConfig(env);
+  if (selected && selected !== "signalwire") return null;
+  if (
+    selected === "signalwire" ||
+    [
+      env.SIGNALWIRE_SPACE_URL,
+      env.SIGNALWIRE_PROJECT_ID,
+      env.SIGNALWIRE_API_TOKEN,
+    ].some((value) => value?.trim())
+  )
+    return signalWireConfig(env);
+  return twilioConfig(env);
+}
+
+export function smsDeliveryCapability(env = workspaceEnvironment()) {
+  const provider = smsConfig(env)?.provider ?? null;
+  const mode = communicationMode(env);
+  return {
+    mode,
+    provider,
+    serverSendAvailable: mode !== "capture" && provider !== null,
+  };
+}
+
+export const signalWireMessageKey = (account: string, sid: string) =>
+  `signalwire:${account}:${sid.toLowerCase()}`;
+export const signalWirePendingKey = (account: string) =>
+  `signalwire:${account}:pending`;
+export const signalWireStatusProof = (
+  signingKey: string,
+  origin: string,
+  account: string,
+  from: string,
+  to: string,
+  id: string,
+) =>
+  createHmac("sha256", signingKey)
+    .update(JSON.stringify(["status", origin, account, from, to, id]))
+    .digest("hex");
+
+export async function readSignalWireMessageTime(
+  event: {
+    AccountSid: string;
+    MessageSid: string;
+    From: string;
+    To: string;
+    Body: string;
+  },
+  env = workspaceEnvironment(),
+  fetchImpl = fetch,
+) {
+  const config = signalWireConfig(env);
+  if (
+    !config ||
+    config.account !== event.AccountSid.toLowerCase() ||
+    config.from !== event.To ||
+    !signalWireMessageSid.test(event.MessageSid)
+  )
+    return null;
+  try {
+    const response = await fetchImpl(
+      `https://${config.host}/api/laml/2010-04-01/Accounts/${config.account}/Messages/${event.MessageSid}`,
+      {
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${config.key}:${config.secret}`).toString("base64")}`,
+          Accept: "application/json",
+        },
+        redirect: "error",
+        signal: AbortSignal.timeout(4_000),
+      },
+    );
+    if (!response.ok) return null;
+    const result: unknown = await response.json();
+    if (!result || typeof result !== "object" || Array.isArray(result))
+      return null;
+    const record = result as Record<string, unknown>;
+    if (
+      record.direction !== "inbound" ||
+      record.account_sid !== config.account ||
+      record.sid !== event.MessageSid ||
+      record.from !== event.From ||
+      record.to !== event.To ||
+      record.body !== event.Body ||
+      typeof record.date_created !== "string"
+    )
+      return null;
+    const time = Date.parse(record.date_created);
+    return Number.isFinite(time) && time <= Date.now() + 60_000
+      ? new Date(time).toISOString()
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export function availableCommunicationProviders(env = workspaceEnvironment()) {
@@ -171,6 +317,7 @@ export async function sendEmail(
     subject: string;
     body: string;
     idempotencyKey: string;
+    communicationId?: string;
     html?: string;
   },
   env = workspaceEnvironment(),
@@ -216,6 +363,23 @@ export async function sendEmail(
           input.html ??
           `<div style="font-family:system-ui,Arial,sans-serif;white-space:pre-wrap;line-height:1.5">${escapeHtml(input.body)}</div>`,
         ...(config.replyTo ? { reply_to: config.replyTo } : {}),
+        ...(input.communicationId
+          ? {
+              tags: [
+                { name: "communication_id", value: input.communicationId },
+                ...(env.RESEND_WEBHOOK_SECRET
+                  ? [
+                      {
+                        name: "communication_signature",
+                        value: createHmac("sha256", env.RESEND_WEBHOOK_SECRET)
+                          .update(input.communicationId)
+                          .digest("hex"),
+                      },
+                    ]
+                  : []),
+              ],
+            }
+          : {}),
       }),
     },
     fetchImpl,
@@ -237,9 +401,10 @@ export async function sendEmail(
 }
 
 export async function sendSms(
-  input: { to: string; body: string },
+  input: { to: string; body: string; communicationId?: string },
   env = workspaceEnvironment(),
   fetchImpl = fetch,
+  config = smsConfig(env),
 ): Promise<Delivery> {
   const to = smsNumber(input.to);
   if (!to)
@@ -252,18 +417,41 @@ export async function sendSms(
       "Enter a text message of no more than 1,600 characters.",
       400,
     );
-  const config = smsConfig(env);
   if (!config)
     throw new CommsError(
-      "Twilio text messaging requires account and API key credentials and one registered sender.",
+      "Company texting requires valid provider credentials and one registered sender.",
       503,
     );
   const body = new URLSearchParams({ To: to, Body: input.body });
-  if (config.service) body.set("MessagingServiceSid", config.service);
+  const signalwire = config.provider === "signalwire";
+  const provider = signalwire ? "SignalWire" : "Twilio";
+  if (!signalwire && config.service)
+    body.set("MessagingServiceSid", config.service);
   else if (config.from) body.set("From", config.from);
+  if (signalwire) {
+    if (!input.communicationId || !/^[a-f\d]{64}$/.test(input.communicationId))
+      throw new CommsError(
+        "A saved communication is required for SignalWire delivery tracking.",
+        400,
+      );
+    const proof = signalWireStatusProof(
+      config.signingKey,
+      config.callbackOrigin,
+      config.account,
+      config.from,
+      to,
+      input.communicationId,
+    );
+    body.set(
+      "StatusCallback",
+      `${config.callbackOrigin}/api${signalWireWebhookPath}/status/${input.communicationId}?proof=${proof}`,
+    );
+  }
   const response = await providerResponse(
-    "Twilio",
-    `https://api.twilio.com/2010-04-01/Accounts/${config.account}/Messages.json`,
+    provider,
+    signalwire
+      ? `https://${config.host}/api/laml/2010-04-01/Accounts/${config.account}/Messages`
+      : `https://api.twilio.com/2010-04-01/Accounts/${config.account}/Messages.json`,
     {
       method: "POST",
       headers: {
@@ -277,11 +465,21 @@ export async function sendSms(
   const result = (await response.json().catch(() => null)) as {
     sid?: unknown;
     from?: unknown;
+    to?: unknown;
+    account_sid?: unknown;
     status?: unknown;
   } | null;
-  if (typeof result?.sid !== "string" || !result.sid.trim())
+  if (
+    typeof result?.sid !== "string" ||
+    !result.sid.trim() ||
+    (signalwire &&
+      (!signalWireMessageSid.test(result.sid) ||
+        result.account_sid !== config.account ||
+        result.from !== config.from ||
+        result.to !== to))
+  )
     throw new CommsError(
-      "Twilio did not confirm the submission. Check the provider before sending again.",
+      `${provider} did not confirm the submission. Check the provider before sending again.`,
       502,
       true,
     );
@@ -289,7 +487,12 @@ export async function sendSms(
     (typeof result.from === "string" && smsNumber(result.from)) ||
     config.from ||
     "Twilio messaging service";
-  const delivery = { providerMessageId: result.sid, fromAddress: from };
+  const delivery = {
+    providerMessageId: signalwire
+      ? signalWireMessageKey(config.account, result.sid)
+      : result.sid,
+    fromAddress: from,
+  };
   switch (result.status) {
     case "accepted":
     case "queued":
@@ -304,15 +507,13 @@ export async function sendSms(
       return {
         ...delivery,
         status: "failed",
-        errorMessage:
-          "Twilio could not send this text. Check the recipient and sender in Twilio.",
+        errorMessage: `${provider} could not send this text. Check the recipient and sender in ${provider}.`,
       };
     default:
       return {
         ...delivery,
         status: "unknown",
-        errorMessage:
-          "Twilio returned an unrecognized status. Check the provider before sending again.",
+        errorMessage: `${provider} returned an unrecognized status. Check the provider before sending again.`,
       };
   }
 }

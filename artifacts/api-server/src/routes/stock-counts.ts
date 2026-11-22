@@ -86,9 +86,9 @@ async function assertWarehouseReservations(tx: StockTransaction, subject: Locati
 }
 
 router.get(path, domainRoute(async (req, res) => {
-  const { warehouseId } = parse(z.object({ warehouseId: identifier }), req.query);
+  const { warehouseId, countId } = parse(z.object({ warehouseId: identifier, countId: identifier.optional() }), req.query);
   const table = inventoryStockCountsTable;
-  const rows = await db.select().from(table).where(eq(table.warehouseId, warehouseId))
+  const rows = await db.select().from(table).where(and(eq(table.warehouseId, warehouseId), countId ? eq(table.id, countId) : undefined))
     .orderBy(sql`CASE WHEN ${table.status} = 'Pending' THEN 0 ELSE 1 END`, desc(table.createdAt), desc(table.id)).limit(100);
   res.json(rows.map(presentCount));
 }));

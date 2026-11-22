@@ -1,10 +1,11 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/contexts/auth";
 import { useUnsavedForm } from "@/hooks/use-unsaved-changes";
+import { useUrlState } from "@/hooks/use-url-state";
 import { operation, useOperation, useRefreshOperations } from "@/lib/operations";
 import { binName, inventorySelect, purchaseQuantity, useInventoryRequestKey, type WarehouseBin } from "@/lib/purchasing";
 import type { Job, Product } from "@/lib/types";
@@ -194,23 +195,31 @@ function ReviewCount({ count, bins, jobs, onClose, onDone }: {
   </Dialog>;
 }
 
-function CountHistory({ warehouse, bins, products, productsUnavailable, jobs = [] }: {
+type CountHistoryProps = {
   warehouse: Warehouse; bins: readonly WarehouseBin[]; products: readonly Product[]; productsUnavailable: boolean; jobs?: readonly Job[];
+};
+
+function CountHistory({ warehouse, bins, products, productsUnavailable, jobs = [], countId, onShowRecent }: CountHistoryProps & {
+  countId: string;
+  onShowRecent: () => void;
 }) {
   const { user } = useAuth();
-  const query = useOperation<Count[]>(`${path}?warehouseId=${encodeURIComponent(warehouse.id)}`, inventoryRoles);
+  const search = new URLSearchParams({ warehouseId: warehouse.id });
+  if (countId) search.set("countId", countId);
+  const query = useOperation<Count[]>(`${path}?${search}`, inventoryRoles);
   const refresh = useRefreshOperations();
   const [recording, setRecording] = useState(false);
   const [reviewing, setReviewing] = useState<Count>();
   const [notice, setNotice] = useState("");
   const stocked = products.filter((product) => product.inventoryType === "Inventory");
   return <div className="space-y-3 border-t pt-3">
-    <Button variant="outline" disabled={productsUnavailable || !stocked.length} onClick={() => { setNotice(""); setRecording(true); }}>Record count</Button>
+    {countId ? <Button variant="outline" onClick={onShowRecent}>Show recent counts</Button> :
+      <Button variant="outline" disabled={productsUnavailable || !stocked.length} onClick={() => { setNotice(""); setRecording(true); }}>Record count</Button>}
     {notice && <p role="status" className="text-sm text-emerald-800">{notice}</p>}
     {query.isLoading && <p role="status" className="text-sm text-muted-foreground">Loading stock counts…</p>}
     {query.isError && <p role="alert" className="text-sm text-destructive">Could not load stock counts. <button className="underline" onClick={() => void query.refetch()}>Retry</button></p>}
-    {query.data?.length === 0 && <p className="text-sm text-muted-foreground">No counts recorded at this warehouse.</p>}
-    {!!query.data?.length && <ul className="divide-y rounded-md border" aria-label="Recent stock counts">
+    {query.data?.length === 0 && <p className="text-sm text-muted-foreground">{countId ? "This count was not found at the selected warehouse." : "No counts recorded at this warehouse."}</p>}
+    {!!query.data?.length && <ul className="divide-y rounded-md border" aria-label={countId ? "Selected stock count" : "Recent stock counts"}>
       {query.data.map((count) => <li key={count.id} className="flex flex-wrap items-start justify-between gap-3 p-3 text-sm">
         <div className="space-y-1">
           <p className="font-medium">{count.sku} · {count.productName} · {binName(bins, count.binId)}</p>
@@ -231,10 +240,19 @@ function CountHistory({ warehouse, bins, products, productsUnavailable, jobs = [
   </div>;
 }
 
-export function StockCounts(props: Parameters<typeof CountHistory>[0]) {
+export function StockCounts(props: CountHistoryProps) {
+  const [countId, setCountId] = useUrlState<string>("count", "");
   const [open, setOpen] = useState(false);
-  return <section aria-label="Stock counts" className="space-y-3 rounded-lg border bg-card p-4">
-    <Button variant="ghost" className="px-0" aria-expanded={open} onClick={() => setOpen((current) => !current)}>Stock counts</Button>
-    {open && <CountHistory {...props} />}
+  const section = useRef<HTMLElement>(null);
+  const expanded = open || Boolean(countId);
+  useEffect(() => {
+    if (countId) section.current?.scrollIntoView?.({ block: "start" });
+  }, [countId]);
+  return <section ref={section} aria-label="Stock counts" className="scroll-mt-4 space-y-3 rounded-lg border bg-card p-4">
+    <Button variant="ghost" className="px-0" aria-expanded={expanded} onClick={() => {
+      if (countId) setCountId("");
+      setOpen(!expanded);
+    }}>Stock counts</Button>
+    {expanded && <CountHistory {...props} countId={countId} onShowRecent={() => { setCountId(""); setOpen(true); }} />}
   </section>;
 }

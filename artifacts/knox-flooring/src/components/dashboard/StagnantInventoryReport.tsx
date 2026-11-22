@@ -2,7 +2,9 @@ import type { StagnantInventoryReport as StagnantStock } from "@workspace/api-cl
 import { Link } from "wouter";
 import { DataBoundary } from "@/components/layout/DataBoundary";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { currency, useOperation } from "@/lib/operations";
+import { currency, quantity, useOperation } from "@/lib/operations";
+import { unassignedLocation } from "@/lib/warehouse-inventory";
+import { ReportRecordLink, ReportSourceList } from "./ReportSourceList";
 
 export function StagnantInventoryReport() {
   const query = useOperation<StagnantStock>("/metrics/stagnant-inventory", [
@@ -74,6 +76,45 @@ export function StagnantInventoryReport() {
                 {query.data.unknownMovementLocations} stocked locations have no
                 reliable movement date.
               </p>
+              {query.data.windows.map(({ days }) => (
+                <ReportSourceList
+                  key={days}
+                  label={`View SKU locations inactive ${days}+ days`}
+                  records={
+                    query.data?.records?.filter(
+                      ({ inactiveDays }) => inactiveDays >= days,
+                    ) ?? []
+                  }
+                  recordKey={(row) =>
+                    JSON.stringify([row.productId, row.warehouseId])
+                  }
+                >
+                  {(row) => {
+                    const search = new URLSearchParams({
+                      q: row.sku,
+                      warehouse: row.warehouseId ?? unassignedLocation,
+                    });
+                    if (!row.active) search.set("state", "archived");
+                    return (
+                      <>
+                        <ReportRecordLink href={`/inventory?${search}`}>
+                          {row.sku} · {row.productName}
+                        </ReportRecordLink>
+                        <p className="text-xs text-muted-foreground">
+                          {row.warehouseName ?? "Unassigned"} ·{" "}
+                          {quantity(row.onHand)} {row.unit} on hand · Last moved{" "}
+                          {row.lastMovedOn}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Receipt cost {currency(row.receiptValue)} · Estimated{" "}
+                          {currency(row.estimatedValue)}
+                          {row.incompleteValue && " · Value incomplete"}
+                        </p>
+                      </>
+                    );
+                  }}
+                </ReportSourceList>
+              ))}
             </>
           )}
         </DataBoundary>

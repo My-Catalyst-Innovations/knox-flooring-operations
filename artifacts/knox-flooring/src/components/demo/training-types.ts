@@ -7,6 +7,7 @@ export type TrainingStep = {
   target: string;
   placement: TrainingPlacement;
   kind: "info" | "action";
+  outcome?: "lead" | "measured-estimate" | "proposal";
   title: string;
   explanation: string;
   instruction: string;
@@ -45,6 +46,7 @@ export type TrainingRun = {
   startedAt: string;
   completedAt?: string | null;
   updatedAt: string;
+  practiceCustomerName?: string;
 };
 
 export type TrainingPreferences = {
@@ -56,8 +58,10 @@ export type TrainingPreferences = {
 
 export type TrainingStatus = {
   enabled: boolean;
+  practice: { enabled: boolean; url: string | null };
   manifestVersion: string;
   missions: MissionDefinition[];
+  lessons: Array<Omit<MissionDefinition, "steps"> & { steps: Array<Pick<TrainingStep, "id" | "title" | "explanation">> }>;
   pageGuides: PageGuide[];
   runs: TrainingRun[];
   preferences: TrainingPreferences;

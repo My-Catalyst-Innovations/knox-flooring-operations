@@ -4,9 +4,7 @@ import { useLocation } from "wouter";
 import {
   ArrowLeft,
   BookOpen,
-  CheckCircle2,
   ChevronRight,
-  Circle,
   Clock3,
   Headphones,
   HelpCircle,
@@ -59,7 +57,6 @@ export function DemoCenter() {
   const [activeGuide, setActiveGuide] = useState<PageGuide | null>(null);
   const [targetRect, setTargetRect] = useState<DOMRect | null>(null);
   const [targetMissing, setTargetMissing] = useState(false);
-  const [targetInteracted, setTargetInteracted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [voiceEnabled, setVoiceEnabled] = useState(false);
@@ -79,7 +76,7 @@ export function DemoCenter() {
     setStatus(next);
     setVoiceEnabled(next.preferences.voiceEnabled);
     const resumable = next.runs.find((run) => run.status === "active");
-    if (resumable) setActiveRun(resumable);
+    setActiveRun(next.practice.enabled ? resumable ?? null : null);
     if (!next.preferences.welcomeDismissed && !resumable) setWelcomeOpen(true);
     return next;
   }, []);
@@ -168,7 +165,6 @@ export function DemoCenter() {
 
   useEffect(() => {
     if (!activeStep) { stopAudio(); return; }
-    setTargetInteracted(false);
     setError("");
     if (!pageMatches(location, activeStep.route)) navigate(activeStep.route);
     if (voiceEnabled) void playAudio(activeStep);
@@ -212,24 +208,11 @@ export function DemoCenter() {
         window.setTimeout(update, reducedMotion ? 0 : 350);
       } else retryTimer = window.setTimeout(discover, 250);
     };
-    const onTargetInteraction = (event: Event) => {
-      const eventTarget = event.target;
-      if (eventTarget instanceof Element && eventTarget.closest(`[data-training-id="${CSS.escape(activeStep.target)}"]`)) {
-        setTargetInteracted(true);
-      }
-    };
-    const onRegisteredTrainingInteraction = (event: Event) => {
-      const detail = (event as CustomEvent<{ target?: string }>).detail;
-      if (detail?.target === activeStep.target) setTargetInteracted(true);
-    };
     missingTimer = window.setTimeout(() => setTargetMissing(true), 8000);
     const observer = new MutationObserver(update);
     observer.observe(document.body, { childList: true, subtree: true, attributes: true });
     window.addEventListener("resize", update);
     window.addEventListener("scroll", update, true);
-    document.addEventListener("pointerdown", onTargetInteraction, true);
-    document.addEventListener("click", onTargetInteraction, true);
-    window.addEventListener("knox:training-interaction", onRegisteredTrainingInteraction);
     discover();
     return () => {
       disposed = true;
@@ -238,9 +221,6 @@ export function DemoCenter() {
       window.clearTimeout(retryTimer);
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
-      document.removeEventListener("pointerdown", onTargetInteraction, true);
-      document.removeEventListener("click", onTargetInteraction, true);
-      window.removeEventListener("knox:training-interaction", onRegisteredTrainingInteraction);
     };
   }, [activeStep?.id, location]);
 
@@ -267,6 +247,7 @@ export function DemoCenter() {
   };
 
   const startMission = async (item: MissionDefinition, withVoice: boolean) => {
+    if (!status?.practice.enabled) return;
     setBusy(true); setError("");
     try {
       if (isActualOwner && item.role !== user?.role) await switchPersona(item.role === "owner" ? null : item.role);
@@ -276,7 +257,6 @@ export function DemoCenter() {
       setActiveGuide(null);
       setCenterOpen(false);
       setStatus((current) => current ? { ...current, runs: [run, ...current.runs.filter((candidate) => candidate.id !== run.id)], preferences: { ...current.preferences, voiceEnabled: withVoice, welcomeDismissed: true } } : current);
-      navigate(item.steps[0]?.route ?? "/");
     } catch (nextError) { setError(errorText(nextError)); }
     finally { setBusy(false); }
   };
@@ -288,7 +268,7 @@ export function DemoCenter() {
     try {
       if (isActualOwner && item.role !== user?.role) await switchPersona(item.role === "owner" ? null : item.role);
       const resumed = await api<TrainingRun>(`/demo/missions/${run.missionKey}`, { method: "PUT", body: JSON.stringify({ runId: run.id, status: "active", currentStep: run.currentStep }) });
-      setActiveRun(resumed); setVoiceEnabled(resumed.voiceEnabled); setCenterOpen(false); navigate(item.steps[resumed.currentStep]?.route ?? "/");
+      setActiveRun(resumed); setVoiceEnabled(resumed.voiceEnabled); setCenterOpen(false);
     } catch (nextError) { setError(errorText(nextError)); }
     finally { setBusy(false); }
   };
@@ -301,7 +281,6 @@ export function DemoCenter() {
       if (isActualOwner && item && item.role !== user?.role) await switchPersona(item.role === "owner" ? null : item.role);
       const restarted = await api<TrainingRun>(`/demo/missions/${run.missionKey}/restart`, { method: "POST", body: JSON.stringify({ runId: run.id }) });
       setActiveRun(restarted); setActiveGuide(null); setCenterOpen(false);
-      navigate(item?.steps[0]?.route ?? "/");
     } catch (nextError) { setError(errorText(nextError)); }
     finally { setBusy(false); }
   };
@@ -336,14 +315,10 @@ export function DemoCenter() {
     if (!activeRun || !missionStep) return;
     setBusy(true); setError("");
     try {
-      const updated = await api<TrainingRun & { complete?: boolean }>(`/demo/missions/${activeRun.missionKey}/verify`, { method: "POST", body: JSON.stringify({ runId: activeRun.id, stepId: missionStep.id, targetInteracted, skipped }) });
+      const updated = await api<TrainingRun & { complete?: boolean }>(`/demo/missions/${activeRun.missionKey}/verify`, { method: "POST", body: JSON.stringify({ runId: activeRun.id, stepId: missionStep.id, skipped }) });
       setStatus((current) => current ? { ...current, runs: [updated, ...current.runs.filter((run) => run.id !== updated.id)] } : current);
       if (updated.complete) { setActiveRun(null); stopAudio(); if (isActualOwner && user?.previewRole) await switchPersona(null); setCenterOpen(true); }
-      else {
-        setActiveRun(updated);
-        const nextStep = mission?.steps[updated.currentStep];
-        if (nextStep) navigate(nextStep.route);
-      }
+      else setActiveRun(updated);
     } catch (nextError) { setError(errorText(nextError)); }
     finally { setBusy(false); }
   };
@@ -353,7 +328,7 @@ export function DemoCenter() {
     setBusy(true);
     try {
       const updated = await api<TrainingRun>(`/demo/missions/${activeRun.missionKey}`, { method: "PUT", body: JSON.stringify({ runId: activeRun.id, status: "active", currentStep: activeRun.currentStep - 1 }) });
-      setActiveRun(updated); navigate(mission.steps[updated.currentStep]?.route ?? "/");
+      setActiveRun(updated);
     } catch (nextError) { setError(errorText(nextError)); }
     finally { setBusy(false); }
   };
@@ -391,7 +366,7 @@ export function DemoCenter() {
   };
 
   const panelOnLeft = Boolean(targetRect && typeof window !== "undefined" && targetRect.left + (targetRect.width / 2) > window.innerWidth / 2);
-  const unresolvedTargetMissing = targetMissing && !targetInteracted;
+  const unresolvedTargetMissing = targetMissing && activeStep?.kind !== "action";
   const configuredNarrationProvider = status?.narration.provider;
   const narrationProvider = activeNarrationProvider ?? (configuredNarrationProvider === "OpenAI fallback" ? "OpenAI" : configuredNarrationProvider);
   const narrationVoice = activeNarrationVoice ?? status?.narration.voice;
@@ -438,8 +413,9 @@ export function DemoCenter() {
             <p className="text-xs font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">What to do</p>
             <p className="mt-1 text-sm leading-5 text-sky-950 dark:text-sky-100">{activeStep.instruction}</p>
           </div>
-          {activeStep.kind === "action" && <div className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium ${targetInteracted ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200" : "bg-muted text-muted-foreground"}`}>
-            {targetInteracted ? <CheckCircle2 className="h-4 w-4" /> : <Circle className="h-4 w-4" />}{targetInteracted ? "Highlighted control used — ready to verify" : "Use the highlighted control to unlock verification"}
+          {activeStep.kind === "action" && <div className="space-y-1 rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
+            {activeRun?.practiceCustomerName && <p>Practice customer <strong className="select-all text-foreground">{activeRun.practiceCustomerName}</strong></p>}
+            <p>Verification checks the saved practice record.</p>
           </div>}
         </>}
         <div className="flex flex-wrap items-center gap-2">
@@ -464,7 +440,7 @@ export function DemoCenter() {
           <div className="flex gap-1">
             {unresolvedTargetMissing && <Button variant="outline" size="sm" onClick={retryTarget}>Retry</Button>}
             {mission && <Button variant="ghost" size="sm" onClick={() => void verifyStep(true)} disabled={busy}><SkipForward className="mr-1 h-3.5 w-3.5" />Skip</Button>}
-            <Button size="sm" onClick={() => void verifyStep(false)} disabled={busy || (!unresolvedTargetMissing && activeStep.kind === "action" && !targetInteracted)}>
+            <Button size="sm" onClick={() => void verifyStep(unresolvedTargetMissing)} disabled={busy}>
               {busy && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}{activeGuide ? "Close guide" : unresolvedTargetMissing ? "Skip safely" : activeRun && mission && activeRun.currentStep === mission.steps.length - 1 ? activeStep.kind === "action" ? "Verify & complete" : "Complete mission" : activeStep.kind === "action" ? "Verify & continue" : "Next"}<ChevronRight className="ml-1 h-3.5 w-3.5" />
             </Button>
           </div>
@@ -479,8 +455,8 @@ export function DemoCenter() {
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary text-white"><BookOpen className="h-6 w-6" /></div>
-          <DialogTitle className="text-2xl">Learn Catalyst Works by doing</DialogTitle>
-          <DialogDescription className="text-base leading-6">Interactive missions guide you to the exact controls, explain why each step matters, and verify your progress. Choose warm narration or use captions only.</DialogDescription>
+          <DialogTitle className="text-2xl">Learn Catalyst Works</DialogTitle>
+          <DialogDescription className="text-base leading-6">{status?.practice.enabled ? "Practice missions explain each step and verify saved practice records. Choose narration or read the captions." : "Review workflow lessons and open a Page Guide for help with the current screen."}</DialogDescription>
         </DialogHeader>
         <div className="rounded-xl border bg-muted/40 p-3 text-sm text-muted-foreground"><Headphones className="mr-2 inline h-4 w-4 text-primary" />Voice is optional, interruptible, and always paired with visible captions.</div>
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="ghost" onClick={() => void dismissWelcome(false)}>Not now</Button><Button onClick={() => void dismissWelcome(true)}>Explore Training</Button></div>
@@ -492,14 +468,22 @@ export function DemoCenter() {
         <DialogHeader>
           <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary"><BookOpen className="h-5 w-5" /></div>
           <DialogTitle className="text-2xl">Training Center</DialogTitle>
-          <DialogDescription>Choose a guided mission, continue where you stopped, or use the Page Guide while exploring freely.</DialogDescription>
+          <DialogDescription>{status?.practice.enabled ? "Choose a guided mission or continue where you stopped in this fictional workspace." : "Review the steps for each role or use the Page Guide on the page you have open."}</DialogDescription>
         </DialogHeader>
+        {status?.practice.url && <Button asChild variant="outline" className="w-fit"><a href={status.practice.url} target="_blank" rel="noopener noreferrer">Open fictional practice workspace</a></Button>}
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-muted/30 p-3">
           <div><p className="text-sm font-medium">Narration preference</p><p className="text-xs text-muted-foreground">{narrationLabel}. Warm, optional guidance with captions always visible.</p></div>
           <Button variant="outline" size="sm" onClick={() => void toggleVoice()}>{voiceEnabled ? <Volume2 className="mr-2 h-4 w-4" /> : <VolumeX className="mr-2 h-4 w-4" />}{voiceEnabled ? "Voice on" : "Voice off"}</Button>
         </div>
         {error && <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
         <div className="grid gap-4 md:grid-cols-2">
+          {status?.lessons.map((item) => <details key={item.key} className="rounded-xl border bg-card p-4">
+            <summary className="cursor-pointer font-semibold">{item.name}</summary>
+            <p className="mt-2 text-sm text-muted-foreground">{item.summary}</p>
+            <ol className="mt-3 space-y-3">
+              {item.steps.map((step) => <li key={step.id} className="text-sm"><strong>{step.title}</strong><p className="text-muted-foreground">{step.explanation}</p></li>)}
+            </ol>
+          </details>)}
           {status?.missions.map((item, index) => {
             const run = latestRun(status.runs, item.key);
             const progress = progressFor(run, item.steps.length);
@@ -519,8 +503,8 @@ export function DemoCenter() {
           })}
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
-          <p className="max-w-2xl text-xs leading-5 text-muted-foreground">Training narration is generated by AI. Practice activity is isolated from accounting, calendar sync, and external communications.</p>
-          {isActualOwner && !user?.previewRole && <Button variant="ghost" size="sm" onClick={() => void resetTraining()} disabled={busy}><RotateCcw className="mr-1.5 h-4 w-4" />Reset my training</Button>}
+          <p className="max-w-2xl text-xs leading-5 text-muted-foreground">{status?.practice.enabled ? "Use fictional records only. This workspace captures messages locally and has accounting and calendar integrations disabled." : "Interactive exercises run in a separate practice workspace."}</p>
+          {status?.practice.enabled && isActualOwner && !user?.previewRole && <Button variant="ghost" size="sm" onClick={() => void resetTraining()} disabled={busy}><RotateCcw className="mr-1.5 h-4 w-4" />Reset my training</Button>}
         </div>
       </DialogContent>
     </Dialog>

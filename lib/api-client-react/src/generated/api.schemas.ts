@@ -1307,6 +1307,29 @@ export interface GoogleSyncResult {
   message?: string | null;
 }
 
+export type SmsDeliveryStatusMode = typeof SmsDeliveryStatusMode[keyof typeof SmsDeliveryStatusMode];
+
+
+export const SmsDeliveryStatusMode = {
+  capture: 'capture',
+  allowlist: 'allowlist',
+  live: 'live',
+} as const;
+
+export type SmsDeliveryStatusProvider = typeof SmsDeliveryStatusProvider[keyof typeof SmsDeliveryStatusProvider] | null;
+
+
+export const SmsDeliveryStatusProvider = {
+  signalwire: 'signalwire',
+  twilio: 'twilio',
+} as const;
+
+export interface SmsDeliveryStatus {
+  mode: SmsDeliveryStatusMode;
+  provider: SmsDeliveryStatusProvider;
+  serverSendAvailable: boolean;
+}
+
 export type CommunicationChannel = typeof CommunicationChannel[keyof typeof CommunicationChannel];
 
 
@@ -1782,6 +1805,93 @@ export interface InstallationReadinessMetrics {
   needsCrew: number;
 }
 
+export type OperationalMetricSourcesInvoicesItemBand = typeof OperationalMetricSourcesInvoicesItemBand[keyof typeof OperationalMetricSourcesInvoicesItemBand];
+
+
+export const OperationalMetricSourcesInvoicesItemBand = {
+  current: 'current',
+  pastDue1To30: 'pastDue1To30',
+  pastDue31To60: 'pastDue31To60',
+  pastDue61To90: 'pastDue61To90',
+  pastDue91Plus: 'pastDue91Plus',
+  unknown: 'unknown',
+} as const;
+
+export type OperationalMetricSourcesCompletionsItemBasis = typeof OperationalMetricSourcesCompletionsItemBasis[keyof typeof OperationalMetricSourcesCompletionsItemBasis];
+
+
+export const OperationalMetricSourcesCompletionsItemBasis = {
+  committed: 'committed',
+  estimated: 'estimated',
+  unknown: 'unknown',
+} as const;
+
+export type OperationalMetricSourcesCompletionsItemOutcome = typeof OperationalMetricSourcesCompletionsItemOutcome[keyof typeof OperationalMetricSourcesCompletionsItemOutcome];
+
+
+export const OperationalMetricSourcesCompletionsItemOutcome = {
+  onTime: 'onTime',
+  late: 'late',
+  unknown: 'unknown',
+} as const;
+
+export type OperationalMetricSourcesInstallationsItemStatus = typeof OperationalMetricSourcesInstallationsItemStatus[keyof typeof OperationalMetricSourcesInstallationsItemStatus];
+
+
+export const OperationalMetricSourcesInstallationsItemStatus = {
+  ready: 'ready',
+  materialsNeedAttention: 'materialsNeedAttention',
+  needsCrew: 'needsCrew',
+} as const;
+
+export type OperationalMetricSourcesInvoicesItem = {
+  invoiceId: string;
+  invoiceNumber: string;
+  customerName: string;
+  band: OperationalMetricSourcesInvoicesItemBand;
+  balance: number;
+  dueDate: string | null;
+};
+
+export type OperationalMetricSourcesCompletionsItem = {
+  jobId: string;
+  jobNumber: string;
+  customerName: string;
+  completedOn: string;
+  targetOn: string | null;
+  basis: OperationalMetricSourcesCompletionsItemBasis;
+  outcome: OperationalMetricSourcesCompletionsItemOutcome;
+};
+
+export type OperationalMetricSourcesInstallationsItem = {
+  jobId: string;
+  jobNumber: string;
+  customerName: string;
+  scheduledOn: string | null;
+  status: OperationalMetricSourcesInstallationsItemStatus;
+  issues: string[];
+};
+
+export type OperationalMetricSourcesPostedCountsItem = {
+  id: string;
+  sku: string;
+  productName: string;
+  unit: string;
+  warehouseId: string;
+  warehouseName: string;
+  binCode: string | null;
+  postedAt: string | null;
+  bookedQuantity: number;
+  countedQuantity: number;
+};
+
+export interface OperationalMetricSources {
+  invoices: OperationalMetricSourcesInvoicesItem[];
+  completions: OperationalMetricSourcesCompletionsItem[];
+  installations: OperationalMetricSourcesInstallationsItem[];
+  postedCounts: OperationalMetricSourcesPostedCountsItem[];
+}
+
 export interface OperationalMetrics {
   from: string;
   to: string;
@@ -1799,6 +1909,7 @@ export interface OperationalMetrics {
   stockAudit: StockAuditMetrics;
   materialUsageReport: CompletedJobMaterialUsage;
   installationReadiness: InstallationReadinessMetrics;
+  sourceRecords?: OperationalMetricSources;
   capacityHours: number | null;
   plannedLaborHours: number;
   actualLaborHours: number;
@@ -1819,6 +1930,22 @@ export interface CompletionCommitment {
   revision: number;
 }
 
+export type StagnantInventoryReportRecordsItem = {
+  productId: string;
+  sku: string;
+  productName: string;
+  unit: string;
+  active: boolean;
+  warehouseId: string | null;
+  warehouseName: string | null;
+  onHand: number;
+  inactiveDays: number;
+  lastMovedOn: string;
+  receiptValue: number;
+  estimatedValue: number;
+  incompleteValue: boolean;
+};
+
 export type StagnantInventoryReportWindowsItem = {
   days: number;
   locations: number;
@@ -1830,6 +1957,7 @@ export type StagnantInventoryReportWindowsItem = {
 export interface StagnantInventoryReport {
   asOfDate: string;
   unknownMovementLocations: number;
+  records?: StagnantInventoryReportRecordsItem[];
   windows: StagnantInventoryReportWindowsItem[];
 }
 

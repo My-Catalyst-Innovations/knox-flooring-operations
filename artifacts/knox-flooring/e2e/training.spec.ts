@@ -10,6 +10,8 @@ test.beforeEach(async ({ page }) => {
   await page.getByLabel("Password").fill(password!);
   await page.getByRole("button", { name: /^sign in$/i }).click();
   await expect(page.getByRole("banner").getByRole("button", { name: /^(training|open training center)$/i })).toBeVisible();
+  const invitation = page.getByRole("button", { name: "Not now", exact: true });
+  if (await invitation.isVisible()) await invitation.click();
 });
 
 test("all five guided missions are available", async ({ page }) => {
@@ -19,9 +21,17 @@ test("all five guided missions are available", async ({ page }) => {
   }
 });
 
-test("an owner can pause and resume training through the header", async ({ page }) => {
+test("owners can review live lessons or pause and resume a practice mission", async ({ page }) => {
+  const status = await (await page.request.get("/api/demo/status")).json();
   const trainingButton = page.getByRole("banner").getByRole("button", { name: /^(training|open training center)$/i });
   await trainingButton.click();
+  if (!status.practice.enabled) {
+    await page.getByText("Executive Tour", { exact: true }).click();
+    await expect(page.getByText("Your command center", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /start silently/i })).toHaveCount(0);
+    await expect(page).toHaveURL(/\/$/);
+    return;
+  }
   const mission = page.getByRole("article").filter({ hasText: "Executive Tour" });
   await mission.getByRole("button", { name: /start silently/i }).click();
   const trainingDialog = page.getByRole("dialog", { name: /your command center/i });

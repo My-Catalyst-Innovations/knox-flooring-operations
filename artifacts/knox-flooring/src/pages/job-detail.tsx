@@ -9,6 +9,7 @@ import {
   MapPin,
   Phone,
   Mail,
+  MessageSquare,
   Calendar,
   Ruler,
   Share2,
@@ -49,6 +50,7 @@ import { JobActuals } from "@/components/jobs/JobActuals";
 import { JobUpdates } from "@/components/jobs/JobUpdates";
 import { JobInstallationAction } from "@/components/jobs/JobInstallationAction";
 import { JobCompletionCommitment } from "@/components/jobs/JobCompletionCommitment";
+import { SmsComposeDialog } from "@/components/communications";
 import { STAGE_ORDER } from "@/lib/stages";
 import {
   computeCosting,
@@ -76,6 +78,7 @@ export default function JobDetail() {
   const { user } = useAuth();
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
+  const [smsPortalJobId, setSmsPortalJobId] = useState<string | null>(null);
   const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
   const [costingOpen, setCostingOpen] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
@@ -126,6 +129,7 @@ export default function JobDetail() {
   const commissionRate = commissionRateFor(salesperson, settings);
 
   const shareUrl = `${window.location.origin}${import.meta.env.BASE_URL}p/${job.shareToken}`;
+  const canTextPortal = Boolean(job.shareToken && (user?.role === "owner" || user?.role === "sales"));
 
   const copyShareLink = async () => {
     try {
@@ -187,6 +191,9 @@ export default function JobDetail() {
             <ExternalLink className="w-4 h-4 text-primary" /> Customer Portal
           </CardTitle>
           <div className="flex flex-wrap gap-2">
+            {canTextPortal && <Button variant="outline" size="sm" onClick={() => setSmsPortalJobId(job.id)}>
+              <MessageSquare className="mr-1 h-4 w-4" /> Text portal link
+            </Button>}
             <Button variant="outline" size="sm" onClick={copyShareLink}>
               {copied ? (
                 <Check className="w-4 h-4 mr-1" />
@@ -762,6 +769,16 @@ export default function JobDetail() {
         </div>
       </div>
 
+      {canTextPortal && (
+        <SmsComposeDialog
+          key={job.id}
+          open={smsPortalJobId === job.id}
+          onOpenChange={(open) => { if (!open) setSmsPortalJobId(null); }}
+          toNumber={job.phone}
+          customerName={job.customerName}
+          defaultBody={`Hi ${job.customerName}, you can follow your flooring project here.\n\n${shareUrl}`}
+        />
+      )}
       <InvoiceDialog
         open={invoiceDialogOpen}
         onOpenChange={setInvoiceDialogOpen}
