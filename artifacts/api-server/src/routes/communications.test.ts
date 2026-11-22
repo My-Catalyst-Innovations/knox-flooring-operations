@@ -313,13 +313,11 @@ it("checks suppression for live email without calling Resend", async () => {
 
 it("keeps a signed delivery received before the SignalWire send response and ignores older or unrelated callbacks", async () => {
   signalWire();
-  await request(app)
-    .get("/communications/sms/status")
-    .expect(200, {
-      mode: "live",
-      provider: "signalwire",
-      serverSendAvailable: true,
-    });
+  await request(app).get("/communications/sms/status").expect(200, {
+    mode: "live",
+    provider: "signalwire",
+    serverSendAvailable: true,
+  });
   const event = {
     AccountSid: project,
     MessageSid: sid,
@@ -453,6 +451,36 @@ it("accepts signed replies once and leaves a conflicting conversation unassigned
   expect(fetch).not.toHaveBeenCalled();
 });
 
+it("rejects signed outbound receipts on the inbound URL before saving a reply or an opt-out", async () => {
+  signalWire();
+  const path = `${hook}/inbound`;
+  const event = {
+    AccountSid: project,
+    MessageSid: sid,
+    From: to,
+    To: from,
+    Body: "STOP",
+    NumMedia: "0",
+  };
+  await postCallback(path, {
+    ...event,
+    MessageStatus: "sent",
+    SmsStatus: "sent",
+  }).expect(400);
+  await postCallback(path, { ...event, MessageStatus: "delivered" }).expect(
+    400,
+  );
+  await postCallback(path, { ...event, SmsStatus: "failed" }).expect(400);
+  expect(state.inbound.size).toBe(0);
+  expect(fetch).not.toHaveBeenCalled();
+  await postCallback(path, {
+    ...event,
+    Body: "Yes",
+    SmsStatus: "received",
+  }).expect(200);
+  expect(state.inbound.size).toBe(1);
+});
+
 it("orders consent by the authenticated message record and blocks future sends while opt-out is active", async () => {
   signalWire();
   const path = `${hook}/inbound`;
@@ -461,7 +489,7 @@ it("orders consent by the authenticated message record and blocks future sends w
     MessageSid: sid,
     From: to,
     To: from,
-    Body: "stop  ",
+    Body: "  stop  ",
     NumMedia: "0",
   };
   const restored = {

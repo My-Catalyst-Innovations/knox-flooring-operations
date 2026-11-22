@@ -139,6 +139,16 @@ export const signalWireStatusWebhook = domainRoute(async (req, res) => {
 export const signalWireInboundWebhook = domainRoute(async (req, res) => {
   const valid = verifiedForm(req, res, "/inbound");
   if (!valid) return;
+  const statuses = [valid.fields.MessageStatus, valid.fields.SmsStatus];
+  if (
+    statuses.some(
+      (status) =>
+        status !== undefined && status !== "receiving" && status !== "received",
+    )
+  ) {
+    res.status(400).end();
+    return;
+  }
   const parsed = signalWireIncomingMessage.safeParse(valid.fields);
   if (!parsed.success) {
     res.status(400).end();

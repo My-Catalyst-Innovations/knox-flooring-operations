@@ -19,7 +19,7 @@ const stop = new Set([
 const start = new Set(["START", "UNSTOP"]);
 
 export function smsConsentCommand(body: string) {
-  const word = body.trimEnd().toUpperCase();
+  const word = body.trim().toUpperCase();
   return stop.has(word) ? "stop" : start.has(word) ? "start" : null;
 }
 
