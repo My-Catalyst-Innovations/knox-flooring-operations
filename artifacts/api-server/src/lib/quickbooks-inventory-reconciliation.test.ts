@@ -2,9 +2,12 @@ import { expect, it, vi } from "vitest";
 import {
   adjustmentInput,
   exportStockReturnAdjustment,
+  matchesReceiptPrices,
   prepareStockReturnAdjustment,
   quantityUnits,
   stockAdjustmentsAvailable,
+  stockReceiptCoverage,
+  stockReturnIssueSources,
   verifyAdjustmentCompany,
 } from "./quickbooks-inventory-reconciliation";
 
@@ -62,6 +65,131 @@ const record = {
     },
   ],
 };
+
+it("matches a bill for 50 units when the job used only the first 40-unit receipt", () => {
+  const { issued, sources } = stockReturnIssueSources(
+    [
+      {
+        id: "pick-30",
+        kind: "consume",
+        quantity: -30,
+        costAllocations: [
+          {
+            source: "purchase_order",
+            sourceMovementId: "accepted-40",
+            quantity: 30,
+            unitCost: "48.25",
+          },
+        ],
+      },
+      { id: "return-2", kind: "return", quantity: 2 },
+    ],
+    { id: "return-2", returnOfMovementId: "pick-30", quantity: 2 },
+  );
+  const receipts = [
+    { movementId: "accepted-40", quantity: 40, unitCost: 48.25 },
+    { movementId: "accepted-10", quantity: 10, unitCost: 48.25 },
+  ];
+  const coverage = stockReceiptCoverage(sources, receipts);
+  expect(issued).toBe(30);
+  expect([...sources.keys()]).toEqual(["accepted-40"]);
+  expect(coverage.received).toBe(50);
+  expect(
+    matchesReceiptPrices(coverage.receivedLines, [
+      { quantity: 50, unitCost: 48.25 },
+    ]),
+  ).toBe(true);
+  expect(
+    matchesReceiptPrices(coverage.receivedLines, [
+      { quantity: 40, unitCost: 48.25 },
+    ]),
+  ).toBe(false);
+  expect(() => stockReceiptCoverage(sources, receipts.slice(1))).toThrow(
+    /Every issue must trace/,
+  );
+  expect(
+    prepareStockReturnAdjustment(
+      company,
+      choice,
+      {
+        before: coverage.received - issued,
+        target: coverage.received - issued + 2,
+        returned: 2,
+      },
+      "81",
+      evidence,
+    ).document.Line[0].ItemAdjustmentLineDetail.QtyDiff,
+  ).toBe(2);
+});
+
+it("supports multiple partial picks from one purchase order and requires full receipt coverage at each bill rate", () => {
+  const slice = (
+    sourceMovementId: string,
+    quantity: number,
+    unitCost: string,
+  ) => ({ source: "purchase_order", sourceMovementId, quantity, unitCost });
+  const movements = [
+    {
+      id: "pick-a",
+      kind: "consume",
+      quantity: -10,
+      costAllocations: [slice("receipt-a", 10, "48.250000")],
+    },
+    {
+      id: "pick-b",
+      kind: "consume",
+      quantity: -20,
+      costAllocations: [
+        slice("receipt-a", 10, "48.25"),
+        slice("receipt-b", 10, "52.75"),
+      ],
+    },
+    { id: "return-2", kind: "return", quantity: 2 },
+  ];
+  const returned = {
+    id: "return-2",
+    returnOfMovementId: "pick-b",
+    quantity: 2,
+  };
+  const allocation = stockReturnIssueSources(movements, returned);
+  expect(allocation.issued).toBe(30);
+  expect([...allocation.sources]).toEqual([
+    ["receipt-a", { issuedUnits: 20_000_000, unitCost: 48.25 }],
+    ["receipt-b", { issuedUnits: 10_000_000, unitCost: 52.75 }],
+  ]);
+  const receipts = [
+    { quantity: 20, unitCost: 48.25 },
+    { quantity: 30, unitCost: 52.75 },
+  ];
+  expect(
+    matchesReceiptPrices(receipts, [
+      { quantity: 30, unitCost: 52.75 },
+      { quantity: 5, unitCost: 48.25 },
+      { quantity: 15, unitCost: 48.25 },
+    ]),
+  ).toBe(true);
+  expect(
+    matchesReceiptPrices(receipts, [{ quantity: 50, unitCost: 50.95 }]),
+  ).toBe(false);
+  expect(
+    matchesReceiptPrices(receipts, [
+      { quantity: 20, unitCost: 48.25 },
+      { quantity: 29, unitCost: 52.75 },
+    ]),
+  ).toBe(false);
+  expect(() =>
+    stockReturnIssueSources(
+      [...movements, { id: "return-unreviewed", kind: "return", quantity: 1 }],
+      returned,
+    ),
+  ).toThrow(/multiple returns/);
+  expect(() =>
+    stockReturnIssueSources(
+      [{ ...movements[0], costAllocations: null }, ...movements.slice(1)],
+      returned,
+    ),
+  ).toThrow(/exact quantity/);
+});
 
 function callbacks(allowCreate = true) {
   return {

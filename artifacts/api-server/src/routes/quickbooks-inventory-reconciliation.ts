@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import { Router } from "express";
 import { z } from "zod";
 import {
@@ -27,11 +27,14 @@ import {
   approvedStockAdjustment,
   exportStockReturnAdjustment,
   inventoryItem,
+  matchesReceiptPrices,
   prepareStockReturnAdjustment,
   quantityUnits,
   readAdjustmentItem,
   stockAdjustmentEntity,
   stockAdjustmentsAvailable,
+  stockReceiptCoverage,
+  stockReturnIssueSources,
   verifyAdjustmentCompany,
   type AdjustmentInput,
 } from "../lib/quickbooks-inventory-reconciliation";
@@ -480,39 +483,30 @@ async function prepare(company: Company, choice: AdjustmentInput) {
         inArray(movements.kind, ["consume", "return"]),
       ),
     );
-  const issue = jobMovements.find(
-    (entry) =>
-      entry.id === returned.returnOfMovementId &&
-      entry.kind === "consume" &&
-      entry.quantity < 0,
-  );
-  const allocations = issue?.costAllocations ?? [];
-  const [source] = allocations;
-  if (
-    !issue ||
-    jobMovements.length !== 2 ||
-    !source ||
-    allocations.some(
-      (entry) =>
-        entry.source !== "purchase_order" ||
-        entry.sourceMovementId !== source.sourceMovementId ||
-        entry.unitCost !== source.unitCost,
-    ) ||
-    !sameQuantity(
-      roundStock(allocations.reduce((sum, entry) => sum + entry.quantity, 0)),
-      -issue.quantity,
-    ) ||
-    returned.quantity > -issue.quantity
-  )
+  const { issued, sources } = stockReturnIssueSources(jobMovements, {
+    ...returned,
+    returnOfMovementId: returned.returnOfMovementId,
+  });
+  const orders = await db
+    .selectDistinct({ id: purchaseReceiptsTable.orderId })
+    .from(purchaseReceiptLinesTable)
+    .innerJoin(
+      purchaseReceiptsTable,
+      eq(purchaseReceiptsTable.id, purchaseReceiptLinesTable.receiptId),
+    )
+    .where(inArray(purchaseReceiptLinesTable.movementId, [...sources.keys()]))
+    .limit(2);
+  if (orders.length !== 1)
     throw new Error(
-      "This adjustment requires one job issue, one linked return, and one traceable purchase receipt for the item.",
+      "Review issues sourced from multiple purchase orders or missing purchase receipts in QuickBooks.",
     );
-  const [receipt] = await db
+  const receipts = await db
     .select({
       line: purchaseReceiptLinesTable,
       receipt: purchaseReceiptsTable,
       order: purchaseOrdersTable,
       product: purchaseOrderLinesTable,
+      movement: movements,
     })
     .from(purchaseReceiptLinesTable)
     .innerJoin(
@@ -527,16 +521,42 @@ async function prepare(company: Company, choice: AdjustmentInput) {
       purchaseOrderLinesTable,
       eq(purchaseOrderLinesTable.id, purchaseReceiptLinesTable.lineId),
     )
-    .where(eq(purchaseReceiptLinesTable.movementId, source.sourceMovementId));
+    .innerJoin(
+      movements,
+      eq(movements.id, purchaseReceiptLinesTable.movementId),
+    )
+    .where(
+      and(
+        eq(purchaseReceiptsTable.orderId, orders[0].id),
+        eq(purchaseOrderLinesTable.productId, choice.productId),
+        gt(purchaseReceiptLinesTable.quantity, "0"),
+      ),
+    )
+    .orderBy(purchaseReceiptsTable.receivedAt, purchaseReceiptLinesTable.id);
+  const [receipt] = receipts;
   if (
     !receipt ||
-    receipt.product.productId !== choice.productId ||
-    receipt.product.unit !== local.unit ||
-    Number(receipt.line.quantity) < -issue.quantity
+    receipts.some(
+      (entry) =>
+        entry.product.orderId !== entry.order.id ||
+        entry.product.unit !== local.unit ||
+        entry.movement.productId !== choice.productId ||
+        entry.movement.kind !== "receipt" ||
+        !sameQuantity(entry.movement.quantity, Number(entry.line.quantity)) ||
+        entry.movement.acquisitionUnitCost === null,
+    )
   )
     throw new Error(
-      "The issue’s original purchase receipt and stock units could not be verified.",
+      "The accepted receipts on this purchase order must have the same stock units and verified receipt movements.",
     );
+  const { received, receivedLines } = stockReceiptCoverage(
+    sources,
+    receipts.map((entry) => ({
+      movementId: entry.movement.id,
+      quantity: Number(entry.line.quantity),
+      unitCost: Number(entry.movement.acquisitionUnitCost),
+    })),
+  );
 
   const [[billRow], [invoice], [customer]] = await Promise.all([
     db
@@ -586,17 +606,16 @@ async function prepare(company: Company, choice: AdjustmentInput) {
     );
   const purchases = billItems(bill.quickBooksBill, local.itemId);
   if (
-    !purchases.length ||
-    !sameQuantity(
-      roundStock(purchases.reduce((sum, line) => sum + line.Qty, 0)),
-      Number(receipt.line.quantity),
-    ) ||
-    purchases.some(
-      (line) => !sameQuantity(line.UnitPrice, Number(source.unitCost)),
+    !matchesReceiptPrices(
+      receivedLines,
+      purchases.map((line) => ({
+        quantity: line.Qty,
+        unitCost: line.UnitPrice,
+      })),
     )
   )
     throw new Error(
-      "The posted bill must match the original receipt’s exact item quantity and acquisition price.",
+      "The selected posted bill must match the exact item quantities and acquisition prices across all accepted receipts on this purchase order.",
     );
   const billed = invoice.source.lineItems.filter(
     (line) => line.productId === choice.productId,
@@ -605,11 +624,11 @@ async function prepare(company: Company, choice: AdjustmentInput) {
     !billed.length ||
     !sameQuantity(
       roundStock(billed.reduce((sum, line) => sum + line.quantity, 0)),
-      -issue.quantity,
+      issued,
     )
   )
     throw new Error(
-      "The customer invoice must have billed the original issued quantity for this SKU.",
+      "The customer invoice must have billed the total issued quantity for this SKU.",
     );
 
   const [item, currentBill, responseInvoice, accounting] = await Promise.all([
@@ -677,15 +696,26 @@ async function prepare(company: Company, choice: AdjustmentInput) {
     );
   const evidence = {
     receiptId: receipt.receipt.id,
-    receiptReference: receipt.receipt.reference,
+    receiptReference: [
+      ...new Set(
+        receipts.map((entry) => entry.receipt.reference || entry.receipt.id),
+      ),
+    ].join(", "),
     orderNumber: String(receipt.order.number),
-    received: Number(receipt.line.quantity),
+    received,
+    purchaseReceipts: receipts.map((entry) => ({
+      movementId: entry.movement.id,
+      receiptId: entry.receipt.id,
+      allocated: sources.get(entry.movement.id)?.issuedUnits ?? 0,
+      quantity: entry.line.quantity,
+      unitCost: entry.movement.acquisitionUnitCost,
+    })),
     billId: bill.postedId,
     billNumber: bill.quickBooksBill.DocNumber,
     invoiceId: posted.Id,
     invoiceNumber: posted.DocNumber,
     jobNumber: invoice.source.jobNumber,
-    issued: -issue.quantity,
+    issued,
     returned: returned.quantity,
     returnReason: returned.reason,
     local,

@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type RequestHandler } from "express";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import {
   auditEventsTable,
   db,
@@ -20,6 +20,8 @@ import {
 } from "@workspace/db";
 import { currentWorkspace, workspaceEnvironment } from "@workspace/db/workspace";
 import { audit } from "../lib/auth";
+import { domainRoute } from "../lib/domain-http";
+import { DomainError } from "../lib/operations-rules";
 import { PAGE_GUIDES, TRAINING_MANIFEST_VERSION, TRAINING_MISSIONS, canCompleteTrainingStep, findTrainingStep, type TrainingStep } from "../lib/training";
 import { hasMeasuredRoom, practiceCustomerName, trainingPracticeAccess } from "../lib/training-practice";
 import { requireOwner } from "../middlewares/auth";
@@ -54,24 +56,47 @@ const requireLegacyBaseline: RequestHandler = (req, res, next) => {
 };
 
 type TrainingRun = typeof trainingRunsTable.$inferSelect;
+type TrainingTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+function inMissionTransaction<T>(userId: string, missionKey: string, task: (tx: TrainingTransaction) => Promise<T>) {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["training.mission", userId, missionKey])}, 0))`);
+    return task(tx);
+  });
+}
+
+async function getMissionRun(tx: TrainingTransaction, userId: string, missionKey: string, runId: string) {
+  const [run] = await tx.select().from(trainingRunsTable).where(and(
+    eq(trainingRunsTable.id, runId), eq(trainingRunsTable.userId, userId), eq(trainingRunsTable.missionKey, missionKey),
+  )).limit(1);
+  if (!run) throw new DomainError(404, "Training run not found");
+  return run;
+}
+
+async function deactivateOtherRuns(tx: TrainingTransaction, userId: string, missionKey: string, now: string, status: "paused" | "dismissed", keepRun?: string) {
+  await tx.update(trainingRunsTable).set({ status, updatedAt: now }).where(and(
+    eq(trainingRunsTable.userId, userId), eq(trainingRunsTable.missionKey, missionKey), eq(trainingRunsTable.status, "active"),
+    keepRun ? ne(trainingRunsTable.id, keepRun) : undefined,
+  ));
+}
 
 function publicRun(run: TrainingRun) {
   const { practiceData: _private, ...values } = run;
   return { ...values, practiceCustomerName: practiceCustomerName(run) };
 }
 
-async function hasPracticeOutcome(step: TrainingStep, run: TrainingRun) {
+async function hasPracticeOutcome(tx: TrainingTransaction, step: TrainingStep, run: TrainingRun) {
   if (!step.outcome) return false;
   const name = practiceCustomerName(run);
   if (step.outcome === "lead") {
-    const [lead] = await db.select({ id: leadsTable.id }).from(leadsTable).where(and(
+    const [lead] = await tx.select({ id: leadsTable.id }).from(leadsTable).where(and(
       eq(leadsTable.customerName, name), eq(leadsTable.phone, ""), eq(leadsTable.email, ""),
       gte(leadsTable.createdAt, run.startedAt),
     )).limit(1);
     return Boolean(lead);
   }
 
-  const drafts = await db.select({ inputs: estimateDraftsTable.inputs, proposalId: proposalsTable.id })
+  const drafts = await tx.select({ inputs: estimateDraftsTable.inputs, proposalId: proposalsTable.id })
     .from(estimateDraftsTable).leftJoin(proposalsTable, and(
       eq(proposalsTable.id, estimateDraftsTable.convertedProposalId),
       eq(proposalsTable.customerName, name), gte(proposalsTable.createdAt, run.startedAt),
@@ -82,13 +107,13 @@ async function hasPracticeOutcome(step: TrainingStep, run: TrainingRun) {
   return drafts.some((draft) => hasMeasuredRoom(draft.inputs) && (step.outcome !== "proposal" || Boolean(draft.proposalId)));
 }
 
-async function saveLegacyProgress(userId: string, missionKey: string, currentStep: number, status: string, checkpoints: string[], startedAt: string, completedAt: string | null) {
-  const now = new Date().toISOString();
-  const [existing] = await db.select().from(tourProgressTable)
+async function saveLegacyProgress(tx: TrainingTransaction, run: TrainingRun) {
+  const { userId, missionKey, currentStep, status, checkpoints, startedAt, completedAt, updatedAt } = run;
+  const [existing] = await tx.select().from(tourProgressTable)
     .where(and(eq(tourProgressTable.userId, userId), eq(tourProgressTable.missionKey, missionKey))).limit(1);
-  const values = { currentStep, status, checkpoints, startedAt, completedAt, updatedAt: now };
-  if (existing) await db.update(tourProgressTable).set(values).where(eq(tourProgressTable.id, existing.id));
-  else await db.insert(tourProgressTable).values({ id: randomUUID(), userId, missionKey, ...values });
+  const values = { currentStep, status, checkpoints, startedAt, completedAt, updatedAt };
+  if (existing) await tx.update(tourProgressTable).set(values).where(eq(tourProgressTable.id, existing.id));
+  else await tx.insert(tourProgressTable).values({ id: randomUUID(), userId, missionKey, ...values });
 }
 
 router.get("/demo/status", async (req, res) => {
@@ -154,19 +179,18 @@ router.put("/demo/preferences", async (req, res) => {
 
 router.use("/demo/missions", requirePractice);
 
-router.post("/demo/missions/:key/start", async (req, res) => {
+router.post("/demo/missions/:key/start", domainRoute(async (req, res) => {
   const mission = TRAINING_MISSIONS.find((item) => item.key === req.params.key);
   if (!mission) { res.status(404).json({ error: "Mission not found" }); return; }
   if (!canUseMission(req, mission.role)) { res.status(403).json({ error: `Switch to the ${mission.role} perspective to start this mission` }); return; }
-  const now = new Date().toISOString();
-  const id = randomUUID();
+  const userId = req.auth!.userId;
   const voiceEnabled = req.body?.voiceEnabled === true;
-  await db.transaction(async (tx) => {
-    await tx.update(trainingRunsTable).set({ status: "dismissed", updatedAt: now })
-      .where(and(eq(trainingRunsTable.userId, req.auth!.userId), eq(trainingRunsTable.missionKey, mission.key), eq(trainingRunsTable.status, "active")));
-    await tx.insert(trainingRunsTable).values({
-      id,
-      userId: req.auth!.userId,
+  const run = await inMissionTransaction(userId, mission.key, async (tx) => {
+    const now = new Date().toISOString();
+    await deactivateOtherRuns(tx, userId, mission.key, now, "dismissed");
+    const [created] = await tx.insert(trainingRunsTable).values({
+      id: randomUUID(),
+      userId,
       missionKey: mission.key,
       manifestVersion: TRAINING_MANIFEST_VERSION,
       status: "active",
@@ -176,97 +200,111 @@ router.post("/demo/missions/:key/start", async (req, res) => {
       practiceData: { environment: "practice" },
       startedAt: now,
       updatedAt: now,
-    });
-    const [preferences] = await tx.select().from(trainingPreferencesTable).where(eq(trainingPreferencesTable.userId, req.auth!.userId)).limit(1);
+    }).returning();
     const nextPreferences = { voiceEnabled, captionsEnabled: true, welcomeDismissed: true, updatedAt: now };
-    if (preferences) await tx.update(trainingPreferencesTable).set(nextPreferences).where(eq(trainingPreferencesTable.userId, req.auth!.userId));
-    else await tx.insert(trainingPreferencesTable).values({ userId: req.auth!.userId, ...nextPreferences });
+    await tx.insert(trainingPreferencesTable).values({ userId, ...nextPreferences })
+      .onConflictDoUpdate({ target: trainingPreferencesTable.userId, set: nextPreferences });
+    await saveLegacyProgress(tx, created);
+    return created;
   });
-  await saveLegacyProgress(req.auth!.userId, mission.key, 0, "active", [], now, null);
-  await audit("training.mission.started", { userId: req.auth!.userId, entityType: "training_run", entityId: id, ip: req.ip, details: { missionKey: mission.key, voiceEnabled, manifestVersion: TRAINING_MANIFEST_VERSION } });
-  res.status(201).json({ id, userId: req.auth!.userId, missionKey: mission.key, manifestVersion: TRAINING_MANIFEST_VERSION, status: "active", currentStep: 0, voiceEnabled, checkpoints: [], startedAt: now, updatedAt: now, practiceCustomerName: practiceCustomerName({ id, startedAt: now }) });
-});
+  await audit("training.mission.started", { userId, entityType: "training_run", entityId: run.id, ip: req.ip, details: { missionKey: mission.key, voiceEnabled, manifestVersion: TRAINING_MANIFEST_VERSION } });
+  res.status(201).json(publicRun(run));
+}));
 
-router.put("/demo/missions/:key", async (req, res) => {
+router.put("/demo/missions/:key", domainRoute(async (req, res) => {
   const mission = TRAINING_MISSIONS.find((item) => item.key === req.params.key);
   if (!mission) { res.status(404).json({ error: "Mission not found" }); return; }
   if (!canUseMission(req, mission.role)) { res.status(403).json({ error: "Switch to the mission's role to continue." }); return; }
-  const runId = String(req.body?.runId ?? "");
-  const [run] = await db.select().from(trainingRunsTable)
-    .where(and(eq(trainingRunsTable.id, runId), eq(trainingRunsTable.userId, req.auth!.userId), eq(trainingRunsTable.missionKey, mission.key))).limit(1);
-  if (!run) { res.status(404).json({ error: "Training run not found" }); return; }
-  const currentStep = req.body?.currentStep ?? run.currentStep;
-  if (run.manifestVersion !== TRAINING_MANIFEST_VERSION || !["active", "paused"].includes(run.status) ||
-    req.body?.status !== "active" || !Number.isInteger(currentStep) || currentStep < Math.max(0, run.currentStep - 1) || currentStep > run.currentStep) {
-    res.status(409).json({ error: "Resume this mission or verify its current checkpoint to advance." }); return;
-  }
-  const now = new Date().toISOString();
-  const values = { status: "active", currentStep, updatedAt: now };
-  const [updated] = await db.update(trainingRunsTable).set(values).where(and(eq(trainingRunsTable.id, run.id), eq(trainingRunsTable.updatedAt, run.updatedAt))).returning();
-  if (!updated) { res.status(409).json({ error: "Training progress changed. Refresh and try again." }); return; }
-  await saveLegacyProgress(run.userId, run.missionKey, currentStep, values.status, run.checkpoints, run.startedAt, run.completedAt);
-  res.json(publicRun(updated));
-});
+  const userId = req.auth!.userId;
+  const resumed = await inMissionTransaction(userId, mission.key, async (tx) => {
+    const run = await getMissionRun(tx, userId, mission.key, String(req.body?.runId ?? ""));
+    const currentStep = req.body?.currentStep ?? run.currentStep;
+    if (run.manifestVersion !== TRAINING_MANIFEST_VERSION || !["active", "paused"].includes(run.status) ||
+      req.body?.status !== "active" || !Number.isInteger(currentStep) || currentStep < Math.max(0, run.currentStep - 1) || currentStep > run.currentStep) {
+      throw new DomainError(409, "Resume this mission or verify its current checkpoint to advance.");
+    }
+    const now = new Date().toISOString();
+    await deactivateOtherRuns(tx, userId, mission.key, now, "paused", run.id);
+    const [updated] = await tx.update(trainingRunsTable).set({ status: "active", currentStep, updatedAt: now })
+      .where(eq(trainingRunsTable.id, run.id)).returning();
+    await saveLegacyProgress(tx, updated);
+    return updated;
+  });
+  res.json(publicRun(resumed));
+}));
 
-router.post("/demo/missions/:key/verify", async (req, res) => {
+router.post("/demo/missions/:key/verify", domainRoute(async (req, res) => {
   const mission = TRAINING_MISSIONS.find((item) => item.key === req.params.key);
   if (!mission) { res.status(404).json({ error: "Mission not found" }); return; }
   if (!canUseMission(req, mission.role)) { res.status(403).json({ error: "Switch to the mission's role to continue." }); return; }
+  const userId = req.auth!.userId;
   const runId = String(req.body?.runId ?? "");
-  const [run] = await db.select().from(trainingRunsTable)
-    .where(and(eq(trainingRunsTable.id, runId), eq(trainingRunsTable.userId, req.auth!.userId), eq(trainingRunsTable.missionKey, mission.key))).limit(1);
-  if (!run) { res.status(404).json({ error: "Training run not found" }); return; }
-  if (run.manifestVersion !== TRAINING_MANIFEST_VERSION) { res.status(409).json({ error: "Training content changed. Restart this mission to continue." }); return; }
-  if (run.status !== "active") { res.status(409).json({ error: "Resume this mission before verifying a checkpoint." }); return; }
-  const step = mission.steps[run.currentStep];
-  if (!step || step.id !== req.body?.stepId) { res.status(409).json({ error: "This is not the active training step" }); return; }
   const skipped = req.body?.skipped === true;
-  const persistedOutcome = step.kind === "action" && !skipped && (run.checkpoints.includes(step.id) || await hasPracticeOutcome(step, run));
-  if (!canCompleteTrainingStep(step, persistedOutcome, skipped)) {
-    await audit("training.step.validation_failed", { userId: req.auth!.userId, entityType: "training_run", entityId: run.id, ip: req.ip, details: { missionKey: mission.key, stepId: step.id, reason: "practice_record_missing" } });
+  const result = await inMissionTransaction(userId, mission.key, async (tx) => {
+    const run = await getMissionRun(tx, userId, mission.key, runId);
+    if (run.manifestVersion !== TRAINING_MANIFEST_VERSION) throw new DomainError(409, "Training content changed. Restart this mission to continue.");
+    if (run.status !== "active") throw new DomainError(409, "Resume this mission before verifying a checkpoint.");
+    const step = mission.steps[run.currentStep];
+    if (!step || step.id !== req.body?.stepId) throw new DomainError(409, "This is not the active training step");
+    const persistedOutcome = step.kind === "action" && !skipped && (run.checkpoints.includes(step.id) || await hasPracticeOutcome(tx, step, run));
+    if (!canCompleteTrainingStep(step, persistedOutcome, skipped)) return { stepId: step.id, run: null };
+    const checkpoint = skipped ? `${step.id}:skipped` : step.id;
+    const checkpoints = Array.from(new Set([...run.checkpoints.filter((item) => item !== `${step.id}:skipped`), run.checkpoints.includes(step.id) ? step.id : checkpoint]));
+    const lastStep = run.currentStep >= mission.steps.length - 1;
+    const now = new Date().toISOString();
+    const [updated] = await tx.update(trainingRunsTable).set({
+      checkpoints, currentStep: lastStep ? run.currentStep : run.currentStep + 1,
+      status: lastStep ? "completed" : "active", completedAt: lastStep ? now : null, updatedAt: now,
+    }).where(eq(trainingRunsTable.id, run.id)).returning();
+    await saveLegacyProgress(tx, updated);
+    return { stepId: step.id, run: updated };
+  });
+  if (!result.run) {
+    await audit("training.step.validation_failed", { userId, entityType: "training_run", entityId: runId, ip: req.ip, details: { missionKey: mission.key, stepId: result.stepId, reason: "practice_record_missing" } });
     res.status(422).json({ error: "The expected practice record is missing. Save it using the exact practice customer name and try again." });
     return;
   }
-  const checkpoint = skipped ? `${step.id}:skipped` : step.id;
-  const checkpoints = Array.from(new Set([...run.checkpoints.filter((item) => item !== `${step.id}:skipped`), run.checkpoints.includes(step.id) ? step.id : checkpoint]));
-  const lastStep = run.currentStep >= mission.steps.length - 1;
-  const now = new Date().toISOString();
-  const values = { checkpoints, currentStep: lastStep ? run.currentStep : run.currentStep + 1, status: lastStep ? "completed" : "active", completedAt: lastStep ? now : null, updatedAt: now };
-  const [updated] = await db.update(trainingRunsTable).set(values).where(and(eq(trainingRunsTable.id, run.id), eq(trainingRunsTable.updatedAt, run.updatedAt))).returning();
-  if (!updated) { res.status(409).json({ error: "Training progress changed. Refresh and try again." }); return; }
-  await saveLegacyProgress(run.userId, run.missionKey, values.currentStep, values.status, checkpoints, run.startedAt, values.completedAt);
-  await audit(lastStep ? "training.mission.completed" : "training.step.verified", { userId: req.auth!.userId, entityType: "training_run", entityId: run.id, ip: req.ip, details: { missionKey: mission.key, stepId: step.id, skipped } });
-  res.json({ ...publicRun(updated), verifiedStepId: skipped ? null : step.id, complete: lastStep });
-});
+  const complete = result.run.status === "completed";
+  await audit(complete ? "training.mission.completed" : "training.step.verified", { userId, entityType: "training_run", entityId: runId, ip: req.ip, details: { missionKey: mission.key, stepId: result.stepId, skipped } });
+  res.json({ ...publicRun(result.run), verifiedStepId: skipped ? null : result.stepId, complete });
+}));
 
-router.post("/demo/missions/:key/exit", async (req, res) => {
+router.post("/demo/missions/:key/exit", domainRoute(async (req, res) => {
+  const userId = req.auth!.userId;
+  const missionKey = String(req.params.key ?? "");
   const runId = String(req.body?.runId ?? "");
-  const [run] = await db.select().from(trainingRunsTable)
-    .where(and(eq(trainingRunsTable.id, runId), eq(trainingRunsTable.userId, req.auth!.userId), eq(trainingRunsTable.missionKey, req.params.key))).limit(1);
-  if (!run) { res.status(404).json({ error: "Training run not found" }); return; }
   const status = req.body?.discard === true ? "dismissed" : "paused";
-  const now = new Date().toISOString();
-  await db.update(trainingRunsTable).set({ status, updatedAt: now }).where(eq(trainingRunsTable.id, run.id));
-  await saveLegacyProgress(run.userId, run.missionKey, run.currentStep, status, run.checkpoints, run.startedAt, run.completedAt);
-  await audit(status === "paused" ? "training.mission.paused" : "training.mission.exited", { userId: req.auth!.userId, entityType: "training_run", entityId: run.id, ip: req.ip, details: { missionKey: run.missionKey } });
-  res.json({ ...run, status, updatedAt: now });
-});
+  const exited = await inMissionTransaction(userId, missionKey, async (tx) => {
+    const run = await getMissionRun(tx, userId, missionKey, runId);
+    if (run.status === "completed" || run.status === "dismissed" || run.status === status) return run;
+    const [updated] = await tx.update(trainingRunsTable).set({ status, updatedAt: new Date().toISOString() })
+      .where(eq(trainingRunsTable.id, run.id)).returning();
+    if (run.status === "active") await saveLegacyProgress(tx, updated);
+    return updated;
+  });
+  if (exited.status === status) await audit(status === "paused" ? "training.mission.paused" : "training.mission.exited", { userId, entityType: "training_run", entityId: runId, ip: req.ip, details: { missionKey } });
+  res.json(publicRun(exited));
+}));
 
-router.post("/demo/missions/:key/restart", async (req, res) => {
+router.post("/demo/missions/:key/restart", domainRoute(async (req, res) => {
   const mission = TRAINING_MISSIONS.find((item) => item.key === req.params.key);
   if (!mission) { res.status(404).json({ error: "Mission not found" }); return; }
   if (!canUseMission(req, mission.role)) { res.status(403).json({ error: "Switch to the mission's role to restart." }); return; }
-  const runId = String(req.body?.runId ?? "");
-  const [run] = await db.select().from(trainingRunsTable)
-    .where(and(eq(trainingRunsTable.id, runId), eq(trainingRunsTable.userId, req.auth!.userId), eq(trainingRunsTable.missionKey, req.params.key))).limit(1);
-  if (!run) { res.status(404).json({ error: "Training run not found" }); return; }
-  const now = new Date().toISOString();
-  const values = { manifestVersion: TRAINING_MANIFEST_VERSION, status: "active", currentStep: 0, checkpoints: [] as string[], practiceData: { environment: "practice" }, startedAt: now, completedAt: null, updatedAt: now };
-  await db.update(trainingRunsTable).set(values).where(eq(trainingRunsTable.id, run.id));
-  await saveLegacyProgress(run.userId, run.missionKey, 0, "active", [], now, null);
-  await audit("training.mission.restarted", { userId: req.auth!.userId, entityType: "training_run", entityId: run.id, ip: req.ip, details: { missionKey: run.missionKey } });
-  res.json(publicRun({ ...run, ...values }));
-});
+  const userId = req.auth!.userId;
+  const restarted = await inMissionTransaction(userId, mission.key, async (tx) => {
+    const run = await getMissionRun(tx, userId, mission.key, String(req.body?.runId ?? ""));
+    const now = new Date().toISOString();
+    await deactivateOtherRuns(tx, userId, mission.key, now, "paused", run.id);
+    const [updated] = await tx.update(trainingRunsTable).set({
+      manifestVersion: TRAINING_MANIFEST_VERSION, status: "active", currentStep: 0, checkpoints: [],
+      practiceData: { environment: "practice" }, startedAt: now, completedAt: null, updatedAt: now,
+    }).where(eq(trainingRunsTable.id, run.id)).returning();
+    await saveLegacyProgress(tx, updated);
+    return updated;
+  });
+  await audit("training.mission.restarted", { userId, entityType: "training_run", entityId: restarted.id, ip: req.ip, details: { missionKey: mission.key } });
+  res.json(publicRun(restarted));
+}));
 
 router.get("/demo/audio/:stepId", createTrainingAudioHandler({
   manifestVersion: TRAINING_MANIFEST_VERSION,

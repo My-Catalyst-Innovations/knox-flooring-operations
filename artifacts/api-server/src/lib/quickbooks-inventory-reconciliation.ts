@@ -20,6 +20,141 @@ export function quantityFromUnits(units: number) {
   return units / quantityScale;
 }
 
+type JobStockMovement = {
+  id: string;
+  kind: string;
+  quantity: number;
+  costAllocations?: Array<{
+    source: string;
+    sourceMovementId: string;
+    quantity: number;
+    unitCost: string;
+  }> | null;
+};
+
+export function stockReturnIssueSources(
+  movements: JobStockMovement[],
+  returned: { id: string; returnOfMovementId: string; quantity: number },
+) {
+  const issues = movements.filter((movement) => movement.kind === "consume");
+  const linked = issues.find(
+    (movement) => movement.id === returned.returnOfMovementId,
+  );
+  const returnedUnits = quantityUnits(returned.quantity);
+  const linkedUnits = linked ? quantityUnits(linked.quantity) : null;
+  if (
+    linkedUnits === null ||
+    returnedUnits === null ||
+    returnedUnits <= 0 ||
+    returnedUnits > -linkedUnits ||
+    movements.some(
+      (movement) => movement.kind === "return" && movement.id !== returned.id,
+    )
+  )
+    throw new Error(
+      "Choose one returned quantity tied to a job issue. Review jobs with multiple returns in QuickBooks.",
+    );
+
+  const sources = new Map<string, { issuedUnits: number; unitCost: number }>();
+  let issuedUnits = 0;
+  for (const issue of issues) {
+    const pending = quantityUnits(-issue.quantity);
+    let allocated = 0;
+    for (const allocation of issue.costAllocations ?? []) {
+      const units = quantityUnits(allocation.quantity);
+      const rate = Number(allocation.unitCost);
+      const price = quantityUnits(rate);
+      const source = sources.get(allocation.sourceMovementId);
+      if (
+        allocation.source !== "purchase_order" ||
+        !allocation.sourceMovementId ||
+        units === null ||
+        units <= 0 ||
+        price === null ||
+        price < 0 ||
+        (source && source.unitCost !== rate)
+      )
+        throw new Error(
+          "Every job issue for this SKU must trace to purchase receipt stock at a verified acquisition price.",
+        );
+      sources.set(allocation.sourceMovementId, {
+        unitCost: rate,
+        issuedUnits: (source?.issuedUnits ?? 0) + units,
+      });
+      allocated += units;
+    }
+    if (pending === null || pending <= 0 || allocated !== pending)
+      throw new Error(
+        "Every job issue for this SKU must have an exact quantity of purchase receipt stock.",
+      );
+    issuedUnits += pending;
+  }
+  if (!Number.isSafeInteger(issuedUnits))
+    throw new Error(
+      "The issued quantity is outside the supported stock range.",
+    );
+  return { issued: quantityFromUnits(issuedUnits), sources };
+}
+
+export function matchesReceiptPrices(
+  receipts: Array<{ quantity: number; unitCost: number }>,
+  bill: Array<{ quantity: number; unitCost: number }>,
+) {
+  const byRate = (lines: Array<{ quantity: number; unitCost: number }>) => {
+    const totals = new Map<number, number>();
+    for (const line of lines) {
+      const quantity = quantityUnits(line.quantity),
+        rate = quantityUnits(line.unitCost);
+      if (quantity === null || quantity <= 0 || rate === null || rate < 0)
+        return null;
+      const total = (totals.get(rate) ?? 0) + quantity;
+      if (!Number.isSafeInteger(total)) return null;
+      totals.set(rate, total);
+    }
+    return totals;
+  };
+  const expected = byRate(receipts),
+    observed = byRate(bill);
+  return (
+    !!expected?.size &&
+    !!observed &&
+    expected.size === observed.size &&
+    [...expected].every(([rate, quantity]) => observed.get(rate) === quantity)
+  );
+}
+
+export function stockReceiptCoverage(
+  sources: ReturnType<typeof stockReturnIssueSources>["sources"],
+  receipts: Array<{ movementId: string; quantity: number; unitCost: number }>,
+) {
+  const unverified = new Set(sources.keys());
+  let total = 0;
+  for (const receipt of receipts) {
+    const quantity = quantityUnits(receipt.quantity);
+    const rate = quantityUnits(receipt.unitCost);
+    const source = sources.get(receipt.movementId);
+    if (
+      quantity === null ||
+      quantity <= 0 ||
+      rate === null ||
+      rate < 0 ||
+      (source &&
+        (source.issuedUnits > quantity ||
+          quantityUnits(source.unitCost) !== rate))
+    )
+      throw new Error(
+        "An accepted receipt quantity or acquisition price does not match the recorded stock.",
+      );
+    unverified.delete(receipt.movementId);
+    total += quantity;
+  }
+  if (unverified.size || !Number.isSafeInteger(total) || total <= 0)
+    throw new Error(
+      "Every issue must trace to accepted receipt stock from this purchase order.",
+    );
+  return { received: quantityFromUnits(total), receivedLines: receipts };
+}
+
 export const inventoryItem = z.object({
   Id: id,
   Active: z.literal(true),
