@@ -31,6 +31,8 @@ import quickBooksInventoryReconciliationRouter from "./quickbooks-inventory-reco
 import { emailWebhook } from "../lib/email-webhooks";
 import vendorBillsRouter from "./vendor-bills";
 import { enforceRoleAccess, requireAuth } from "../middlewares/auth";
+import installerAccessBoundary from "./installer-access";
+import taskAssignmentRouter from "./task-assignment";
 import demoRouter from "./demo";
 import aiEstimatesRouter from "./ai-estimates";
 import aiOperationsRouter from "./ai-operations";
@@ -60,6 +62,8 @@ router.use(publicMediaRouter);
 router.use(publicRouter);
 router.use(requireAuth);
 router.use(enforceRoleAccess);
+router.use(installerAccessBoundary);
+router.use(taskAssignmentRouter);
 router.use(demoRouter);
 router.use(aiEstimatesRouter);
 router.use(aiOperationsRouter);
