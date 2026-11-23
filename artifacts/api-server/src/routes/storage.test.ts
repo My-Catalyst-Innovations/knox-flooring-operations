@@ -6,6 +6,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { enforceRoleAccess, requireAuth } from "../middlewares/auth";
 import storageRouter, { publicMediaRouter } from "./storage";
+import { DomainError } from "../lib/operations-rules";
 
 const mocks = vi.hoisted(() => ({
   select: vi.fn(),
@@ -13,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   save: vi.fn(),
   metadata: vi.fn(),
   download: vi.fn(),
+  assignedRead: vi.fn(),
+  assignedWrite: vi.fn(),
 }));
 
 vi.mock("@workspace/db", async () => {
@@ -29,6 +32,7 @@ vi.mock("@workspace/db", async () => {
   };
 });
 vi.mock("../lib/auth", () => ({ SESSION_COOKIE: "test_session", getSession: mocks.session }));
+vi.mock("../lib/installer-access", () => ({ installerJobAccess: vi.fn(), readInstallerJob: mocks.assignedRead, writeInstallerJob: mocks.assignedWrite }));
 vi.mock("../lib/file-store", async (original) => ({
   ...await original<typeof import("../lib/file-store")>(),
   saveFile: mocks.save,
@@ -68,7 +72,11 @@ function prepareImage(path: string) {
 }
 
 describe("private storage HTTP boundaries", () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mocks.assignedRead.mockImplementation(async (_actor, _job, fn) => fn({}));
+    mocks.assignedWrite.mockImplementation(async (_actor, _job, fn) => fn({}));
+  });
 
   it("requires authentication, CSRF and an allowed file purpose before accepting a body", async () => {
     expect((await requestPhoto("job-photo").send(Buffer.from("photo"))).status).toBe(401);
@@ -124,6 +132,18 @@ describe("private storage HTTP boundaries", () => {
     expect((await request(app).get(path)).status).toBe(200);
     selectRows([{ path: sharedPhoto, jobId: "another-job" }], true);
     expect((await request(app).get(path)).status).toBe(404);
+  });
+
+  it("requires current assignment even for an installer's own unattached preview and upload", async () => {
+    signIn("installer"); prepareImage(jobPhoto);
+    mocks.assignedRead.mockRejectedValue(new DomainError(404, "Assigned job not found."));
+    expect((await request(app).get(`/api/storage${jobPhoto}`)).status).toBe(404);
+    expect(mocks.assignedRead).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-1", role: "installer" }), "job-1", expect.any(Function));
+    expect(mocks.download).not.toHaveBeenCalled();
+    selectRows([{ id: "job-1" }]);
+    mocks.assignedWrite.mockRejectedValue(new DomainError(404, "Assigned job not found."));
+    expect((await requestPhoto("job-photo").set("X-CSRF-Token", "test-csrf").send(Buffer.from([0xff, 0xd8, 0xff, 0xd9]))).status).toBe(404);
+    expect(mocks.save).not.toHaveBeenCalled();
   });
 
   it("keeps job documents private to office roles and forces an attached document download without Microsoft access", async () => {
