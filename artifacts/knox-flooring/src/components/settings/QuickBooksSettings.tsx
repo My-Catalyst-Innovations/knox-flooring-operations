@@ -16,6 +16,7 @@ import { useOperation } from "@/lib/operations";
 type Status = {
   configured: boolean;
   demoAvailable: boolean;
+  projects?: { verified: boolean; readiness: string; legacySubcustomersPreserved: boolean; detail: string };
   demoCompany?: { name: string; environment: string; lastFour: string } | null;
   connection: { connected: boolean; status: string; companyName?: string; realmId?: string; environment?: string; readinessStatus: string; lastSyncAt?: string };
 };
@@ -116,6 +117,10 @@ export function QuickBooksSettings() {
     <Card>
       <CardHeader><div className="flex items-start justify-between gap-4"><div><CardTitle className="flex items-center gap-2">QuickBooks Online {status?.connection.connected ? <CheckCircle2 className="h-5 w-5 text-emerald-600" /> : <AlertCircle className="h-5 w-5 text-amber-600" />}</CardTitle><CardDescription>Approval-based accounting synchronization. Knox remains the operational system; QuickBooks becomes the accounting authority.</CardDescription></div><Badge variant={status?.connection.connected ? "default" : "secondary"}>{status?.connection.status?.replaceAll("_", " ") ?? "Loading"}</Badge></div></CardHeader>
       <CardContent className="space-y-4">
+        {status?.projects && !status.projects.verified && <div role="status" aria-label="QuickBooks Projects readiness" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+          <p className="font-semibold">QuickBooks Projects requires verification</p>
+          <p className="mt-1">{status.projects.detail}</p>
+        </div>}
         {!status?.configured && <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">A real connection requires an Intuit developer app and a QuickBooks Online company.{status?.demoAvailable && " The interactive demo below works without either account."}</div>}
         {status?.connection.connected && <div className="grid gap-2 text-sm sm:grid-cols-2"><div><span className="text-muted-foreground">Company:</span> {status.connection.companyName || status.connection.realmId}</div><div><span className="text-muted-foreground">Environment:</span> {status.connection.environment}</div><div><span className="text-muted-foreground">Readiness:</span> {status.connection.readinessStatus.replaceAll("_", " ")}</div><div><span className="text-muted-foreground">Last import:</span> {status.connection.lastSyncAt ? new Date(status.connection.lastSyncAt).toLocaleString() : "Not yet"}</div></div>}
         <div className="flex flex-wrap gap-2"><Button onClick={() => run("connect", connect, "Opening QuickBooks")} disabled={!status?.configured || busy !== ""}>{busy === "connect" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}{status?.connection.connected ? "Reconnect" : "Connect a real company"}</Button>{status?.connection.connected && <><Button variant="outline" disabled={busy !== ""} onClick={() => run("reconcile", reconcile, "QuickBooks lists imported for reconciliation")}>{busy === "reconcile" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}Import & reconcile</Button><Button variant="outline" disabled={busy !== ""} onClick={() => run("disconnect", () => customFetch("/api/quickbooks/disconnect", { method: "POST" }), "QuickBooks disconnected")}><Unplug className="mr-2 h-4 w-4" />Disconnect</Button></>}</div>

@@ -18,9 +18,9 @@ import {
 import { validateCallback } from "../lib/entry-references";
 import {
   allocatedIssueCents,
-  allocatedIssueUnitCost,
   returnCreditCents,
 } from "../lib/inventory-issue-cost";
+import { priceJobMaterialUsage as priceJobIssue } from "../lib/inventory-material-cost";
 import {
   acquisitionCostSlice,
   inventoryAcquisitionValue,
@@ -141,30 +141,6 @@ async function verifyProductLabel(
       409,
       "This label belongs to a different product. Check the stock before recording the issue.",
     );
-}
-
-function issueUnitCostFor(product: StockProduct) {
-  if (!Number.isFinite(product.cost) || product.cost < 0) {
-    throw new DomainError(
-      409,
-      "Set a valid catalog cost before issuing this product to a job.",
-    );
-  }
-  return String(product.cost);
-}
-
-function priceJobIssue(product: StockProduct, movementId: string, quantity: number, now: string, costs: Awaited<ReturnType<typeof withdrawStockCosts>>) {
-  const allocations = [...costs.slices];
-  if (costs.untracked > 0)
-    allocations.unshift(acquisitionCostSlice(movementId, costs.untracked, issueUnitCostFor(product), now, "catalog"));
-  const cents = allocatedIssueCents(allocations);
-  if (!Number.isSafeInteger(cents)) {
-    throw new DomainError(
-      409,
-      "This material charge exceeds the supported amount.",
-    );
-  }
-  return { allocations, cost: cents / 100, unitCost: allocatedIssueUnitCost(allocations, quantity) };
 }
 
 async function calculateReturnCredit(
