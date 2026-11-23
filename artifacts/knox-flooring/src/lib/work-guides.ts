@@ -15,7 +15,6 @@ export interface SafeWorkOrder {
       name: string;
       length: number;
       width: number;
-      scope?: string;
     }[];
   };
   tasks: {
