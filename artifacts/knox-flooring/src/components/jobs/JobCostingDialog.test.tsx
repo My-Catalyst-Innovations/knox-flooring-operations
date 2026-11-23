@@ -21,6 +21,14 @@ afterEach(() => {
 });
 
 describe("job costing editor", () => {
+  it("preserves reviewed labor and adds receipt costs once when prefilling estimates", () => {
+    render(<JobCostingDialog open job={{ id: "job-1", estRevenue: 1000, laborEstimate: 50, materialEstimate: 100, trackedLaborCost: 120, trackedMaterialCost: 200, trackedExpenseCost: 75, actualLaborCost: 0, actualMaterialCost: 0, actualAddOnCost: 10 } as Job} onOpenChange={mocks.close} />);
+    fireEvent.click(screen.getByRole("button", { name: "Prefill from estimate" }));
+    expect(screen.getByLabelText("Actual Labor")).toHaveValue(null);
+    expect(screen.getByLabelText("Actual Materials")).toHaveValue(null);
+    expect(screen.getByText(/Receipt-backed expenses:/)).toHaveTextContent("$75.00");
+    expect(screen.getByText("$395.00")).toBeVisible();
+  });
   it("keeps focus and exact cents while typing, and retains failed saves", async () => {
     mocks.updateJob.mockRejectedValue(new Error("Connection interrupted"));
     vi.spyOn(window, "confirm").mockReturnValue(false);

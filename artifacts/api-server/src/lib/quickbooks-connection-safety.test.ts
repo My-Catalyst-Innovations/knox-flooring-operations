@@ -13,7 +13,7 @@ vi.mock("@workspace/db",async()=>{
   db.transaction=async(fn:any)=>{const preceding=mocks.queue;let done!:()=>void;mocks.queue=new Promise<void>(resolve=>{done=resolve;});await preceding;const original=structuredClone(mocks.connection);try{return await fn(db);}catch(error){mocks.connection=original;throw error;}finally{done();}};
   return {...schema,db};
 });
-import {consumeQuickBooksOAuthState,createQuickBooksOAuthState,encryptSecret,qboRequest,quickBooksProjectReadiness,replaceQuickBooksConnection,requireQuickBooksProjects,validQuickBooksOAuthState} from "./quickbooks";
+import {accountingScope,projectsScope,grantedQuickBooksScopes,quickBooksOAuthRequestedScopes,consumeQuickBooksOAuthState,createQuickBooksOAuthState,encryptSecret,qboRequest,qboProjectsGraph,quickBooksProjectReadiness,replaceQuickBooksConnection,requireQuickBooksProjects,validQuickBooksOAuthState} from "./quickbooks";
 
 describe("QuickBooks connection safety",()=>{
   beforeEach(()=>{
@@ -49,6 +49,30 @@ describe("QuickBooks connection safety",()=>{
     const old=structuredClone(mocks.connection);mocks.failInsert=true;
     await expect(replaceQuickBooksConnection({...old,id:"connection-b"})).rejects.toThrow(/insert failed/);
     expect(mocks.connection).toEqual(old);expect(mocks.events).toContain("company_lock");
+  });
+  it("binds incremental scope consent to signed single-use state and handles documented omitted scope",async()=>{
+    const state=createQuickBooksOAuthState("owner","csrf",1000,[accountingScope,projectsScope]);
+    expect(quickBooksOAuthRequestedScopes(state)).toEqual([accountingScope,projectsScope]);
+    expect(grantedQuickBooksScopes(undefined,quickBooksOAuthRequestedScopes(state))).toEqual([accountingScope,projectsScope]);
+    expect(grantedQuickBooksScopes(accountingScope,quickBooksOAuthRequestedScopes(state))).toEqual([accountingScope]);
+    expect(()=>grantedQuickBooksScopes(`${accountingScope} malicious.scope`,quickBooksOAuthRequestedScopes(state))).toThrow(/unrequested/);
+    expect(validQuickBooksOAuthState(state.replace(projectsScope,"other.scope"),"owner","csrf",1100)).toBe(false);
+    expect(await consumeQuickBooksOAuthState(state,"owner")).toBe(true);expect(await consumeQuickBooksOAuthState(state,"owner")).toBe(false);
+  });
+  it("preserves only saved grant scopes on refresh and applies an actual reduced grant",async()=>{
+    mocks.connection.grantedScopes=[accountingScope,projectsScope];
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({access_token:"fresh",refresh_token:"new",expires_in:3600,x_refresh_token_expires_in:86400})).mockResolvedValueOnce(Response.json({ok:true}));
+    await qboRequest("/preferences");expect(mocks.connection.grantedScopes).toEqual([accountingScope,projectsScope]);
+    mocks.connection.accessTokenExpiresAt="2000-01-01";
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({access_token:"fresh2",refresh_token:"new2",expires_in:3600,x_refresh_token_expires_in:86400,scope:accountingScope})).mockResolvedValueOnce(Response.json({ok:true}));
+    await qboRequest("/preferences");expect(mocks.connection.grantedScopes).toEqual([accountingScope]);
+  });
+  it("never retries a GraphQL mutation after rejection or an ambiguous network response",async()=>{
+    mocks.connection.grantedScopes=[projectsScope];mocks.connection.accessTokenExpiresAt="2099-01-01";
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null,{status:401}));
+    await expect(qboProjectsGraph("mutation","mutation Create { result }",{},"connection-a")).rejects.toMatchObject({submissionUnknown:false});expect(fetch).toHaveBeenCalledTimes(1);
+    vi.mocked(fetch).mockRejectedValueOnce(new Error("response lost"));
+    await expect(qboProjectsGraph("mutation","mutation Create { result }",{},"connection-a")).rejects.toMatchObject({submissionUnknown:true});expect(fetch).toHaveBeenCalledTimes(2);
   });
   it("rejects a foreign connection, live demo access and unverified Projects without sending",async()=>{
     await expect(qboRequest("/invoice/1",{},"other")).rejects.toThrow(/connection changed/);

@@ -12,6 +12,8 @@ vi.mock("@workspace/db", () => ({
   invoicesTable: {},
 }));
 vi.mock("./quickbooks", () => ({ getConnection: mocks.getConnection }));
+vi.mock("./job-accounting",()=>({costEntities:["labor_time","job_expense_purchase","job_expense_bill"],processQueuedJobCost:vi.fn()}));
+vi.mock("./quickbooks-projects",()=>({verifiedProjectForJob:vi.fn()}));
 vi.mock("../platform", async () => {
   const { Router } = await import("express");
   return { platform: { enabled: false, router: Router() }, isLegacyPlatformHost: () => false };

@@ -5,7 +5,8 @@ import { z } from "zod";
 import { db, invoicesTable, jobsTable, materialsTable, productsTable, proposalsTable, quickbooksAccountingMappingsTable, quickbooksConflictsTable, quickbooksConnectionsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable } from "@workspace/db";
 import { workspaceEnvironment } from "@workspace/db/workspace";
 import { audit } from "../lib/auth";
-import { consumeQuickBooksOAuthState, createQuickBooksOAuthState, encryptSecret, getConnection, qboQuery, qboRequest, quickBooksProjectReadiness, replaceQuickBooksConnection, validQuickBooksOAuthState } from "../lib/quickbooks";
+import { accountingScope, projectsScope, grantedQuickBooksScopes, quickBooksOAuthRequestedScopes, consumeQuickBooksOAuthState, createQuickBooksOAuthState, encryptSecret, getConnection, qboQuery, qboRequest, quickBooksProjectReadiness, replaceQuickBooksConnection, validQuickBooksOAuthState } from "../lib/quickbooks";
+import { projectsCapability } from "../lib/quickbooks-projects";
 import { customerReconciliationMatches } from "../lib/quickbooks-reconciliation";
 import { loadQuickBooksCatalogEntity, quickBooksCatalogEntities } from "../lib/quickbooks-catalog";
 import { prepareGenericExportApproval, prepareReviewedInvoice, processQuickBooksQueue } from "../lib/quickbooks-worker";
@@ -20,13 +21,17 @@ import { DomainError } from "../lib/operations-rules";
 import { quickBooksWebhookEntries, verifyQuickBooksWebhookSignature } from "../lib/quickbooks-webhooks";
 import { invoiceCreateRecord } from "../lib/quickbooks-invoice-create";
 import { invoiceReviewInput, requiresInvoiceReview, reviewedInvoiceApproval, reviewedInvoiceRecord, reviewedInvoicesAvailable } from "../lib/quickbooks-invoice-review";
+import { costEntities } from "../lib/job-accounting";
 
 const router: IRouter = Router();
 const configured = () => Boolean(workspaceEnvironment().QUICKBOOKS_CLIENT_ID && workspaceEnvironment().QUICKBOOKS_CLIENT_SECRET && workspaceEnvironment().QUICKBOOKS_REDIRECT_URI && workspaceEnvironment().QUICKBOOKS_ENCRYPTION_KEY);
 const demoAvailable = () => workspaceEnvironment().DEMO_MODE === "true";
 const publicConnection = (c: Awaited<ReturnType<typeof getConnection>>) => c ? ({ connected: c.status === "connected", status: c.status, realmId: c.realmId, companyName: c.companyName, environment: c.environment, readinessStatus: c.readinessStatus, lastSyncAt: c.lastSyncAt, lastCdcAt: c.lastCdcAt, refreshTokenExpiresAt: c.refreshTokenExpiresAt }) : ({ connected: false, status: configured() ? "not_connected" : "not_configured", readinessStatus: "configuration_required" });
 
-router.get("/quickbooks/status", async (_req, res) => res.json({ configured: configured(), demoAvailable: demoAvailable(), demoCompany: demoAvailable() ? { name: "Knoxville Flooring Demo Company", environment: "simulated", lastFour: "1982" } : null, connection: publicConnection(await getConnection()), projects:quickBooksProjectReadiness() }));
+router.get("/quickbooks/status", async (_req, res) => {
+  const connection=await getConnection();const capability=await projectsCapability(connection);
+  res.json({ configured: configured(), demoAvailable: demoAvailable(), demoCompany: demoAvailable() ? { name: "Knoxville Flooring Demo Company", environment: "simulated", lastFour: "1982" } : null, connection: publicConnection(connection), projects:{verified:capability.available,readiness:capability.available?"ready":"blocked",legacySubcustomersPreserved:true,detail:capability.reason??"True Projects capability is verified for this connected company. Review each job's Project separately."} });
+});
 
 router.get("/quickbooks/demo", async (_req, res) => {
   if (!demoAvailable()) { res.status(404).json({ error: "QuickBooks demo mode is unavailable" }); return; }
@@ -93,13 +98,14 @@ router.post("/quickbooks/demo/approve", requireOwner, async (req, res) => {
   res.json(changed);
 });
 
-router.get("/quickbooks/connect", async (req, res) => {
+router.get("/quickbooks/connect", requireOwner, async (req, res) => {
   if (!configured()) { res.status(503).json({ error: "QuickBooks environment variables are not configured" }); return; }
   if(demoAvailable()&&workspaceEnvironment().QUICKBOOKS_ENVIRONMENT==="production"){res.status(409).json({error:"Connect only an Intuit sandbox in a demonstration."});return;}
-  const state = createQuickBooksOAuthState(req.auth!.userId,req.auth!.csrfToken);
+  const requestedScopes=req.query.projects==="true"?[accountingScope,projectsScope]:[accountingScope];
+  const state = createQuickBooksOAuthState(req.auth!.userId,req.auth!.csrfToken,Date.now(),requestedScopes);
   res.cookie("qbo_oauth_state", state, { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", maxAge: 10 * 60_000, path: "/" });
   const url = new URL("https://appcenter.intuit.com/connect/oauth2");
-  url.searchParams.set("client_id", workspaceEnvironment().QUICKBOOKS_CLIENT_ID!); url.searchParams.set("response_type", "code"); url.searchParams.set("scope", "com.intuit.quickbooks.accounting"); url.searchParams.set("redirect_uri", workspaceEnvironment().QUICKBOOKS_REDIRECT_URI!); url.searchParams.set("state", state);
+  url.searchParams.set("client_id", workspaceEnvironment().QUICKBOOKS_CLIENT_ID!); url.searchParams.set("response_type", "code"); url.searchParams.set("scope", requestedScopes.join(" ")); url.searchParams.set("redirect_uri", workspaceEnvironment().QUICKBOOKS_REDIRECT_URI!); url.searchParams.set("state", state);
   res.json({ authorizationUrl: url.toString() });
 });
 
@@ -114,7 +120,8 @@ router.get("/quickbooks/callback", async (req, res) => {
   if (!response.ok) { res.status(502).send("QuickBooks token exchange failed"); return; }
   const token = await response.json() as any; const now = new Date(); const realmId = String(req.query.realmId);
   if(typeof token?.access_token!=="string"||!token.access_token||typeof token?.refresh_token!=="string"||!token.refresh_token||!Number.isFinite(token.expires_in)||token.expires_in<=0||!Number.isFinite(token.x_refresh_token_expires_in)||token.x_refresh_token_expires_in<=0){res.status(502).send("QuickBooks returned incomplete authorization; reconnect.");return;}
-  await replaceQuickBooksConnection({ id: randomUUID(), realmId, environment: workspaceEnvironment().QUICKBOOKS_ENVIRONMENT === "production" ? "production" : "sandbox", encryptedAccessToken: encryptSecret(token.access_token), encryptedRefreshToken: encryptSecret(token.refresh_token), accessTokenExpiresAt: new Date(now.getTime() + token.expires_in * 1000).toISOString(), refreshTokenExpiresAt: new Date(now.getTime() + token.x_refresh_token_expires_in * 1000).toISOString(), status: "connected", readinessStatus: "reconciliation_required", createdAt: now.toISOString(), updatedAt: now.toISOString() });
+  let grantedScopes:string[];try{grantedScopes=grantedQuickBooksScopes(token.scope,quickBooksOAuthRequestedScopes(state));}catch{res.status(502).send("QuickBooks returned unexpected authorization scopes; reconnect.");return;}
+  await replaceQuickBooksConnection({ id: randomUUID(), realmId, grantedScopes, environment: workspaceEnvironment().QUICKBOOKS_ENVIRONMENT === "production" ? "production" : "sandbox", encryptedAccessToken: encryptSecret(token.access_token), encryptedRefreshToken: encryptSecret(token.refresh_token), accessTokenExpiresAt: new Date(now.getTime() + token.expires_in * 1000).toISOString(), refreshTokenExpiresAt: new Date(now.getTime() + token.x_refresh_token_expires_in * 1000).toISOString(), status: "connected", readinessStatus: "reconciliation_required", createdAt: now.toISOString(), updatedAt: now.toISOString() });
   res.clearCookie("qbo_oauth_state", { path: "/" }); await audit("quickbooks.connected", { userId: req.auth!.userId, entityType: "quickbooks_company", entityId: realmId, ip: req.ip }); res.redirect("/settings?quickbooks=connected");
 });
 
@@ -310,10 +317,11 @@ router.post(`${reviewPath}/approve`, requireOwner, domainRoute(async (req, res) 
 router.post("/quickbooks/queue", async (req, res) => {
   const entityType = String(req.body?.entityType ?? ""); const localId = String(req.body?.localId ?? ""); const action = String(req.body?.action ?? "upsert"); if (!entityType || !localId || !["customer", "project", "estimate", "invoice", "item", "labor", "expense"].includes(entityType)) { res.status(400).json({ error: "Valid entityType and localId are required" }); return; }
   if(entityType==="project"){res.status(409).json({error:quickBooksProjectReadiness().detail});return;}
+  if(["labor","expense",...costEntities].includes(entityType)){res.status(409).json({error:"Use the dedicated job-cost source and owner accounting review before exporting time or expenses."});return;}
   if (req.body?.payload && [invoiceCreateRecord, reviewedInvoiceRecord, genericExportRecord].some((key) => Object.hasOwn(req.body.payload, key))) { res.status(400).json({ error: "The QuickBooks accounting approval record is reserved." }); return; }
   const now = new Date().toISOString(); const version = createHash("sha256").update(JSON.stringify(req.body?.payload ?? {})).digest("hex").slice(0, 16); const [created] = await db.insert(quickbooksSyncJobsTable).values({ id: randomUUID(), idempotencyKey: `${entityType}:${localId}:${action}:${version}`, entityType, localId, action, payload: req.body?.payload ?? {}, warnings: req.body?.warnings ?? [], status: "pending_approval", nextAttemptAt: now, createdAt: now, updatedAt: now }).onConflictDoNothing().returning(); res.status(created ? 201 : 200).json(created ?? { duplicate: true });
 });
-const dedicatedApprovalEntities = [vendorBillEntity, sandboxStockItemEntity, productionStockItemEntity, stockAdjustmentEntity,"project"];
+const dedicatedApprovalEntities = [vendorBillEntity, sandboxStockItemEntity, productionStockItemEntity, stockAdjustmentEntity,"project","labor","expense",...costEntities];
 const genericApproval = () => and(notInArray(accountingQueue.entityType, dedicatedApprovalEntities),
   sql`not ${invoiceNeedsAccountingReview()}`,
   sql`not (${accountingQueue.payload} ? ${reviewedInvoiceRecord})`);

@@ -30,6 +30,7 @@ import {
 import type { JobEntryContext } from "@workspace/api-client-react";
 import { formatStageDate } from "@/lib/stages";
 import type { Job, Product, LaborEntry, MaterialUsage } from "@/lib/types";
+import { JobAccounting } from "./JobAccounting";
 
 const today = () => new Date().toLocaleDateString("en-CA");
 const blankLabor = () => ({
@@ -783,6 +784,7 @@ export function JobActuals({
           )}
         </DialogContent>
       </Dialog>
+      <JobAccounting jobId={job.id} />
     </div>
   );
 }

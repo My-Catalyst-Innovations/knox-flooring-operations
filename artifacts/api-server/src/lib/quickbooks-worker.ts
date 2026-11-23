@@ -11,6 +11,8 @@ import { invoiceCreateAttempt, invoiceCreateRecord, prepareQuickBooksInvoiceCrea
 import { quickBooksCdcInvoiceIds, quickBooksPaymentInvoiceIds } from "./quickbooks-cdc";
 import { invoiceReviewFingerprint, isReviewedInvoiceAmount, requiresInvoiceReview, reviewedInvoiceApproval, reviewedInvoiceRecord, reviewedInvoicesAvailable, verifyClassicInvoiceTax, verifyExistingInvoice, verifyInvoiceDiscountAccount, verifyInvoiceReviewCompany, type InvoiceReviewInput } from "./quickbooks-invoice-review";
 import { assertGenericExportCompany, genericExportAttempt, genericExportRecord, GenericExportReviewRequired, prepareGenericExport, reconcileGenericExport } from "./quickbooks-generic-export";
+import { costEntities, processQueuedJobCost } from "./job-accounting";
+import { verifiedProjectForJob } from "./quickbooks-projects";
 
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type QueueJob = typeof quickbooksSyncJobsTable.$inferSelect;
@@ -168,8 +170,10 @@ async function compileInvoice(
   const customer = await mapping("customer", source.jobId);
   if (!customer) throw new Error("Customer mapping is required");
   assertQuickBooksCompanyLink("customer", customer, connection);
+  const project = await verifiedProjectForJob(source.jobId, customer.quickbooksId, connection);
   return {
     CustomerRef: { value: customer.quickbooksId }, DocNumber: source.invoiceNumber,
+    ...(project ? { ProjectRef: { value: project.projectId } } : {}),
     TxnDate: source.issueDate || undefined, DueDate: source.dueDate || undefined, PrivateNote: source.notes || undefined,
     Line: quickBooksInvoiceLines(source, itemIds, serviceIds, allowDiscount, taxSelection, allowExistingDeposit),
   };
@@ -266,6 +270,12 @@ async function reconcileReviewedInvoice(source: InvoiceSource, company: Connecte
 }
 
 async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
+  if(costEntities.includes(job.entityType)) {
+    if(typeof job.payload.jobCostExportId!=="string")throw new Error("This cost requires a dedicated owner review.");
+    const result=await processQueuedJobCost(job);
+    if(result.outcome!=="confirmed")throw new Error("This cost submission remains unconfirmed. Use Reconcile; no write was repeated.");
+    return;
+  }
   if(job.entityType==="project")requireQuickBooksProjects();
   if (job.entityType === "customer" || job.entityType === "estimate") {
     await exportGenericJob(job);

@@ -128,8 +128,11 @@ export interface Job {
   grossMarginPct: number;
   actualRevenue: number;
   actualLaborCost: number;
+  trackedLaborCost?: number | null;
+  unpricedLaborCount?: number;
   actualMaterialCost: number;
   trackedMaterialCost?: number;
+  trackedExpenseCost?: number;
   actualAddOnCost: number;
   notes: string;
   priorityLevel: PriorityLevel;

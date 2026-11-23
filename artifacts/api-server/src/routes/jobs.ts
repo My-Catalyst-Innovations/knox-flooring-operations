@@ -20,10 +20,12 @@ import { DomainError } from "../lib/operations-rules";
 import { nextDocumentNumber } from "../lib/conversions";
 import { ensureCustomer, validateCustomerLinks } from "../lib/estimate-service";
 import { deleteUnreferencedJob } from "../lib/job-deletion";
+import { reviewedLaborCostCentsSql } from "../lib/quickbooks-job-cost";
 
 const router: IRouter = Router();
 
 function selectJobsWithMaterialCost() {
+  const laborCents=reviewedLaborCostCentsSql(sql.raw("labor_entries.hours"),sql.raw("labor_entries.hourly_cost"));
   const usageCost = db.select({
     total: sql<number | null>`round(sum(${materialUsageTable.cost}::numeric), 2)::double precision`.as("total"),
   })
@@ -33,6 +35,9 @@ function selectJobsWithMaterialCost() {
   return db.select({
     ...getTableColumns(jobsTable),
     trackedMaterialCost: usageCost.total,
+    trackedLaborCost: sql<number|null>`(SELECT (COALESCE(sum(CASE WHEN EXISTS(SELECT 1 FROM job_expenses WHERE related_labor_entry_id=labor_entries.id) THEN 0 ELSE ${laborCents} END),0) / 100)::double precision FROM labor_entries WHERE job_id=${jobsTable.id} AND cost_reviewed=true HAVING count(*)>0)`,
+    unpricedLaborCount: sql<number>`(SELECT count(*)::integer FROM labor_entries WHERE job_id=${jobsTable.id} AND cost_reviewed=false)`,
+    trackedExpenseCost: sql<number>`(SELECT (COALESCE(sum(amount_cents),0)::numeric / 100)::double precision FROM job_expenses WHERE job_id=${jobsTable.id})`,
   }).from(jobsTable).leftJoinLateral(usageCost, sql`true`);
 }
 
@@ -50,7 +55,7 @@ function generateShareToken(): string {
 
 router.get("/jobs", async (_req, res): Promise<void> => {
   const jobs = await selectJobsWithMaterialCost();
-  res.json(ListJobsResponse.parse(jobs.map(stripNulls)));
+  res.json(ListJobsResponse.parse(jobs.map(stripNulls)).map((job,index)=>({...job,trackedLaborCost:jobs[index].trackedLaborCost,trackedExpenseCost:jobs[index].trackedExpenseCost,unpricedLaborCount:jobs[index].unpricedLaborCount})));
 });
 
 router.post(
@@ -117,7 +122,7 @@ router.get("/jobs/:id", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Job not found" });
     return;
   }
-  res.json(GetJobResponse.parse(stripNulls(job)));
+  res.json({...GetJobResponse.parse(stripNulls(job)),trackedLaborCost:job.trackedLaborCost,trackedExpenseCost:job.trackedExpenseCost,unpricedLaborCount:job.unpricedLaborCount});
 });
 
 router.patch(

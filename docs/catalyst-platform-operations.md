@@ -2,7 +2,9 @@
 
 ## Current release boundary
 
-Company signup is implemented but **disabled by default**. It must not be advertised as available until the approved commercial terms, verified provider configuration, tenant infrastructure and release checks below are complete. No prices, setup fees, trial offer or legal policies are supplied by this release. Existing Knoxville Flooring accounts continue to use their existing database, authentication and connections independently of this feature.
+The current commercial process is **a private company quote followed by invitations after acceptance and internal validation**. Public signup and checkout remain disabled. Price the base product, chosen paid connections, implementation/migration/training, and ongoing service explicitly in the quote. Josh approved a 7-day evaluation, with monthly pricing deferred until his feature and cost audit; it is not an automatically published Stripe offer. Create named owner/staff access only after the agreed onboarding conditions are met.
+
+Self-service signup code is retained for later traction. Its additional operator/provisioning work is deferred, and it must not be advertised as available. No monthly amount, setup fee, or legal policies are supplied by this release. Existing Knoxville Flooring accounts continue to use their database, authentication and connections independently of self-service billing.
 
 The control website is `works.mycatalystinnovations.com`. A newly provisioned company uses `<company>.works.mycatalystinnovations.com`, its own PostgreSQL database and restricted database role, and its own private Blob container. Public registration never creates a user in the Knoxville database. Company billing accounts use a separate verified-email session; company staff use the existing workspace login and permissions.
 
