@@ -25,9 +25,9 @@ const fixture = vi.hoisted(() => ({
 
 vi.mock("@/lib/operations", () => ({
   operation: fixture.operation,
-  useOperation: () => ({
+  useOperation: (path: string) => ({
     allowed: fixture.allowed,
-    data: fixture.status,
+    data: path.endsWith("/reviews") ? { reviews: [] } : fixture.status,
     refetch: fixture.refetch,
     isLoading: false,
     isError: false,

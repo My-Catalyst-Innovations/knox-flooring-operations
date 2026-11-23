@@ -7,9 +7,11 @@ import { audit, createSession, hashPassword, hashToken, newToken, normalizeEmail
 import { requireAuth } from "../middlewares/auth";
 import { availableCommunicationProviders, CommsError, emailAddress, isDemoDeliveryEnvironment, passwordResetLink, sendPasswordResetEmail } from "../lib/comms";
 import staffRouter from "./staff";
+import profileRouter from "./profile";
 
 const router: IRouter = Router();
 router.use(staffRouter);
+router.use(profileRouter);
 const cookieOptions = { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax" as const, path: "/", maxAge: SESSION_TTL_MS };
 const attempts = new Map<string, { count: number; resetAt: number }>();
 const resetAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -18,6 +20,11 @@ const resetWindow = 60 * 60_000;
 export function isDemoAccessEnabled() {
   return workspaceEnvironment().DEMO_ACCESS_ENABLED === "true";
 }
+
+router.get("/auth/options", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ demoAccessEnabled: process.env.READ_ONLY_RECOVERY !== "true" && isDemoAccessEnabled() });
+});
 
 router.post("/auth/demo", async (req, res) => {
   if (!isDemoAccessEnabled()) {
@@ -83,7 +90,7 @@ router.post("/auth/login", async (req, res) => {
   res.json({ user: { id: current.id, email: current.email, name: current.name, role: current.role, actualRole: current.role, previewRole: null }, csrfToken: session.csrfToken });
 });
 
-router.get("/auth/session", requireAuth, (req, res) => res.json({ user: req.auth, csrfToken: req.auth!.csrfToken }));
+router.get("/auth/session", requireAuth, (req, res) => res.json({ user: { ...req.auth, id: req.auth!.userId }, csrfToken: req.auth!.csrfToken }));
 
 router.post("/auth/persona", requireAuth, async (req, res) => {
   if (req.auth!.actualRole !== "owner") { res.status(403).json({ error: "Only the owner can preview another role" }); return; }

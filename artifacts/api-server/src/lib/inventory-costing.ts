@@ -1,5 +1,5 @@
-import { sql } from "drizzle-orm";
-import type { InventoryCostSlice } from "@workspace/db";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { physicalPiecesTable, type InventoryCostSlice, type PhysicalPiece } from "@workspace/db";
 import { roundStock, type StockTransaction } from "./inventory-stock";
 import { DomainError } from "./operations-rules";
 
@@ -57,7 +57,7 @@ export async function inventoryAcquisitionValue(tx: StockTransaction) {
   return rows;
 }
 
-export async function withdrawStockCosts(tx: StockTransaction, location: Location, quantity: number) {
+async function remainingCostLayers(tx: StockTransaction, location: Location) {
   const { rows } = await tx.execute<InventoryCostSlice>(sql`
     SELECT layer."layerId", layer."sourceMovementId", layer.source, layer."acquiredAt", layer."unitCost",
       sum(CASE WHEN stock.quantity < 0 THEN -layer.quantity ELSE layer.quantity END)::double precision AS quantity
@@ -70,14 +70,65 @@ export async function withdrawStockCosts(tx: StockTransaction, location: Locatio
     HAVING sum(CASE WHEN stock.quantity < 0 THEN -layer.quantity ELSE layer.quantity END) > 0
     ORDER BY layer."acquiredAt", layer."sourceMovementId", layer."layerId"
   `);
+  return rows;
+}
+
+export function verifiedPieceCosts(piece: Pick<PhysicalPiece, "quantity" | "costAllocations">) {
+  const costs = piece.costAllocations;
+  if (!costs?.length || costs.some((slice) => !slice.layerId || !slice.sourceMovementId || !Number.isFinite(slice.quantity) || slice.quantity <= 0 || !inventoryUnitCostPattern.test(slice.unitCost)) ||
+    roundStock(costs.reduce((sum, slice) => sum + slice.quantity, 0)) !== roundStock(piece.quantity))
+    throw new DomainError(409, "Review and bind this roll or remnant's acquisition costs before cutting, moving or issuing it.");
+  return costs;
+}
+
+/** Caller holds the product advisory lock. Piece bindings reserve cost segments,
+ * while inventory_movements remains the sole quantity and valuation ledger. */
+export async function stockCostAvailability(tx: StockTransaction, location: Location, excludedPieceId?: string) {
+  const rows = await remainingCostLayers(tx, location);
   const onHand = await quantityAt(tx, location);
   const tracked = roundStock(rows.reduce((sum, layer) => sum + layer.quantity, 0));
   if (tracked > Math.max(0, onHand) + 0.000001)
     throw new DomainError(409, "This location's purchase costs exceed its stock count. Review the stock movement history.");
+  const pieces = await tx.select().from(physicalPiecesTable).where(and(
+    eq(physicalPiecesTable.productId, location.productId),
+    sql`${physicalPiecesTable.warehouseId} IS NOT DISTINCT FROM ${location.warehouseId}::text`,
+    sql`${physicalPiecesTable.binId} IS NOT DISTINCT FROM ${location.binId}::text`,
+    isNull(physicalPiecesTable.issuedMovementId),
+  ));
+  const available = rows.map((row) => ({ ...row }));
+  for (const piece of pieces) {
+    if (piece.id === excludedPieceId || !piece.costAllocations) continue;
+    for (const binding of verifiedPieceCosts(piece)) {
+      const layer = available.find((row) => row.layerId === binding.layerId && row.sourceMovementId === binding.sourceMovementId && row.unitCost === binding.unitCost && row.source === binding.source);
+      if (!layer || roundStock(layer.quantity - binding.quantity) < 0)
+        throw new DomainError(409, "A labeled piece's cost source no longer reconciles with stock. Review its cost binding.");
+      layer.quantity = roundStock(layer.quantity - binding.quantity);
+    }
+  }
+  return { layers: available.filter((row) => row.quantity > 0), untracked: Math.max(0, roundStock(onHand - tracked)),
+    unboundPieces: pieces.filter((piece) => piece.id !== excludedPieceId && !piece.costAllocations).map((piece) => piece.label),
+    selectedPiece: excludedPieceId ? pieces.find((piece) => piece.id === excludedPieceId) : undefined };
+}
+
+export async function withdrawStockCosts(tx: StockTransaction, location: Location, quantity: number, selectedPieceId?: string) {
+  const available = await stockCostAvailability(tx, location, selectedPieceId);
+  if (selectedPieceId) {
+    const piece = available.selectedPiece;
+    if (!piece || roundStock(piece.quantity) !== roundStock(quantity)) throw new DomainError(409, "Issue the selected piece's entire quantity.");
+    const slices = verifiedPieceCosts(piece);
+    const remaining = available.layers.map((row) => ({ ...row }));
+    for (const slice of slices) {
+      const layer = remaining.find((row) => row.layerId === slice.layerId && row.sourceMovementId === slice.sourceMovementId && row.unitCost === slice.unitCost && row.source === slice.source);
+      if (!layer || roundStock(layer.quantity - slice.quantity) < 0) throw new DomainError(409, "The selected piece's acquisition cost is no longer available. Review its source.");
+      layer.quantity = roundStock(layer.quantity - slice.quantity);
+    }
+    return { slices: [...slices], untracked: 0 };
+  }
+  if (available.unboundPieces.length) throw new DomainError(409, "Review unbound rolls or remnants in this bin before withdrawing other stock; their cost sources are not yet identified.");
 
   // Opening stock and unpriced receipts have no reliable rate. Consume that stock before dated lots.
-  const untracked = Math.min(quantity, Math.max(0, roundStock(onHand - tracked)));
-  const slices = sliceCostLayers(rows, 0, quantity - untracked);
+  const untracked = Math.min(quantity, available.untracked);
+  const slices = sliceCostLayers(available.layers, 0, quantity - untracked);
   return { slices, untracked: roundStock(quantity - slices.reduce((sum, slice) => sum + slice.quantity, 0)) };
 }
 

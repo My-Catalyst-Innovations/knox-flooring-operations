@@ -16,11 +16,19 @@ for (let attempt = 0; attempt < 60; attempt++) {
   await delay(1000);
 }
 assert.ok(ready, "Container did not become database-ready.");
+const authOptions = await fetch(new URL("/api/auth/options", base));
+assert.equal(authOptions.status, 200);
+assert.deepEqual(await authOptions.json(), { demoAccessEnabled: false }, "Normal and recovery images must not offer disabled demo entry.");
 const document = await fetch(base);
 assert.equal(document.status, 200);
 const html = await document.text();
 assert.match(html, /<html/i);
 if (recovery) assert.match(html, /Recovery view/);
+const platformReadiness = await fetch(new URL("/api/platform/readiness", base));
+assert.equal(platformReadiness.status, 200);
+assert.equal((await platformReadiness.json()).signupAvailable, false, "Disabled company signup must not affect the existing workspace.");
+const disabledSignup = await fetch(new URL("/api/platform/signup", base), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ company: "Must not create a company" }) });
+assert.equal(disabledSignup.status, 503, "An unconfigured platform and recovery must both reject company signup.");
 
 const login = suppliedPassword => fetch(new URL("/api/auth/login", base), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password: suppliedPassword }) });
 assert.equal((await login("Intentionally-wrong-password")).status, 401, "Native Argon2 must reject a wrong password.");
@@ -38,6 +46,8 @@ async function request(route, { method = "GET", body, csrf = session.csrfToken, 
   return result;
 }
 await request("/auth/session");
+const profile = await request("/auth/profile");
+assert.equal(profile.email, email, "The existing owner must retain profile access with company signup disabled.");
 assert.deepEqual(await request("/jobs"), [], "Image startup must not create demo jobs.");
 if (recovery) {
   const customers = await request("/customers");
@@ -46,6 +56,7 @@ if (recovery) {
   await request("/customers", { method: "POST", body: { name: "Must remain blocked" }, status: 503 });
   await request("/quickbooks/connect", { status: 503 });
   await request("/auth/demo", { method: "POST", body: {}, status: 503 });
+  await request("/auth/profile", { method: "PATCH", body: { name: "Must remain blocked", phone: "", jobTitle: "" }, status: 503 });
   assert.deepEqual(await request("/customers"), customers);
 } else {
   assert.deepEqual(await request("/customers"), [], "Image startup must not create demo customers.");

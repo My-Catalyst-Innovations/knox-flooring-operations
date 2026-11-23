@@ -1,0 +1,6 @@
+ALTER TABLE "physical_stock_piece_events" DROP CONSTRAINT "physical_stock_piece_events_action_valid";--> statement-breakpoint
+ALTER TABLE "physical_stock_pieces" ADD COLUMN "cost_allocations" jsonb;--> statement-breakpoint
+ALTER TABLE "physical_stock_pieces" ADD COLUMN "cost_reviewed_by" text;--> statement-breakpoint
+ALTER TABLE "physical_stock_pieces" ADD COLUMN "cost_reviewed_at" text;--> statement-breakpoint
+ALTER TABLE "physical_stock_piece_events" ADD CONSTRAINT "physical_stock_piece_events_action_valid" CHECK ("physical_stock_piece_events"."action" IN ('registered', 'cost_bound', 'cut', 'moved', 'issued', 'returned'));--> statement-breakpoint
+ALTER TABLE "physical_stock_pieces" ADD CONSTRAINT "physical_stock_pieces_cost_review_valid" CHECK (("physical_stock_pieces"."cost_allocations" IS NULL AND "physical_stock_pieces"."cost_reviewed_by" IS NULL AND "physical_stock_pieces"."cost_reviewed_at" IS NULL) OR ("physical_stock_pieces"."cost_allocations" IS NOT NULL AND jsonb_typeof("physical_stock_pieces"."cost_allocations") = 'array' AND jsonb_array_length("physical_stock_pieces"."cost_allocations") > 0 AND "physical_stock_pieces"."cost_reviewed_by" IS NOT NULL AND "physical_stock_pieces"."cost_reviewed_at" IS NOT NULL));

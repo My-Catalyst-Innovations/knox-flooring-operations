@@ -27,6 +27,7 @@ import { useAuth } from "@/contexts/auth";
 import type { MissionDefinition, PageGuide, TrainingRun, TrainingStatus, TrainingStep } from "./training-types";
 
 const api = <T,>(path: string, options?: RequestInit) => customFetch<T>(`/api${path}`, { ...options, responseType: "json" });
+const businessDialogSelector = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
 
 function errorText(error: unknown) {
   if (error instanceof Error) return error.message;
@@ -57,6 +58,7 @@ export function DemoCenter() {
   const [activeGuide, setActiveGuide] = useState<PageGuide | null>(null);
   const [targetRect, setTargetRect] = useState<DOMRect | null>(null);
   const [targetMissing, setTargetMissing] = useState(false);
+  const [businessDialogOpen, setBusinessDialogOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [voiceEnabled, setVoiceEnabled] = useState(false);
@@ -69,13 +71,16 @@ export function DemoCenter() {
   const audioRequestRef = useRef<AbortController | null>(null);
   const audioRequestVersionRef = useRef(0);
   const lastFocusRef = useRef<HTMLElement | null>(null);
+  const trainingPanelRef = useRef<HTMLElement | null>(null);
+  const currentRoleRef = useRef(user?.role);
+  currentRoleRef.current = user?.role;
   const isActualOwner = user?.actualRole === "owner" || (!user?.actualRole && user?.role === "owner");
 
   const refresh = useCallback(async () => {
     const next = await api<TrainingStatus>("/demo/status");
     setStatus(next);
     setVoiceEnabled(next.preferences.voiceEnabled);
-    const resumable = next.runs.find((run) => run.status === "active");
+    const resumable = next.runs.find((run) => run.status === "active" && next.missions.some((item) => item.key === run.missionKey && item.role === currentRoleRef.current));
     setActiveRun(next.practice.enabled ? resumable ?? null : null);
     if (!next.preferences.welcomeDismissed && !resumable) setWelcomeOpen(true);
     return next;
@@ -92,7 +97,7 @@ export function DemoCenter() {
     () => status?.missions.find((item) => item.key === activeRun?.missionKey) ?? null,
     [status, activeRun],
   );
-  const missionStep = mission && activeRun ? mission.steps[activeRun.currentStep] : null;
+  const missionStep = mission && activeRun && mission.role === user?.role ? mission.steps[activeRun.currentStep] : null;
   const guideStep = activeGuide ? {
     id: `guide-${activeGuide.key}`,
     route: activeGuide.route,
@@ -173,13 +178,25 @@ export function DemoCenter() {
   }, [activeStep?.id]); // Route and audio changes are intentionally tied to the registered step.
 
   useEffect(() => {
-    if (!voiceEnabled || !mission || !activeRun) return;
+    const inspectDialogs = () => setBusinessDialogOpen(Boolean(document.querySelector(businessDialogSelector)));
+    inspectDialogs();
+    const observer = new MutationObserver(inspectDialogs);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state', 'role'] });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (trainingPanelRef.current) trainingPanelRef.current.scrollTop = 0;
+  }, [activeStep?.id, businessDialogOpen]);
+
+  useEffect(() => {
+    if (!voiceEnabled || !mission || !activeRun || mission.role !== user?.role) return;
     const next = mission.steps[activeRun.currentStep + 1];
     if (!next) return;
     const request = new AbortController();
     void fetch(`/api/demo/audio/${encodeURIComponent(next.id)}`, { credentials: "include", cache: "no-store", signal: request.signal }).catch(() => undefined);
     return () => request.abort();
-  }, [voiceEnabled, mission?.key, activeRun?.currentStep]);
+  }, [voiceEnabled, mission?.key, activeRun?.currentStep, user?.role]);
 
   useEffect(() => {
     if (!activeStep) { setTargetRect(null); setTargetMissing(false); return; }
@@ -226,13 +243,14 @@ export function DemoCenter() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!activeStep) return;
+      // A newly mounted dialog can receive a key before its observer updates state.
+      if (!activeStep || businessDialogOpen || event.defaultPrevented || document.querySelector(businessDialogSelector)) return;
       if (event.key === "Escape") { event.preventDefault(); void pauseMission(); }
       if (event.altKey && event.key === "ArrowLeft") { event.preventDefault(); void goBack(); }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [activeStep?.id, activeRun?.id]);
+  }, [activeStep?.id, activeRun?.id, businessDialogOpen]);
 
   const savePreference = async (updates: { voiceEnabled?: boolean; welcomeDismissed?: boolean }) => {
     const preferences = await api<TrainingStatus["preferences"]>("/demo/preferences", { method: "PUT", body: JSON.stringify(updates) });
@@ -378,7 +396,7 @@ export function DemoCenter() {
         ? "Captions only"
         : "AI-generated narration";
 
-  const overlay = activeStep ? createPortal(<>
+  const overlay = activeStep && !businessDialogOpen ? createPortal(<>
     {targetRect && <div
       aria-hidden="true"
       className="pointer-events-none fixed z-[60] rounded-xl ring-4 ring-sky-400 ring-offset-4 ring-offset-transparent transition-all duration-200"
@@ -386,6 +404,7 @@ export function DemoCenter() {
     />}
     {!targetRect && !unresolvedTargetMissing && <div className="pointer-events-none fixed inset-0 z-[60] bg-[#07142F]/70" aria-hidden="true" />}
     <aside
+      ref={trainingPanelRef}
       className={`fixed bottom-3 z-[70] max-h-[45vh] w-[min(430px,calc(100vw-1.5rem))] overflow-y-auto rounded-lg border border-border bg-card shadow-2xl sm:max-h-[calc(100vh-1.5rem)] ${panelOnLeft ? "left-3" : "right-3"}`}
       role="dialog"
       aria-modal="true"
@@ -490,11 +509,11 @@ export function DemoCenter() {
             return <article key={item.key} className={`rounded-2xl border p-4 ${index === 0 ? "md:col-span-2 border-primary/25 bg-primary/5" : "bg-card"}`}>
               <div className="flex items-center justify-between gap-3"><Badge variant={index === 0 ? "default" : "secondary"}>{item.role}</Badge><span className="flex items-center gap-1 text-xs text-muted-foreground"><Clock3 className="h-3.5 w-3.5" />{item.minutes} min</span></div>
               <h3 className="mt-3 text-base font-semibold">{item.name}</h3><p className="mt-1 text-sm leading-5 text-muted-foreground">{item.summary}</p>
-              {run && <div className="mt-3"><div className="mb-1 flex justify-between text-xs text-muted-foreground"><span>{run.status === "completed" ? "Completed" : run.status === "paused" ? `Paused at step ${run.currentStep + 1}` : `${progress}% complete`}</span><span>{item.steps.length} steps</span></div><Progress value={progress} className="h-1.5" /></div>}
+              {run && <div className="mt-3"><div className="mb-1 flex justify-between text-xs text-muted-foreground"><span>{run.status === "completed" ? (run.checkpoints.some((checkpoint) => checkpoint.endsWith(":skipped")) ? "Finished with skipped steps — restart to practice" : "Completed and verified") : run.status === "paused" ? `Paused at step ${run.currentStep + 1}` : `${progress}% complete`}</span><span>{item.steps.length} steps</span></div><Progress value={progress} className="h-1.5" /></div>}
               <div className="mt-4 flex flex-wrap gap-2">
-                {run?.status === "paused" && <Button size="sm" onClick={() => void resumeMission(run)} disabled={busy}><Play className="mr-1.5 h-4 w-4" />Resume</Button>}
+                {run && (run.status === "paused" || (run.status === "active" && (activeRun?.id !== run.id || item.role !== user?.role))) && <Button size="sm" onClick={() => void resumeMission(run)} disabled={busy}><Play className="mr-1.5 h-4 w-4" />Resume</Button>}
                 {run && (run.status === "completed" || run.status === "dismissed") && <Button size="sm" onClick={() => void restartMission(run)} disabled={busy}><RotateCcw className="mr-1.5 h-4 w-4" />Start again</Button>}
-                {(!run || run.status === "active") && <>
+                {(!run || (run.status === "active" && activeRun?.id === run.id && item.role === user?.role)) && <>
                   <Button size="sm" onClick={() => void startMission(item, true)} disabled={busy}><Volume2 className="mr-1.5 h-4 w-4" />Start with Voice</Button>
                   <Button variant="outline" size="sm" onClick={() => void startMission(item, false)} disabled={busy}><VolumeX className="mr-1.5 h-4 w-4" />Start Silently</Button>
                 </>}

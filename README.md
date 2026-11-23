@@ -90,6 +90,8 @@ In **Settings → QuickBooks → Inventory reconciliation**, compare Catalyst's 
 
 Supplier bill review accepts CSV and tab-separated line tables. Inspect the parsed SKU, quantity, unit, and rate before applying the rows. Enter the total shown on the source bill independently so review can flag discrepancies.
 
+Invoices with tax, a fixed discount, an applied deposit, or an existing payment use **Review invoice accounting** in the approval queue. This review also works with an authorized Intuit sandbox when `DEMO_MODE=false` and `QUICKBOOKS_ENVIRONMENT=sandbox`; the displayed company and sandbox label identify the destination. Select and verify the tax code, taxable lines, and discount account before approving. Deposits and existing payments require an exactly matching invoice already recorded in QuickBooks, and the review links that invoice without creating a cash entry. Automated Sales Tax also requires reconciliation to an existing matching invoice. Production reviews remain disabled unless `QUICKBOOKS_PRODUCTION_REVIEWED_INVOICES_ENABLED=true` and `QUICKBOOKS_PRODUCTION_REVIEWED_INVOICES_REALM_ID` matches the connected production company. Generic approval cannot bypass accounting review in either environment.
+
 ## Microsoft Outlook setup
 
 1. In the Catalyst Works Outlook Microsoft Entra **Web** application, use `https://works.mycatalystinnovations.com/api/calendar/outlook/callback` as the production callback. Use that exact URL in `OUTLOOK_REDIRECT_URI`. Set `OUTLOOK_CLIENT_ID`, `OUTLOOK_CLIENT_SECRET`, `OUTLOOK_TENANT_ID`, and a separate random `OUTLOOK_ENCRYPTION_KEY` in the deployment environment. [Authorization flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow)

@@ -2,7 +2,7 @@ name: Catalyst Works Linux verification
 
 on:
   push:
-    branches: [codex/catalyst-works, codex/knoxville-supplier-preview]
+    branches: [codex/catalyst-works, codex/knoxville-supplier-preview, codex/warehouse-release-20261123, codex/works-live-completion-20261123]
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.ref == 'refs/heads/codex/catalyst-works' || github.ref == 'refs/heads/codex/knoxville-supplier-preview'
+    if: github.ref == 'refs/heads/codex/catalyst-works' || github.ref == 'refs/heads/codex/knoxville-supplier-preview' || github.ref == 'refs/heads/codex/warehouse-release-20261123' || github.ref == 'refs/heads/codex/works-live-completion-20261123'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
@@ -76,10 +76,13 @@ jobs:
           pnpm --filter @workspace/db test
           pnpm --filter @workspace/api-server test
           pnpm --filter @workspace/knox-flooring test
+          node --test artifacts/catalyst-platform/src/*.test.mjs
       - name: Build production bundles with native Argon2
         run: |
           pnpm --filter @workspace/api-server build
           pnpm --filter @workspace/knox-flooring build
+      - name: Verify isolated company signup, billing and provisioning with PostgreSQL
+        run: node --test artifacts/catalyst-platform/test/platform-postgres.test.mjs
       - name: Make PostgreSQL 17 backup clients available
         shell: bash
         run: |

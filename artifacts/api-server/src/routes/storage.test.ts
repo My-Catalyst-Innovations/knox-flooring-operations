@@ -21,6 +21,8 @@ vi.mock("@workspace/db", async () => {
     db: { select: mocks.select },
     jobsTable: pgTable("jobs", { id: text("id"), shareToken: text("share_token") }),
     jobPhotosTable: pgTable("job_photos", { id: text("id"), jobId: text("job_id"), objectPath: text("object_path") }),
+    jobDocumentsTable: pgTable("job_documents", { id: text("id"), jobId: text("job_id"), objectPath: text("object_path") }),
+    microsoftFileMirrorsTable: pgTable("microsoft_file_mirrors", { id: text("id"), jobId: text("job_id"), objectPath: text("object_path"), sourceType: text("source_type") }),
     leadsTable: pgTable("leads", { id: text("id"), documents: jsonb("documents") }),
     productsTable: pgTable("products", { id: text("id"), imageUrl: text("image_url") }),
     settingsTable: pgTable("settings", { id: integer("id"), companyLogoUrl: text("company_logo_url") }),
@@ -40,6 +42,7 @@ const fileId = "62d2b13f-4ca2-4a89-b5ae-29cbd61f2df6";
 const jobPhoto = `/objects/files/job-photo/${fileId}`;
 const sharedPhoto = `/objects/files/portal-photo/${fileId}`;
 const leadDocument = `/objects/files/lead-document/${fileId}`;
+const jobDocument = `/objects/files/job-document/${fileId}`;
 const companyLogo = `/objects/files/company-logo/${fileId}`;
 const requestPhoto = (purpose: string) => request(app).post(`/api/storage/files/${purpose}?recordId=job-1`)
   .set("Content-Type", "application/octet-stream")
@@ -121,6 +124,32 @@ describe("private storage HTTP boundaries", () => {
     expect((await request(app).get(path)).status).toBe(200);
     selectRows([{ path: sharedPhoto, jobId: "another-job" }], true);
     expect((await request(app).get(path)).status).toBe(404);
+  });
+
+  it("keeps job documents private to office roles and forces an attached document download without Microsoft access", async () => {
+    signIn("installer"); prepareImage(jobDocument);
+    expect((await request(app).get(`/api/storage${jobDocument}`)).status).toBe(404);
+    expect(mocks.metadata).not.toHaveBeenCalled();
+    signIn("operations", "another-office-user");
+    const where = selectRows([{ id: "attached-document" }]);
+    mocks.download.mockResolvedValue({ type: "application/pdf", name: "Signed quote.pdf", body: Readable.from(Buffer.from("%PDF-1.7\nprivate document")) });
+    const response = await request(app).get(`/api/storage${jobDocument}`);
+    expect(response.status).toBe(200);
+    expect(response.headers["content-type"]).toContain("application/octet-stream");
+    expect(response.headers["content-disposition"]).toContain("attachment;");
+    const query = new PgDialect().sqlToQuery(where.mock.calls[0][0]);
+    expect(query.sql).toContain('"job_documents"."job_id"');
+    expect(query.params).toEqual(["job-1", jobDocument]);
+  });
+
+  it("retains an explicitly mirrored photo only under its original job and photo source boundary", async () => {
+    prepareImage(jobPhoto); signIn("operations", "another-office-user");
+    const where = selectRows([{ id: "retained-photo-mirror" }]);
+    mocks.select.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [] }) }) });
+    expect((await request(app).get(`/api/storage${jobPhoto}`)).status).toBe(200);
+    const query = new PgDialect().sqlToQuery(where.mock.calls[0][0]);
+    expect(query.sql).toContain('"microsoft_file_mirrors"."job_id"');
+    expect(query.params).toEqual(["photo", jobPhoto, "job-1"]);
   });
 
   it("publishes only the workspace's configured branding image", async () => {

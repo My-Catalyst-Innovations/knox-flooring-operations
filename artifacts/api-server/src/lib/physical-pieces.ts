@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { inventoryMovementsTable, inventoryReservationsTable, inventoryTransfersTable, physicalPieceEventsTable, physicalPiecesTable, productsTable, type PhysicalPiece } from "@workspace/db";
 import { assertBinWithdrawal, binBalances, lockStockProduct, roundStock, verifyBin, verifyWarehouse, type StockTransaction } from "./inventory-stock";
-import { placeStockCosts, withdrawStockCosts } from "./inventory-costing";
+import { acquisitionCostSlice, inventoryUnitCostPattern, normalizeInventoryUnitCost, placeStockCosts, sliceCostLayers, stockCostAvailability, verifiedPieceCosts, withdrawStockCosts } from "./inventory-costing";
 import { assertRevision, DomainError } from "./operations-rules";
 
 export function pieceArea(widthInches: number, lengthInches: number) {
@@ -101,6 +101,44 @@ export async function registerPiece(tx: StockTransaction, input: Location & {
 }
 
 type Change = { revision: number; idempotencyKey: string; note: string };
+
+export async function bindPieceCosts(tx: StockTransaction, pieceId: string, input: Change & { sourceLayerId?: string; reviewedUnitCost?: string }, actorUserId: string) {
+  const request = identity(input.idempotencyKey, actorUserId, ["cost_bound", pieceId, input]);
+  const initial = await findPiece(tx, pieceId);
+  await lockStockProduct(tx, initial.productId);
+  const prior = await previousResult(tx, request);
+  if (prior) return prior;
+  const current = await findPiece(tx, pieceId);
+  assertRevision(current.revision, input.revision);
+  if (current.issuedMovementId || current.costAllocations) throw new DomainError(409, "Only an available, unbound piece can have its cost reviewed.");
+  if (!input.note.trim() || Boolean(input.sourceLayerId) === (input.reviewedUnitCost !== undefined)) throw new DomainError(400, "Record a review note and choose one receipt source or an actual opening-stock unit cost.");
+  const location = { productId: current.productId, warehouseId: current.warehouseId, binId: current.binId };
+  const available = await stockCostAvailability(tx, location, current.id);
+  const now = new Date().toISOString();
+  let costs;
+  if (input.sourceLayerId) {
+    const source = available.layers.find((layer) => layer.layerId === input.sourceLayerId);
+    if (!source || roundStock(source.quantity) < current.quantity) throw new DomainError(409, "The selected source does not have enough unbound quantity for this piece. Review another receipt.");
+    costs = [{ ...source, quantity: current.quantity }];
+  } else {
+    if (!inventoryUnitCostPattern.test(input.reviewedUnitCost!)) throw new DomainError(400, "Enter a valid nonnegative actual opening-stock unit cost.");
+    if (available.untracked < current.quantity) throw new DomainError(409, "This quantity already has recorded acquisition costs. Choose its actual receipt source instead.");
+    const movementId = randomUUID();
+    costs = [{ ...acquisitionCostSlice(movementId, current.quantity, normalizeInventoryUnitCost(input.reviewedUnitCost!), now, "reviewed_opening"), layerId: `${movementId}:0` }];
+    // Explicit owner review values previously unpriced opening stock. The zero
+    // quantity entry changes cost provenance without adding or removing stock.
+    await tx.insert(inventoryMovementsTable).values({ id: movementId, ...location, quantity: 0, kind: "adjustment", costAllocations: costs,
+      reason: `Owner-reviewed opening acquisition cost for ${current.label}: ${input.note}`, actorUserId,
+      idempotencyKey: `piece-cost:${createHash("sha256").update(request.requestKey).digest("hex")}`, createdAt: now });
+  }
+  verifiedPieceCosts({ quantity: current.quantity, costAllocations: costs });
+  const [piece] = await tx.update(physicalPiecesTable).set({ costAllocations: costs, costReviewedBy: actorUserId, costReviewedAt: now, revision: current.revision + 1, updatedAt: now })
+    .where(eq(physicalPiecesTable.id, current.id)).returning();
+  await recordEvent(tx, { ...request, pieceId: piece.id, action: "cost_bound", createdAt: now,
+    details: { note: input.note, quantity: piece.quantity, costAllocations: costs, sourceLayerId: input.sourceLayerId ?? null } });
+  return { piece };
+}
+
 async function changeAvailablePiece(tx: StockTransaction, pieceId: string, actorUserId: string, action: "cut" | "moved", input: Change, work: (current: PhysicalPiece, now: string, request: RequestIdentity) => Promise<PieceResult>) {
   const request = identity(input.idempotencyKey, actorUserId, [action, pieceId, input]);
   const initial = await findPiece(tx, pieceId);
@@ -110,19 +148,23 @@ async function changeAvailablePiece(tx: StockTransaction, pieceId: string, actor
   const current = await findPiece(tx, pieceId);
   assertRevision(current.revision, input.revision);
   if (current.issuedMovementId) throw new DomainError(409, "Return the piece from its job before cutting or moving it.");
+  verifiedPieceCosts(current);
   return work(current, new Date().toISOString(), request);
 }
 
 export function cutPiece(tx: StockTransaction, pieceId: string, input: Change & { label: string; lengthInches: number }, actorUserId: string) {
   return changeAvailablePiece(tx, pieceId, actorUserId, "cut", input, async (current, now, request) => {
     const { childQuantity, remainingLength, remainingQuantity } = pieceCut(current, input.lengthInches);
+    const costs = verifiedPieceCosts(current);
     const child = await savePiece(tx, {
       id: randomUUID(), parentId: current.id, productId: current.productId, label: input.label, lot: current.lot,
       kind: "Remnant", widthInches: current.widthInches, lengthInches: input.lengthInches, quantity: childQuantity,
       warehouseId: current.warehouseId, binId: current.binId, createdAt: now, updatedAt: now,
+      costAllocations: sliceCostLayers(costs, 0, childQuantity), costReviewedBy: current.costReviewedBy, costReviewedAt: current.costReviewedAt,
     });
     const [piece] = await tx.update(physicalPiecesTable).set({
       lengthInches: remainingLength, quantity: remainingQuantity, revision: current.revision + 1, updatedAt: now,
+      costAllocations: sliceCostLayers(costs, childQuantity, current.quantity),
     }).where(eq(physicalPiecesTable.id, current.id)).returning();
     await recordEvent(tx, {
       ...request, pieceId: piece.id, childId: child.id, action: "cut", createdAt: now,
@@ -159,7 +201,7 @@ export function movePiece(tx: StockTransaction, pieceId: string, input: Change &
     if (changesWarehouse) await assertTransferAvailability(tx, current);
     const outId = randomUUID();
     const inId = randomUUID();
-    const { slices } = await withdrawStockCosts(tx, from, current.quantity);
+    const { slices } = await withdrawStockCosts(tx, from, current.quantity, current.id);
     const incoming = await placeStockCosts(tx, to, inId, current.quantity, slices);
     const movementKey = createHash("sha256").update(request.requestKey).digest("hex");
     const movementIdempotency = `piece-move:${movementKey}`;
@@ -176,7 +218,7 @@ export function movePiece(tx: StockTransaction, pieceId: string, input: Change &
       { ...common, ...from, id: outId, kind: changesWarehouse ? "transfer_out" : "bin_out", idempotencyKey: `${movementIdempotency}:out`, quantity: -current.quantity, costAllocations: slices.length ? slices : null },
       { ...common, ...to, id: inId, kind: changesWarehouse ? "transfer_in" : "bin_in", idempotencyKey: `${movementIdempotency}:in`, quantity: current.quantity, costAllocations: incoming?.length ? incoming : null },
     ]);
-    const [piece] = await tx.update(physicalPiecesTable).set({ warehouseId: to.warehouseId, binId: to.binId, revision: current.revision + 1, updatedAt: now })
+    const [piece] = await tx.update(physicalPiecesTable).set({ warehouseId: to.warehouseId, binId: to.binId, costAllocations: incoming, revision: current.revision + 1, updatedAt: now })
       .where(eq(physicalPiecesTable.id, current.id)).returning();
     await recordEvent(tx, {
       ...request, pieceId: piece.id, movementId: inId, action: "moved", createdAt: now,
@@ -210,6 +252,7 @@ export async function pieceForMovement(tx: StockTransaction, input: PieceMovemen
     if (piece.issuedMovementId || piece.warehouseId !== input.warehouseId || piece.binId !== input.binId || piece.quantity !== input.quantity) {
       throw new DomainError(409, "Choose the piece's current bin and issue the whole piece. Cut a new labeled piece first if needed.");
     }
+    verifiedPieceCosts(piece);
   } else if (input.kind === "return") {
     if (!piece.issuedMovementId || input.returnOfMovementId !== piece.issuedMovementId || !input.returnLengthInches || pieceReturnQuantity(piece, input.returnLengthInches) !== input.quantity) {
       throw new DomainError(409, "Choose the piece's original issue and enter the measured returned length.");
@@ -241,6 +284,9 @@ export async function savePieceMovement(tx: StockTransaction, piece: PhysicalPie
     lengthInches: returnedLength ?? piece.lengthInches,
     quantity: issue ? piece.quantity : movement.quantity,
     kind: returnedLength !== null && returnedLength < piece.lengthInches ? "Remnant" : piece.kind,
+    // A legacy issue can still return at its recorded original job cost. Its
+    // unreviewed piece stays unbound until an owner reviews that source.
+    ...(!issue && piece.costAllocations ? { costAllocations: movement.costAllocations } : {}),
     revision: piece.revision + 1,
     updatedAt: movement.createdAt,
   }).where(eq(physicalPiecesTable.id, piece.id));

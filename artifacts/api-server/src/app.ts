@@ -8,6 +8,7 @@ import { logger } from "./lib/logger";
 import { recoveryReadOnly } from "./middlewares/recovery";
 import { workspaceBoundary } from "./middlewares/workspace";
 import { workspaceEnvironment } from "@workspace/db/workspace";
+import { platform } from "./platform";
 
 const app: Express = express();
 const customerLinkPath = /^\/(?:api\/public\/(?:jobs|quotes)|p|q)\/[^/]+/i;
@@ -32,6 +33,7 @@ app.use(
   }),
 );
 app.set("trust proxy", 1);
+app.use("/api/platform", platform.router);
 app.use(workspaceBoundary);
 app.use((req, res, next) => {
   if (customerLinkPath.test(req.path)) {

@@ -12,6 +12,10 @@ vi.mock("@workspace/db", () => ({
   invoicesTable: {},
 }));
 vi.mock("./quickbooks", () => ({ getConnection: mocks.getConnection }));
+vi.mock("../platform", async () => {
+  const { Router } = await import("express");
+  return { platform: { enabled: false, router: Router() }, isLegacyPlatformHost: () => false };
+});
 vi.mock("../routes", async () => {
   const { Router } = await import("express");
   const { quickBooksWebhook } = await import("../routes/quickbooks");

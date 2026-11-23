@@ -3,10 +3,12 @@ import { alias } from "drizzle-orm/pg-core";
 import { Router } from "express";
 import { z } from "zod";
 import { db, inventoryMovementsTable, physicalPieceEventsTable, physicalPiecesTable, productsTable } from "@workspace/db";
-import { requireRole } from "../middlewares/auth";
+import { requireOwner, requireRole } from "../middlewares/auth";
 import { domainRoute, id, parse } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
-import { cutPiece, movePiece, registerPiece } from "../lib/physical-pieces";
+import { bindPieceCosts, cutPiece, movePiece, registerPiece } from "../lib/physical-pieces";
+import { lockStockProduct } from "../lib/inventory-stock";
+import { stockCostAvailability } from "../lib/inventory-costing";
 
 const router = Router();
 const stockAccess = requireRole("owner", "operations");
@@ -70,12 +72,30 @@ router.get(`${path}/:id/history`, stockAccess, domainRoute(async (req, res) => {
     childId: physicalPieceEventsTable.childId,
     pieceId: physicalPieceEventsTable.pieceId,
     movementId: inventoryMovementsTable.id,
-    costAllocations: inventoryMovementsTable.costAllocations,
+    costAllocations: sql`coalesce(${inventoryMovementsTable.costAllocations}, ${physicalPieceEventsTable.details}->'costAllocations')`,
   }).from(physicalPieceEventsTable)
     .leftJoin(inventoryMovementsTable, eq(physicalPieceEventsTable.movementId, inventoryMovementsTable.id))
     .where(or(eq(physicalPieceEventsTable.pieceId, pieceId), eq(physicalPieceEventsTable.childId, pieceId)))
     .orderBy(desc(physicalPieceEventsTable.createdAt), desc(physicalPieceEventsTable.id)).limit(100);
   res.json(events);
+}));
+
+router.get(`${path}/:id/cost-sources`, requireOwner, domainRoute(async (req, res) => {
+  const result = await db.transaction(async (tx) => {
+    const [piece] = await tx.select().from(pieces).where(eq(pieces.id, id(req)));
+    if (!piece) throw new DomainError(404, "Stock piece not found.");
+    await lockStockProduct(tx, piece.productId);
+    const [current] = await tx.select().from(pieces).where(eq(pieces.id, piece.id));
+    if (!current) throw new DomainError(404, "Stock piece not found.");
+    return stockCostAvailability(tx, { productId: current.productId, warehouseId: current.warehouseId, binId: current.binId }, current.id);
+  });
+  res.json({ layers: result.layers, unpricedQuantity: result.untracked });
+}));
+
+router.post(`${path}/:id/bind-cost`, requireOwner, domainRoute(async (req, res) => {
+  const data = parse(change.extend({ sourceLayerId: identifier.optional(), reviewedUnitCost: z.string().optional(), note: z.string().trim().min(1).max(500) }).strict(), req.body);
+  const result = await db.transaction((tx) => bindPieceCosts(tx, id(req), data, req.auth!.userId));
+  res.json(result);
 }));
 
 router.post(path, stockAccess, domainRoute(async (req, res) => {

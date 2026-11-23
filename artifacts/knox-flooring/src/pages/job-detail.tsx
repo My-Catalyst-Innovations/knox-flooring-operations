@@ -40,6 +40,7 @@ import {
 } from "@/components/jobs/JobOperations";
 import { StageTimeline } from "@/components/jobs/StageTimeline";
 import { StagePhotos } from "@/components/jobs/StagePhotos";
+import { JobFiles } from "@/components/jobs/JobFiles";
 import { InvoiceDialog } from "@/components/invoices/InvoiceDialog";
 import { JobCostingDialog } from "@/components/jobs/JobCostingDialog";
 import { invoiceBalance, invoiceStatusVariant } from "@/lib/invoices";
@@ -184,6 +185,7 @@ export default function JobDetail() {
       </div>
 
       <JobUpdates key={job.id} jobId={job.id} />
+      <JobFiles key={`files-${job.id}`} jobId={job.id} />
       <JobReadiness key={job.id} job={job} />
       <Card className="border-primary/30 bg-primary/5">
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-4 space-y-0">

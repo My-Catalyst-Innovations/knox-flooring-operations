@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { customFetch } from "@workspace/api-client-react";
 
-type FilePurpose = "job-photo" | "portal-photo" | "lead-document" | "product-image" | "company-logo";
+type FilePurpose = "job-photo" | "portal-photo" | "lead-document" | "job-document" | "product-image" | "company-logo";
 export const supportedImageTypes = "image/jpeg,image/png,image/webp,image/gif";
 const maxFileBytes = 15 * 1024 * 1024;
 

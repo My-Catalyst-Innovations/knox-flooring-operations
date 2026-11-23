@@ -18,9 +18,9 @@ import {
 import { validateCallback } from "../lib/entry-references";
 import {
   allocatedIssueCents,
-  allocatedIssueUnitCost,
   returnCreditCents,
 } from "../lib/inventory-issue-cost";
+import { priceJobMaterialUsage as priceJobIssue } from "../lib/inventory-material-cost";
 import {
   acquisitionCostSlice,
   inventoryAcquisitionValue,
@@ -141,30 +141,6 @@ async function verifyProductLabel(
       409,
       "This label belongs to a different product. Check the stock before recording the issue.",
     );
-}
-
-function issueUnitCostFor(product: StockProduct) {
-  if (!Number.isFinite(product.cost) || product.cost < 0) {
-    throw new DomainError(
-      409,
-      "Set a valid catalog cost before issuing this product to a job.",
-    );
-  }
-  return String(product.cost);
-}
-
-function priceJobIssue(product: StockProduct, movementId: string, quantity: number, now: string, costs: Awaited<ReturnType<typeof withdrawStockCosts>>) {
-  const allocations = [...costs.slices];
-  if (costs.untracked > 0)
-    allocations.unshift(acquisitionCostSlice(movementId, costs.untracked, issueUnitCostFor(product), now, "catalog"));
-  const cents = allocatedIssueCents(allocations);
-  if (!Number.isSafeInteger(cents)) {
-    throw new DomainError(
-      409,
-      "This material charge exceeds the supported amount.",
-    );
-  }
-  return { allocations, cost: cents / 100, unitCost: allocatedIssueUnitCost(allocations, quantity) };
 }
 
 async function calculateReturnCredit(
@@ -600,7 +576,7 @@ router.post(
       let allocations: InventoryCostSlice[] | null = null;
       let jobCost: ReturnType<typeof priceJobIssue> | undefined;
       if (delta < 0) {
-        const costs = await withdrawStockCosts(tx, location, -delta);
+        const costs = await withdrawStockCosts(tx, location, -delta, piece?.id);
         if (issuingJob) jobCost = priceJobIssue(product, movementId, -delta, now, costs);
         allocations = jobCost?.allocations ?? costs.slices;
       } else if (returnCredit || data.unitCost !== undefined) {
@@ -847,7 +823,7 @@ router.patch(
         await ensureOpeningMovement(tx, product, now);
         const movementId = randomUUID();
         const location = { productId: product.id, warehouseId: current.warehouseId, binId };
-        const costs = await withdrawStockCosts(tx, location, current.quantity);
+        const costs = await withdrawStockCosts(tx, location, current.quantity, piece?.id);
         const jobCost = priceJobIssue(product, movementId, current.quantity, now, costs);
         const [movement] = await tx
           .insert(inventoryMovementsTable)

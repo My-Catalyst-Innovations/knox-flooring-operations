@@ -11,20 +11,20 @@ import {
   tasksTable,
   jobCallbacksTable,
   outlookBookingSyncTable,
+  outlookBookingReviewsTable,
 } from "@workspace/db";
 import { requireRole } from "../middlewares/auth";
 import { domainRoute, parse, revision, id } from "../lib/domain-http";
 import {
-  assertBooking,
   assertRevision,
   DomainError,
-  overlaps,
 } from "../lib/operations-rules";
 import {
   gcalInsertEvent,
   gcalPatchEvent,
   gcalDeleteEvent,
 } from "../lib/google-calendar";
+import { assertCrewBookingAvailability } from "../lib/booking-availability";
 import { trackOutlookBooking, requestOutlookBookingSync } from "../lib/outlook-calendar";
 
 const router = Router();
@@ -186,18 +186,19 @@ router.patch(
 router.get(
   "/bookings",
   domainRoute(async (req, res) => {
-    const rows = await db.select({ booking: crewBookingsTable, outlook: outlookBookingSyncTable }).from(crewBookingsTable)
-      .leftJoin(outlookBookingSyncTable, eq(outlookBookingSyncTable.bookingId, crewBookingsTable.id));
+    const rows = await db.select({ booking: crewBookingsTable, outlook: outlookBookingSyncTable, review: outlookBookingReviewsTable }).from(crewBookingsTable)
+      .leftJoin(outlookBookingSyncTable, eq(outlookBookingSyncTable.bookingId, crewBookingsTable.id))
+      .leftJoin(outlookBookingReviewsTable, eq(outlookBookingReviewsTable.bookingId, crewBookingsTable.id));
     res.json(
       rows.filter(
         ({ booking: b }) =>
           (!req.query.from || b.endAt > String(req.query.from)) &&
           (!req.query.to || b.startAt < String(req.query.to)) &&
           (!req.query.jobId || b.jobId === req.query.jobId),
-      ).map(({ booking, outlook }) => !outlook ? booking : {
+      ).map(({ booking, outlook, review }) => !outlook ? booking : {
         ...booking,
-        outlookSyncStatus: outlook.syncedRevision === booking.revision ? "synced" : outlook.lastError ? "error" : "pending",
-        outlookSyncError: outlook.lastError,
+        outlookSyncStatus: review?.status === "pending" ? "error" : outlook.syncedRevision === booking.revision ? "synced" : outlook.lastError ? "error" : "pending",
+        outlookSyncError: review?.status === "pending" ? "Outlook changed externally. An owner must review it in Settings before calendar writes resume." : outlook.lastError,
       }),
     );
   }),
@@ -272,84 +273,9 @@ const saveBooking = (create: boolean) =>
             .for("update");
       if (current) assertRevision(current.revision, data.revision);
       const input = parse(bookingInput, { ...current, ...data });
-      const duration = assertBooking(input);
-      const [crew] = await tx
-        .select()
-        .from(crewsTable)
-        .where(eq(crewsTable.id, input.crewId));
-      const [job] = await tx
-        .select()
-        .from(jobsTable)
-        .where(eq(jobsTable.id, input.jobId));
-      if (!crew || !job) throw new DomainError(404, "Crew or job not found");
-      const dayFmt = new Intl.DateTimeFormat("en-CA", {
-        timeZone: crew.timezone,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      });
-      const startDay = dayFmt.format(new Date(input.startAt));
-      const endDay = dayFmt.format(new Date(Date.parse(input.endAt) - 1));
-      if (input.status === "Confirmed") {
-        if (
-          !crew.active ||
-          !crew.size ||
-          !crew.dailyCapacityHours ||
-          !crew.workingDays.length
-        )
-          throw new DomainError(
-            409,
-            "Configure this crew’s size, working days and daily capacity before confirming a booking.",
-          );
-        if (startDay !== endDay)
-          throw new DomainError(
-            400,
-            "Split a multi-day installation into one booking per working day.",
-          );
-        const weekday = new Intl.DateTimeFormat("en-US", {
-          timeZone: crew.timezone,
-          weekday: "short",
-        }).format(new Date(input.startAt));
-        if (
-          !crew.workingDays.includes(
-            ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(weekday),
-          ) ||
-          crew.unavailableDates.includes(startDay)
-        )
-          throw new DomainError(
-            409,
-            "This crew is unavailable on the selected day.",
-          );
-        if (input.plannedLaborHours > duration * crew.size + 0.000001)
-          throw new DomainError(
-            400,
-            "Planned person-hours exceed the booking duration and crew size.",
-          );
-        const bookings = (
-          await tx
-            .select()
-            .from(crewBookingsTable)
-            .where(eq(crewBookingsTable.crewId, crew.id))
-        ).filter((b) => b.id !== current?.id && b.status === "Confirmed");
-        const collision = bookings.find((b) => overlaps(input, b));
-        if (collision)
-          throw new DomainError(
-            409,
-            "This crew already has an overlapping booking.",
-            { bookingId: collision.id },
-          );
-        const dailyHours = bookings
-          .filter((b) => dayFmt.format(new Date(b.startAt)) === startDay)
-          .reduce((sum, b) => sum + b.plannedLaborHours, 0);
-        if (
-          dailyHours + input.plannedLaborHours >
-          crew.size * crew.dailyCapacityHours + 0.000001
-        )
-          throw new DomainError(
-            409,
-            "This booking exceeds the crew’s daily person-hour capacity.",
-          );
-      }
+      const crew = await assertCrewBookingAvailability(tx, input, current?.id);
+      const [job] = await tx.select().from(jobsTable).where(eq(jobsTable.id, input.jobId));
+      if (!job) throw new DomainError(404, "Job not found");
       const now = new Date().toISOString();
       const bookingId = current?.id ?? randomUUID();
       const taskId = current?.taskId ?? randomUUID();

@@ -61,6 +61,9 @@ describe("file safety", () => {
     expect(filePurpose(`/objects/files/job-photo/../${fileId}`)).toBeNull();
     expect(filePurpose(`/objects/files/unrecognized/${fileId}`)).toBeNull();
     expect(canUploadFile("lead-document", "installer")).toBe(false);
+    expect(canUploadFile("job-document", "installer")).toBe(false);
+    expect(canUploadFile("job-document", "operations")).toBe(true);
+    expect(filePurpose(`/objects/files/job-document/${fileId}`)).toBe("job-document");
     expect(canUploadFile("product-image", "sales")).toBe(false);
     expect(isPortalPhoto(`/objects/${key}`)).toBe(false);
     expect(isPortalPhoto(`/objects/uploads/${fileId}`)).toBe(false);
@@ -73,6 +76,7 @@ describe("file safety", () => {
     expect(uploadContentType("job-photo", jpeg)).toBe("image/jpeg");
     expect(() => uploadContentType("job-photo", Buffer.from("<svg></svg>"))).toThrow();
     expect(uploadContentType("lead-document", jpeg)).toBe("application/octet-stream");
+    expect(uploadContentType("job-document", Buffer.from("%PDF-1.7\njob document"))).toBe("application/octet-stream");
     const image = { body: Readable.from(jpeg), type: "image/jpeg", name: "floor.jpg" };
     expect(safeFileHeaders(image, false)).toMatchObject({ "Content-Disposition": "inline", "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store" });
     const headers = safeFileHeaders({ ...image, name: "a\r\nB.pdf" }, true);

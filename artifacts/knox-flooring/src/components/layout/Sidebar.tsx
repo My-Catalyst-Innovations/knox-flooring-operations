@@ -47,7 +47,7 @@ export function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
     <div className="flex flex-col h-full bg-sidebar text-sidebar-foreground">
       <div className="border-b border-sidebar-border px-5 py-5">
         <ProductBrand dark />
-        <p className="mt-4 truncate border-t border-white/10 pt-3 text-xs text-slate-300" title={settings.companyName}>{settings.companyName || "Knoxville Flooring Center"}</p>
+        <p className="mt-4 truncate border-t border-white/10 pt-3 text-xs text-slate-300" title={settings.companyName}>{settings.companyName || "Company workspace"}</p>
       </div>
       <nav aria-label="Main navigation" className="flex-1 py-4 px-3 space-y-4 overflow-y-auto">
         {navGroups.map((group) => ({ ...group, items: group.items.filter((item) => canAccess(item, user?.role ?? "installer")) })).filter((group) => group.items.length > 0).map((group) => (

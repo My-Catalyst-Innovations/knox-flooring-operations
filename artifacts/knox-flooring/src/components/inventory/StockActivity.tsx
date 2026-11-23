@@ -1,5 +1,6 @@
 import { useUnsavedForm } from "@/hooks/use-unsaved-changes";
 import { useState } from "react";
+import { CameraScanButton } from "./CameraScanButton";
 import { Link } from "wouter";
 import { useAuth } from "@/contexts/auth";
 import { useStore } from "@/hooks/use-store";
@@ -363,6 +364,9 @@ export function StockActivity({
                   }}
                 />
               </label>
+              <CameraScanButton disabled={busy || transferBusy || checkingLabel} onScan={(code) => {
+                setLabelCode(code); setLabelCheck(undefined); setError(""); change();
+              }} />
               <Button
                 type="button"
                 variant="outline"

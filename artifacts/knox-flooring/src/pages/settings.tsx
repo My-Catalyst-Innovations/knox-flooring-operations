@@ -20,6 +20,7 @@ import { resolveStages } from "@/lib/lead-links";
 import { WON_STAGE, LOST_STAGE, type CommissionBasis } from "@/lib/types";
 import { QuickBooksSettings } from "@/components/settings/QuickBooksSettings";
 import { OutlookSettings } from "@/components/settings/OutlookSettings";
+import { MicrosoftFilesSettings } from "@/components/settings/MicrosoftFilesSettings";
 import { DemoSettings } from "@/components/settings/DemoSettings";
 import { useAuth } from "@/contexts/auth";
 import { OperatingSettings } from "@/components/settings/OperatingSettings";
@@ -220,6 +221,7 @@ export default function Settings() {
       <StaffAccess />
       <QuickBooksSettings />
       <OutlookSettings />
+      <MicrosoftFilesSettings />
       <DemoSettings />
       <OperatingSettings />
 

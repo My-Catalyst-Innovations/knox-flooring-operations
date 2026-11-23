@@ -1,15 +1,92 @@
 import { workspaceScopeKey } from "@workspace/db/workspace";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, lte, or, sql } from "drizzle-orm";
-import { db, invoicesTable, jobsTable, productsTable, proposalsTable, quickbooksConnectionsTable, quickbooksConflictsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable, type InvoiceLineCategory } from "@workspace/db";
+import { db, withWorkspaceConnection, invoicesTable, jobsTable, productsTable, proposalsTable, quickbooksConnectionsTable, quickbooksConflictsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable, type InvoiceLineCategory } from "@workspace/db";
 import { audit } from "./auth";
-import { getConnection, qboQuery, qboRequest, QuickBooksRequestError } from "./quickbooks";
+import { getConnection, qboQuery, qboRequest, QuickBooksRequestError, requireQuickBooksProjects } from "./quickbooks";
 import { logger } from "./logger";
 import { assertQuickBooksCompanyLink, invoiceServiceEntity, invoiceServiceMappingKey, quickBooksInvoiceLines, quickBooksInvoicePaymentState } from "./quickbooks-invoice";
 import { quickBooksWebhookChanges } from "./quickbooks-webhooks";
 import { invoiceCreateAttempt, invoiceCreateRecord, prepareQuickBooksInvoiceCreate, QuickBooksInvoiceValidationError, reconcileQuickBooksInvoiceCreate } from "./quickbooks-invoice-create";
 import { quickBooksCdcInvoiceIds, quickBooksPaymentInvoiceIds } from "./quickbooks-cdc";
 import { invoiceReviewFingerprint, isReviewedInvoiceAmount, requiresInvoiceReview, reviewedInvoiceApproval, reviewedInvoiceRecord, reviewedInvoicesAvailable, verifyClassicInvoiceTax, verifyExistingInvoice, verifyInvoiceDiscountAccount, verifyInvoiceReviewCompany, type InvoiceReviewInput } from "./quickbooks-invoice-review";
+import { assertGenericExportCompany, genericExportAttempt, genericExportRecord, GenericExportReviewRequired, prepareGenericExport, reconcileGenericExport } from "./quickbooks-generic-export";
+
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type QueueJob = typeof quickbooksSyncJobsTable.$inferSelect;
+
+export async function prepareGenericExportApproval(tx: Transaction, job: Pick<QueueJob, "id" | "entityType" | "localId" | "payload">, company: NonNullable<Awaited<ReturnType<typeof getConnection>>>) {
+  const findLink = async (entity: string, localId: string) => {
+    const [link] = await tx.select().from(quickbooksEntityMappingsTable).where(and(eq(quickbooksEntityMappingsTable.entityType, entity), eq(quickbooksEntityMappingsTable.localId, localId))).limit(1);
+    if (link && (link.status !== "linked" || link.realmId !== company.realmId || link.environment !== company.environment))
+      throw new GenericExportReviewRequired("Reconcile the existing mapping in the selected QuickBooks company before approving this export.");
+    return link;
+  };
+  let document: Record<string, unknown>;
+  if (job.entityType === "customer") {
+    const [source] = await tx.select().from(jobsTable).where(eq(jobsTable.id, job.localId)).for("update");
+    if (!source || !source.customerName.trim()) throw new GenericExportReviewRequired("Review the customer name before approving this export.");
+    document = { DisplayName: source.customerName, PrimaryEmailAddr: source.email ? { Address: source.email } : undefined,
+      PrimaryPhone: source.phone ? { FreeFormNumber: source.phone } : undefined, BillAddr: { Line1: source.address, City: source.city } };
+  } else if (job.entityType === "estimate") {
+    const [source] = await tx.select().from(proposalsTable).where(eq(proposalsTable.id, job.localId)).for("update");
+    if (!source || !Number.isFinite(source.estimatedPrice) || source.estimatedPrice <= 0) throw new GenericExportReviewRequired("Review the estimate amount before approving this export.");
+    const customer = await findLink("customer", source.convertedJobId ?? source.id);
+    if (!customer) throw new GenericExportReviewRequired("Reconcile the estimate customer before approving this export.");
+    const category = job.payload.estimateServiceCategory;
+    if (category !== "Labor" && category !== "Add-on" && category !== "Materials")
+      throw new GenericExportReviewRequired("Select the estimateServiceCategory (Materials, Labor, or Add-on) and its approved sales item before queueing this estimate.");
+    const service = await findLink(invoiceServiceEntity, invoiceServiceMappingKey(company, category));
+    if (!service) throw new GenericExportReviewRequired("Map the selected estimate category to an active QuickBooks service item before approving it.");
+    const amount = Math.round(source.estimatedPrice * 100) / 100;
+    document = { CustomerRef: { value: customer.quickbooksId }, PrivateNote: source.scopeOfWork,
+      Line: [{ Amount: amount, DetailType: "SalesItemLineDetail", Description: source.flooringType,
+        SalesItemLineDetail: { Qty: 1, UnitPrice: amount, ItemRef: { value: service.quickbooksId } } }] };
+  } else return null;
+  const existing = await findLink(job.entityType, job.localId);
+  if (existing) Object.assign(document, { Id: existing.quickbooksId, SyncToken: existing.syncToken, ...(job.entityType === "customer" ? { sparse: true } : {}) });
+  return prepareGenericExport(job.id, job.entityType, job.localId, company, document);
+}
+
+async function exportGenericJob(job: QueueJob) {
+  const parsed = genericExportAttempt.safeParse(job.payload[genericExportRecord]);
+  if (!parsed.success || parsed.data.entityType !== job.entityType || parsed.data.localId !== job.localId)
+    throw new GenericExportReviewRequired("This customer or estimate needs a fresh owner approval with a frozen QuickBooks document.", true);
+  const attempt = parsed.data;
+  const connection = await getConnection();
+  if (!connection) throw new GenericExportReviewRequired("Restore the approved QuickBooks connection before exporting.");
+  assertGenericExportCompany(attempt, connection);
+  const provider = { query: (statement: string) => qboQuery(statement, attempt.connectionId),
+    request: (path: string, init?: RequestInit) => qboRequest(path, init, attempt.connectionId) };
+  await reconcileGenericExport(attempt, provider, async () => {
+    await db.transaction(async tx => {
+      const [current] = await tx.select().from(quickbooksSyncJobsTable).where(eq(quickbooksSyncJobsTable.id, job.id)).for("update");
+      const saved = genericExportAttempt.safeParse(current?.payload[genericExportRecord]);
+      if (!saved.success || current?.status !== "processing" || saved.data.state !== "prepared" || JSON.stringify(saved.data) !== JSON.stringify(attempt))
+        throw new GenericExportReviewRequired("Another attempt already claimed this approved QuickBooks document. Reconcile it before retrying.");
+      await tx.update(quickbooksSyncJobsTable).set({ payload: { ...current.payload, [genericExportRecord]: { ...attempt, state: "submitting" } }, updatedAt: new Date().toISOString() }).where(eq(quickbooksSyncJobsTable.id, job.id));
+    });
+  }, async remote => {
+    await db.transaction(async tx => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(1959031411)`);
+      const [company] = await tx.select().from(quickbooksConnectionsTable).where(eq(quickbooksConnectionsTable.id, attempt.connectionId)).for("update");
+      if (!company) throw new GenericExportReviewRequired("The QuickBooks connection changed after submission. Reconcile the original company.");
+      assertGenericExportCompany(attempt, company);
+      const [current] = await tx.select().from(quickbooksSyncJobsTable).where(eq(quickbooksSyncJobsTable.id, job.id)).for("update");
+      const saved = genericExportAttempt.parse(current?.payload[genericExportRecord]);
+      if (saved.requestId !== attempt.requestId || saved.connectionId !== attempt.connectionId)
+        throw new GenericExportReviewRequired("The approved export changed during submission. Reconcile it before proceeding.");
+      const [link] = await tx.select().from(quickbooksEntityMappingsTable).where(and(eq(quickbooksEntityMappingsTable.entityType, attempt.entityType), eq(quickbooksEntityMappingsTable.localId, attempt.localId))).for("update");
+      if (link && (link.quickbooksId !== String(remote.Id) || link.realmId !== attempt.realmId || link.environment !== attempt.environment))
+        throw new GenericExportReviewRequired("The local mapping changed after submission. Reconcile the original QuickBooks document.");
+      const now = new Date().toISOString();
+      const fields = { quickbooksId: String(remote.Id), syncToken: String(remote.SyncToken ?? "0"), fingerprint: fingerprint(remote), realmId: attempt.realmId, environment: attempt.environment, status: "linked", lastSyncedAt: now, updatedAt: now };
+      if (link) await tx.update(quickbooksEntityMappingsTable).set(fields).where(eq(quickbooksEntityMappingsTable.id, link.id));
+      else await tx.insert(quickbooksEntityMappingsTable).values({ id: randomUUID(), entityType: attempt.entityType, localId: attempt.localId, createdAt: now, ...fields });
+      await tx.update(quickbooksSyncJobsTable).set({ payload: { ...current.payload, [genericExportRecord]: { ...saved, state: "confirmed", remoteId: String(remote.Id) } }, updatedAt: now }).where(eq(quickbooksSyncJobsTable.id, job.id));
+    });
+  });
+}
 
 const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 async function mapping(entityType: string, localId: string) { const [row] = await db.select().from(quickbooksEntityMappingsTable).where(and(eq(quickbooksEntityMappingsTable.entityType, entityType), eq(quickbooksEntityMappingsTable.localId, localId))).limit(1); return row; }
@@ -189,21 +266,9 @@ async function reconcileReviewedInvoice(source: InvoiceSource, company: Connecte
 }
 
 async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
-  if (job.entityType === "customer" || job.entityType === "project") {
-    const [source] = await db.select().from(jobsTable).where(eq(jobsTable.id, job.localId)).limit(1); if (!source) throw new Error("Local job not found");
-    const connection = await getConnection();
-    if (connection?.status !== "connected") throw new Error("QuickBooks is not connected");
-    const parent = job.entityType === "project" ? await mapping("customer", source.id) : null;
-    const payload: any = job.entityType === "customer" ? { DisplayName: source.customerName, PrimaryEmailAddr: source.email ? { Address: source.email } : undefined, PrimaryPhone: source.phone ? { FreeFormNumber: source.phone } : undefined, BillAddr: { Line1: source.address, City: source.city } } : { DisplayName: `${source.jobNumber} - ${source.customerName}`, Job: true, ParentRef: parent ? { value: parent.quickbooksId } : undefined };
-    if (job.entityType === "project" && !parent) throw new Error("Customer must be linked before its project");
-    if (parent) assertQuickBooksCompanyLink("customer", parent, connection);
-    const existing = await mapping(job.entityType, source.id);
-    if (existing) {
-      if (job.entityType === "customer") assertQuickBooksCompanyLink("customer", existing, connection);
-      Object.assign(payload, { Id: existing.quickbooksId, SyncToken: existing.syncToken, sparse: true });
-    }
-    const result = await qboRequest("/customer", { method: "POST", body: JSON.stringify(payload) }, connection.id);
-    await saveMapping(job.entityType, source.id, result.Customer, job.entityType === "customer" ? connection : undefined);
+  if(job.entityType==="project")requireQuickBooksProjects();
+  if (job.entityType === "customer" || job.entityType === "estimate") {
+    await exportGenericJob(job);
   } else if (job.entityType === "invoice") {
     const [source] = await db.select().from(invoicesTable).where(eq(invoicesTable.id, job.localId)).limit(1);
     if (!source) throw new Error("Local invoice not found");
@@ -211,6 +276,8 @@ async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
     if (connection?.status !== "connected") throw new Error("QuickBooks is not connected");
     const existing = await mapping("invoice", source.id);
     const accountingReview = reviewedInvoiceApproval.safeParse(job.payload[reviewedInvoiceRecord]);
+    if (requiresInvoiceReview(source) && !accountingReview.success)
+      throw new Error("Review and approve this invoice’s tax, discount, or deposit before exporting it to QuickBooks.");
     if (job.payload[reviewedInvoiceRecord] && !accountingReview.success)
       throw new Error("The invoice needs an updated owner accounting review.");
     if (existing && accountingReview.success && !accountingReview.data.request.existingInvoiceId) {
@@ -263,12 +330,6 @@ async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
       await saveCreatedInvoiceMapping(source.id, posted, connection);
       if (!matchesApproval) throw new Error("Recovered the original QuickBooks invoice link. Review the latest changes before retrying this export.");
     }
-  } else if (job.entityType === "estimate") {
-    const [source] = await db.select().from(proposalsTable).where(eq(proposalsTable.id, job.localId)).limit(1); if (!source) throw new Error("Local proposal not found");
-    const customer = await mapping("customer", source.convertedJobId ?? source.id); if (!customer) throw new Error("Customer mapping is required");
-    const payload: any = { CustomerRef: { value: customer.quickbooksId }, PrivateNote: source.scopeOfWork, Line: [{ Amount: source.estimatedPrice, DetailType: "SalesItemLineDetail", Description: source.flooringType, SalesItemLineDetail: { Qty: 1, UnitPrice: source.estimatedPrice } }] };
-    const existing = await mapping("estimate", source.id); if (existing) Object.assign(payload, { Id: existing.quickbooksId, SyncToken: existing.syncToken });
-    const result = await qboRequest("/estimate", { method: "POST", body: JSON.stringify(payload) }); await saveMapping("estimate", source.id, result.Estimate);
   } else if (job.entityType === "item") {
     const [source] = await db.select().from(productsTable).where(eq(productsTable.id, job.localId)).limit(1); if (!source) throw new Error("Local product not found");
     throw new Error(`Product ${source.name} needs an approved income-account mapping`);
@@ -278,15 +339,19 @@ async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
 export async function processQuickBooksQueue() {
   if ((await getConnection())?.status !== "connected") return;
   const now = new Date().toISOString();
+  // A killed worker may have submitted remotely but not saved its mapping. Keep
+  // its immutable attempt and require reconciliation before any further write.
+  await db.update(quickbooksSyncJobsTable).set({ status: "failed", lastError: "An earlier export was interrupted. Retry to reconcile its original QuickBooks record; an unconfirmed create will not be resubmitted.", updatedAt: now })
+    .where(and(inArray(quickbooksSyncJobsTable.entityType, ["customer", "estimate"]), eq(quickbooksSyncJobsTable.status, "processing"), lte(quickbooksSyncJobsTable.startedAt, new Date(Date.now() - 120_000).toISOString())));
   const rows = await db.select().from(quickbooksSyncJobsTable).where(and(inArray(quickbooksSyncJobsTable.status, ["approved", "retry"]), lte(quickbooksSyncJobsTable.nextAttemptAt, now))).orderBy(asc(quickbooksSyncJobsTable.createdAt)).limit(10);
   for (const row of rows) {
     const started = await db.update(quickbooksSyncJobsTable).set({ status: "processing", startedAt: now, attempts: row.attempts + 1, updatedAt: now }).where(and(eq(quickbooksSyncJobsTable.id, row.id), inArray(quickbooksSyncJobsTable.status, ["approved", "retry"]))).returning(); if (!started.length) continue;
     try { await exportJob(row); const done = new Date().toISOString(); await db.update(quickbooksSyncJobsTable).set({ status: "completed", completedAt: done, lastError: null, updatedAt: done }).where(eq(quickbooksSyncJobsTable.id, row.id)); await audit("quickbooks.sync_completed", { entityType: row.entityType, entityId: row.localId }); }
-    catch (error) { const message = error instanceof Error ? error.message : String(error); const retryable = error instanceof QuickBooksRequestError ? error.status === 429 || error.status >= 500 : /429|timeout|temporar|network|fetch/i.test(message); const status = retryable && row.attempts < 5 ? "retry" : "failed"; const delay = Math.min(60, 2 ** (row.attempts + 1)) * 60_000; await db.update(quickbooksSyncJobsTable).set({ status, lastError: message, nextAttemptAt: new Date(Date.now() + delay).toISOString(), updatedAt: new Date().toISOString() }).where(eq(quickbooksSyncJobsTable.id, row.id)); logger.error({ error, jobId: row.id }, "QuickBooks sync failed"); }
+    catch (error) { const message = error instanceof Error ? error.message : String(error); const retryable = error instanceof GenericExportReviewRequired ? false : error instanceof QuickBooksRequestError ? error.status === 429 || error.status >= 500 : /429|timeout|temporar|network|fetch/i.test(message); const status = error instanceof GenericExportReviewRequired && error.approvalRequired ? "pending_approval" : retryable && row.attempts < 5 ? "retry" : "failed"; const delay = Math.min(60, 2 ** (row.attempts + 1)) * 60_000; await db.update(quickbooksSyncJobsTable).set({ status, lastError: message, nextAttemptAt: new Date(Date.now() + delay).toISOString(), updatedAt: new Date().toISOString() }).where(eq(quickbooksSyncJobsTable.id, row.id)); logger.error({ error, jobId: row.id }, "QuickBooks sync failed"); }
   }
 }
 
-async function importInvoice(quickbooksId: string, connection: NonNullable<Awaited<ReturnType<typeof getConnection>>>) {
+export async function importInvoice(quickbooksId: string, connection: NonNullable<Awaited<ReturnType<typeof getConnection>>>) {
   const mappings = quickbooksEntityMappingsTable;
   const [link] = await db.select().from(mappings).where(and(
     eq(mappings.entityType, "invoice"), eq(mappings.quickbooksId, quickbooksId), eq(mappings.status, "linked"),
@@ -306,11 +371,18 @@ async function importInvoice(quickbooksId: string, connection: NonNullable<Await
     return;
   }
   const now = importedAt.toISOString();
-  const [updated] = await db.update(invoicesTable).set({ ...payment, updatedAt: now })
-    .where(and(eq(invoicesTable.id, local.id), eq(invoicesTable.updatedAt, local.updatedAt)))
-    .returning({ id: invoicesTable.id });
-  if (!updated) throw new Error("The local invoice changed during payment reconciliation. Retry the sync.");
-  await db.update(quickbooksEntityMappingsTable).set({ syncToken: String(remote.SyncToken ?? link.syncToken), fingerprint: fingerprint(remote), lastSyncedAt: now, updatedAt: now }).where(eq(quickbooksEntityMappingsTable.id, link.id));
+  await db.transaction(async tx=>{
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(1959031411)`);
+    const [current]=await tx.select().from(quickbooksConnectionsTable).where(eq(quickbooksConnectionsTable.id,connection.id)).for("update");
+    if(!current||current.status!=="connected"||current.realmId!==connection.realmId||current.environment!==connection.environment)throw new Error("The QuickBooks company changed during payment reconciliation. Local values were preserved.");
+    const [currentLink]=await tx.select().from(mappings).where(eq(mappings.id,link.id)).for("update");
+    if(!currentLink||currentLink.localId!==local.id||currentLink.quickbooksId!==quickbooksId||currentLink.realmId!==connection.realmId||currentLink.environment!==connection.environment||currentLink.status!=="linked")throw new Error("The invoice mapping changed during payment reconciliation. Review the link before importing.");
+    const [updated] = await tx.update(invoicesTable).set({ ...payment, updatedAt: now })
+      .where(and(eq(invoicesTable.id, local.id), eq(invoicesTable.updatedAt, local.updatedAt)))
+      .returning({ id: invoicesTable.id });
+    if (!updated) throw new Error("The local invoice changed during payment reconciliation. Retry the sync.");
+    await tx.update(quickbooksEntityMappingsTable).set({ syncToken: String(remote.SyncToken ?? link.syncToken), fingerprint: fingerprint(remote), lastSyncedAt: now, updatedAt: now }).where(eq(quickbooksEntityMappingsTable.id, link.id));
+  });
 }
 
 async function processWebhookInbox() {
@@ -357,11 +429,17 @@ async function pollChanges() {
 }
 
 const timers = new Map<string, NodeJS.Timeout>();
+export function stopQuickBooksWorker() {
+  const key = workspaceScopeKey();
+  const timer = timers.get(key);
+  if (timer) clearInterval(timer);
+  timers.delete(key);
+}
 export function startQuickBooksWorker() {
   const key = workspaceScopeKey();
   if (timers.has(key)) return;
   const timer = setInterval(() =>
-    Promise.all([processQuickBooksQueue(), processWebhookInbox(), pollChanges()])
+    withWorkspaceConnection(() => Promise.all([processQuickBooksQueue(), processWebhookInbox(), pollChanges()]))
       .catch((error) => logger.error({ error }, "QuickBooks worker failed")), 30_000);
   timers.set(key, timer);
   timer.unref();
