@@ -5,7 +5,7 @@ import { z } from "zod";
 import { db, invoicesTable, jobsTable, materialsTable, productsTable, proposalsTable, quickbooksAccountingMappingsTable, quickbooksConflictsTable, quickbooksConnectionsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable } from "@workspace/db";
 import { workspaceEnvironment } from "@workspace/db/workspace";
 import { audit } from "../lib/auth";
-import { accountingScope, projectsScope, grantedQuickBooksScopes, quickBooksOAuthRequestedScopes, consumeQuickBooksOAuthState, createQuickBooksOAuthState, encryptSecret, getConnection, qboQuery, qboRequest, quickBooksProjectReadiness, replaceQuickBooksConnection, validQuickBooksOAuthState } from "../lib/quickbooks";
+import { accountingScope, projectsScope, grantedQuickBooksScopes, quickBooksOAuthRequestedScopes, quickBooksOAuthConnectionLifecycle, quickBooksConnectionLifecycle, consumeQuickBooksOAuthState, createQuickBooksOAuthState, encryptSecret, getConnection, qboQuery, qboRequest, quickBooksProjectReadiness, replaceQuickBooksConnection, validQuickBooksOAuthState, assertQuickBooksRevocationResolved, disconnectQuickBooks } from "../lib/quickbooks";
 import { projectsCapability } from "../lib/quickbooks-projects";
 import { customerReconciliationMatches } from "../lib/quickbooks-reconciliation";
 import { loadQuickBooksCatalogEntity, quickBooksCatalogEntities } from "../lib/quickbooks-catalog";
@@ -98,34 +98,44 @@ router.post("/quickbooks/demo/approve", requireOwner, async (req, res) => {
   res.json(changed);
 });
 
-router.get("/quickbooks/connect", requireOwner, async (req, res) => {
+router.get("/quickbooks/connect", requireOwner, domainRoute(async (req, res) => {
   if (!configured()) { res.status(503).json({ error: "QuickBooks environment variables are not configured" }); return; }
+  const previousConnection=await getConnection();assertQuickBooksRevocationResolved(previousConnection);
   if(demoAvailable()&&workspaceEnvironment().QUICKBOOKS_ENVIRONMENT==="production"){res.status(409).json({error:"Connect only an Intuit sandbox in a demonstration."});return;}
   const requestedScopes=req.query.projects==="true"?[accountingScope,projectsScope]:[accountingScope];
-  const state = createQuickBooksOAuthState(req.auth!.userId,req.auth!.csrfToken,Date.now(),requestedScopes);
+  const state = createQuickBooksOAuthState(req.auth!.userId,req.auth!.csrfToken,Date.now(),requestedScopes,quickBooksConnectionLifecycle(previousConnection));
   res.cookie("qbo_oauth_state", state, { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", maxAge: 10 * 60_000, path: "/" });
   const url = new URL("https://appcenter.intuit.com/connect/oauth2");
   url.searchParams.set("client_id", workspaceEnvironment().QUICKBOOKS_CLIENT_ID!); url.searchParams.set("response_type", "code"); url.searchParams.set("scope", requestedScopes.join(" ")); url.searchParams.set("redirect_uri", workspaceEnvironment().QUICKBOOKS_REDIRECT_URI!); url.searchParams.set("state", state);
   res.json({ authorizationUrl: url.toString() });
-});
+}));
 
-router.get("/quickbooks/callback", async (req, res) => {
+router.get("/quickbooks/callback", requireOwner, domainRoute(async (req, res) => {
   const state = String(req.query.state ?? ""); const cookieState = String(req.cookies?.qbo_oauth_state ?? "");
   res.clearCookie("qbo_oauth_state", { path: "/" });
   if (!validQuickBooksOAuthState(state,req.auth!.userId,req.auth!.csrfToken) || state !== cookieState || !req.query.code || !/^\d{1,30}$/.test(String(req.query.realmId??""))) { res.status(400).send("Invalid or expired QuickBooks authorization response"); return; }
   if(demoAvailable()&&workspaceEnvironment().QUICKBOOKS_ENVIRONMENT==="production"){res.status(409).json({error:"A demonstration cannot connect to a live QuickBooks company."});return;}
+  assertQuickBooksRevocationResolved(await getConnection());
   if(!await consumeQuickBooksOAuthState(state,req.auth!.userId)){res.status(400).send("QuickBooks authorization was already used. Start a new connection.");return;}
-  const auth = Buffer.from(`${workspaceEnvironment().QUICKBOOKS_CLIENT_ID}:${workspaceEnvironment().QUICKBOOKS_CLIENT_SECRET}`).toString("base64");
-  const response = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", { method: "POST", signal:AbortSignal.timeout(20_000), headers: { Authorization: `Basic ${auth}`, Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code: String(req.query.code), redirect_uri: workspaceEnvironment().QUICKBOOKS_REDIRECT_URI! }) });
-  if (!response.ok) { res.status(502).send("QuickBooks token exchange failed"); return; }
-  const token = await response.json() as any; const now = new Date(); const realmId = String(req.query.realmId);
-  if(typeof token?.access_token!=="string"||!token.access_token||typeof token?.refresh_token!=="string"||!token.refresh_token||!Number.isFinite(token.expires_in)||token.expires_in<=0||!Number.isFinite(token.x_refresh_token_expires_in)||token.x_refresh_token_expires_in<=0){res.status(502).send("QuickBooks returned incomplete authorization; reconnect.");return;}
-  let grantedScopes:string[];try{grantedScopes=grantedQuickBooksScopes(token.scope,quickBooksOAuthRequestedScopes(state));}catch{res.status(502).send("QuickBooks returned unexpected authorization scopes; reconnect.");return;}
-  await replaceQuickBooksConnection({ id: randomUUID(), realmId, grantedScopes, environment: workspaceEnvironment().QUICKBOOKS_ENVIRONMENT === "production" ? "production" : "sandbox", encryptedAccessToken: encryptSecret(token.access_token), encryptedRefreshToken: encryptSecret(token.refresh_token), accessTokenExpiresAt: new Date(now.getTime() + token.expires_in * 1000).toISOString(), refreshTokenExpiresAt: new Date(now.getTime() + token.x_refresh_token_expires_in * 1000).toISOString(), status: "connected", readinessStatus: "reconciliation_required", createdAt: now.toISOString(), updatedAt: now.toISOString() });
+  const realmId = String(req.query.realmId);
+  await replaceQuickBooksConnection(async () => {
+    const auth = Buffer.from(`${workspaceEnvironment().QUICKBOOKS_CLIENT_ID}:${workspaceEnvironment().QUICKBOOKS_CLIENT_SECRET}`).toString("base64");
+    const response = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", { method: "POST", signal:AbortSignal.timeout(20_000), headers: { Authorization: `Basic ${auth}`, Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code: String(req.query.code), redirect_uri: workspaceEnvironment().QUICKBOOKS_REDIRECT_URI! }) });
+    if (!response.ok) throw new DomainError(502, "QuickBooks token exchange failed");
+    const token = await response.json() as any; const now = new Date();
+    if(typeof token?.access_token!=="string"||!token.access_token||typeof token?.refresh_token!=="string"||!token.refresh_token||!Number.isFinite(token.expires_in)||token.expires_in<=0||!Number.isFinite(token.x_refresh_token_expires_in)||token.x_refresh_token_expires_in<=0)throw new DomainError(502,"QuickBooks returned incomplete authorization; reconnect.");
+    let grantedScopes:string[];try{grantedScopes=grantedQuickBooksScopes(token.scope,quickBooksOAuthRequestedScopes(state));}catch{throw new DomainError(502,"QuickBooks returned unexpected authorization scopes; reconnect.");}
+    return { id: randomUUID(), realmId, grantedScopes, environment: workspaceEnvironment().QUICKBOOKS_ENVIRONMENT === "production" ? "production" : "sandbox", encryptedAccessToken: encryptSecret(token.access_token), encryptedRefreshToken: encryptSecret(token.refresh_token), accessTokenExpiresAt: new Date(now.getTime() + token.expires_in * 1000).toISOString(), refreshTokenExpiresAt: new Date(now.getTime() + token.x_refresh_token_expires_in * 1000).toISOString(), status: "connected", readinessStatus: "reconciliation_required", createdAt: now.toISOString(), updatedAt: now.toISOString() };
+  },quickBooksOAuthConnectionLifecycle(state));
   res.clearCookie("qbo_oauth_state", { path: "/" }); await audit("quickbooks.connected", { userId: req.auth!.userId, entityType: "quickbooks_company", entityId: realmId, ip: req.ip }); res.redirect("/settings?quickbooks=connected");
-});
+}));
 
-router.post("/quickbooks/disconnect", async (req, res) => { const c = await getConnection(); if (c) await db.update(quickbooksConnectionsTable).set({ status: "disconnected", encryptedAccessToken: encryptSecret("revoked"), encryptedRefreshToken: encryptSecret("revoked"), updatedAt: new Date().toISOString() }).where(eq(quickbooksConnectionsTable.id, c.id)); await audit("quickbooks.disconnected", { userId: req.auth!.userId, ip: req.ip }); res.status(204).end(); });
+router.post("/quickbooks/disconnect", requireOwner, domainRoute(async (req, res) => {
+  const input = parse(z.object({ retryRevocation: z.boolean().optional() }).strict(), req.body ?? {});
+  const result = await disconnectQuickBooks(input.retryRevocation === true);
+  await audit("quickbooks.disconnected", { userId: req.auth!.userId, ip: req.ip, details: { revocation: result.revocation } });
+  res.json(result);
+}));
 
 router.post("/quickbooks/reconcile", async (req, res) => {
   const connection = await getConnection();

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { QuickBooksSettings } from "./QuickBooksSettings";
 import { VendorBillSandbox } from "./VendorBillSandbox";
@@ -106,7 +106,7 @@ it("records a local supplier bill review without selecting a QuickBooks vendor",
   expect(
     await screen.findByText("Supplier bills · local review"),
   ).toBeVisible();
-  expect(operation).toHaveBeenCalledWith(`${path}?mode=review`);
+  await waitFor(() => expect(operation).toHaveBeenCalledWith(`${path}?mode=review`));
   expect(screen.queryByLabelText("Sandbox vendor ID")).not.toBeInTheDocument();
   const fields = {
     Supplier: "Fixture Supply",

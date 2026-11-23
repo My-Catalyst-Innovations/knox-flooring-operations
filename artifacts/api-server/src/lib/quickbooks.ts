@@ -3,6 +3,7 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, 
 import { and, eq, sql } from "drizzle-orm";
 import { auditEventsTable, db, quickbooksConnectionsTable } from "@workspace/db";
 import { QuickBooksProjectsError, graphData } from "./quickbooks-projects-graph";
+import { DomainError } from "./operations-rules";
 
 const getKey = () => {
   const value = workspaceEnvironment().QUICKBOOKS_ENCRYPTION_KEY;
@@ -39,9 +40,13 @@ export function grantedQuickBooksScopes(returned:unknown,requested:readonly stri
   if(scopes.some(scope=>!allowed.has(scope)))throw new Error("QuickBooks returned an unrequested authorization scope.");
   return scopes;
 }
-export function createQuickBooksOAuthState(userId:string,csrfToken:string,now=Date.now(),requestedScopes:readonly string[]=[accountingScope]) {
+export type QuickBooksOAuthLifecycle = { connectionId: string; status: string; revocationStatus: string | null } | null;
+export function quickBooksConnectionLifecycle(connection: Pick<typeof quickbooksConnectionsTable.$inferSelect, "id" | "status" | "readinessStatus"> | null | undefined): QuickBooksOAuthLifecycle {
+  return connection ? { connectionId: connection.id, status: connection.status, revocationStatus: connection.readinessStatus?.startsWith("revocation_") ? connection.readinessStatus : null } : null;
+}
+export function createQuickBooksOAuthState(userId:string,csrfToken:string,now=Date.now(),requestedScopes:readonly string[]=[accountingScope],connectionLifecycle:QuickBooksOAuthLifecycle=null) {
   if(!requestedScopes.includes(accountingScope)||requestedScopes.some(scope=>![accountingScope,projectsScope].includes(scope)))throw new Error("Invalid QuickBooks requested scopes.");
-  return signOAuthState(JSON.stringify({userId,sessionHash:createHash("sha256").update(csrfToken).digest("hex"),issuedAt:now,nonce:randomBytes(24).toString("hex"),requestedScopes:[...new Set(requestedScopes)]}));
+  return signOAuthState(JSON.stringify({userId,sessionHash:createHash("sha256").update(csrfToken).digest("hex"),issuedAt:now,nonce:randomBytes(24).toString("hex"),requestedScopes:[...new Set(requestedScopes)],connectionLifecycle}));
 }
 export function quickBooksOAuthRequestedScopes(state:string) {
   const value=verifyOAuthState(state);if(!value)throw new Error("Invalid QuickBooks authorization state.");
@@ -49,9 +54,18 @@ export function quickBooksOAuthRequestedScopes(state:string) {
   if(!Array.isArray(scopes)||!scopes.includes(accountingScope)||scopes.some(scope=>![accountingScope,projectsScope].includes(scope)))throw new Error("Invalid QuickBooks authorization scopes.");
   return scopes as string[];
 }
+export function quickBooksOAuthConnectionLifecycle(state:string):QuickBooksOAuthLifecycle {
+  const value=verifyOAuthState(state);if(!value)throw new Error("Invalid QuickBooks authorization state.");
+  const data=JSON.parse(value);
+  if(!Object.prototype.hasOwnProperty.call(data,"connectionLifecycle"))throw new Error("Start a new QuickBooks connection.");
+  const lifecycle=data.connectionLifecycle;
+  if(lifecycle===null)return null;
+  if(typeof lifecycle!=="object"||typeof lifecycle.connectionId!=="string"||!lifecycle.connectionId||typeof lifecycle.status!=="string"||!lifecycle.status||!(lifecycle.revocationStatus===null||typeof lifecycle.revocationStatus==="string"&&lifecycle.revocationStatus.startsWith("revocation_")))throw new Error("Invalid QuickBooks connection lifecycle.");
+  return {connectionId:lifecycle.connectionId,status:lifecycle.status,revocationStatus:lifecycle.revocationStatus};
+}
 export function validQuickBooksOAuthState(state:string,userId:string,csrfToken:string,now=Date.now()) {
   const value=verifyOAuthState(state);if(!value)return false;
-  try{const data=JSON.parse(value);quickBooksOAuthRequestedScopes(state);return data.userId===userId&&data.sessionHash===createHash("sha256").update(csrfToken).digest("hex")&&Number.isSafeInteger(data.issuedAt)&&data.issuedAt<=now&&now-data.issuedAt<=600_000&&typeof data.nonce==="string"&&data.nonce.length===48;}catch{return false;}
+  try{const data=JSON.parse(value);quickBooksOAuthRequestedScopes(state);quickBooksOAuthConnectionLifecycle(state);return data.userId===userId&&data.sessionHash===createHash("sha256").update(csrfToken).digest("hex")&&Number.isSafeInteger(data.issuedAt)&&data.issuedAt<=now&&now-data.issuedAt<=600_000&&typeof data.nonce==="string"&&data.nonce.length===48;}catch{return false;}
 }
 export async function consumeQuickBooksOAuthState(state:string,userId:string) {
   // The immutable audit primary key also provides a durable, single-use nonce across instances.
@@ -86,15 +100,93 @@ async function refresh(connection: typeof quickbooksConnectionsTable.$inferSelec
   return outcome.connection!;
 }
 
-export async function replaceQuickBooksConnection(values:typeof quickbooksConnectionsTable.$inferInsert) {
+export async function replaceQuickBooksConnection(valuesOrExchange:typeof quickbooksConnectionsTable.$inferInsert | (() => Promise<typeof quickbooksConnectionsTable.$inferInsert>),expectedLifecycle?:QuickBooksOAuthLifecycle) {
   await db.transaction(async tx=>{
     await tx.execute(sql`SELECT pg_advisory_xact_lock(1959031411)`);
+    const [previous]=await tx.select().from(quickbooksConnectionsTable).where(sql`TRUE`).for("update");
+    assertQuickBooksRevocationResolved(previous);
+    if(typeof valuesOrExchange==="function"&&expectedLifecycle===undefined)throw new DomainError(409,"Start a new QuickBooks connection before authorizing this company.");
+    if(expectedLifecycle!==undefined&&JSON.stringify(quickBooksConnectionLifecycle(previous))!==JSON.stringify(expectedLifecycle))throw new DomainError(409,"This QuickBooks authorization began before the connection changed or was stopped. Start a new connection from settings.");
+    // Serialize OAuth token exchange too: an already-open consent tab must not mint
+    // an untracked replacement grant while the previous grant is being revoked.
+    const values=typeof valuesOrExchange==="function"?await valuesOrExchange():valuesOrExchange;
     await tx.delete(quickbooksConnectionsTable);
     await tx.insert(quickbooksConnectionsTable).values(values);
   });
 }
 
 export async function getConnection() { const [row] = await db.select().from(quickbooksConnectionsTable).limit(1); return row ?? null; }
+
+type QuickBooksConnection = typeof quickbooksConnectionsTable.$inferSelect;
+type RevocationState = "pending" | "unknown" | "failed" | "confirmed" | "not_connected";
+export type QuickBooksDisconnectResult = { locallyDisconnected: true; revocation: RevocationState; message: string };
+const revocationMessage: Record<RevocationState, string> = {
+  pending: "Works has stopped using this connection. Intuit has not confirmed revocation yet. Wait briefly, then retry revocation if needed.",
+  unknown: "Works has stopped using this connection, but Intuit did not confirm revocation. Retry revocation for this same saved grant before reconnecting.",
+  failed: "Works has stopped using this connection. Intuit did not confirm revocation. Review the connection configuration, then retry revocation for this same saved grant.",
+  confirmed: "Works is disconnected and Intuit confirmed that access was revoked.",
+  not_connected: "Works has no active connection. Intuit revocation has not been verified for a previously disconnected grant.",
+};
+const revocationResult = (revocation: RevocationState): QuickBooksDisconnectResult => ({ locallyDisconnected: true, revocation, message: revocationMessage[revocation] });
+export function unresolvedQuickBooksRevocation(connection: Pick<QuickBooksConnection, "readinessStatus"> | null | undefined) {
+  return ["revocation_pending", "revocation_unknown", "revocation_failed"].includes(connection?.readinessStatus ?? "");
+}
+export function assertQuickBooksRevocationResolved(connection: Pick<QuickBooksConnection, "readinessStatus"> | null | undefined) {
+  if (unresolvedQuickBooksRevocation(connection)) throw new DomainError(409, "Finish revoking the previous QuickBooks grant before connecting again. Retry revocation in QuickBooks settings.");
+}
+
+export async function disconnectQuickBooks(retryRevocation = false): Promise<QuickBooksDisconnectResult> {
+  // The committed local stop prevents token refresh and new accounting calls before the
+  // external request. Retain encrypted credentials until Intuit confirms revocation.
+  const claim = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(1959031411)`);
+    const [current] = await tx.select().from(quickbooksConnectionsTable).where(sql`TRUE`).for("update");
+    if (!current) return { result: revocationResult("not_connected") };
+    const unresolved = unresolvedQuickBooksRevocation(current);
+    if (current.status === "disconnected" && !unresolved) return { result: revocationResult(current.readinessStatus === "revocation_confirmed" ? "confirmed" : "not_connected") };
+    if (unresolved && (!retryRevocation || (current.readinessStatus === "revocation_pending" && Date.parse(current.updatedAt) > Date.now() - 30_000))) {
+      const state = current.readinessStatus.slice("revocation_".length) as "pending" | "unknown" | "failed";
+      return { result: revocationResult(state) };
+    }
+    const claimedAt = new Date(Math.max(Date.now(), (Date.parse(current.updatedAt) || 0) + 1)).toISOString();
+    await tx.update(quickbooksConnectionsTable).set({ status: "disconnected", readinessStatus: "revocation_pending", updatedAt: claimedAt }).where(eq(quickbooksConnectionsTable.id, current.id));
+    return { connection: current, claimedAt };
+  });
+  if (claim.result) return claim.result;
+  const connection = claim.connection!;
+  let state: "confirmed" | "unknown" | "failed" = "failed";
+  const clientId = workspaceEnvironment().QUICKBOOKS_CLIENT_ID;
+  const clientSecret = workspaceEnvironment().QUICKBOOKS_CLIENT_SECRET;
+  if (clientId && clientSecret) {
+    let token: string | undefined;
+    try { token = decryptSecret(connection.encryptedRefreshToken); } catch { /* Keep the local stop if the configured key is unavailable or changed. */ }
+    if (token && token !== "revoked") {
+      try {
+        const response = await fetch("https://developer.api.intuit.com/v2/oauth2/tokens/revoke", {
+          method: "POST", redirect: "error", signal: AbortSignal.timeout(20_000),
+          headers: { Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`, Accept: "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
+        state = response.status === 200 ? "confirmed" : response.status >= 400 && response.status < 500 && response.status !== 408 ? "failed" : "unknown";
+      } catch { state = "unknown"; }
+    }
+  }
+  try {
+    const persisted = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(1959031411)`);
+      const [current] = await tx.select().from(quickbooksConnectionsTable).where(eq(quickbooksConnectionsTable.id, connection.id)).for("update");
+      // A late response cannot overwrite a subsequent explicit retry's outcome.
+      if (!current || current.updatedAt !== claim.claimedAt || current.readinessStatus !== "revocation_pending") return false;
+      await tx.update(quickbooksConnectionsTable).set({ status: "disconnected", readinessStatus: `revocation_${state}`, updatedAt: new Date().toISOString(),
+        ...(state === "confirmed" ? { encryptedAccessToken: encryptSecret("revoked"), encryptedRefreshToken: encryptSecret("revoked"), grantedScopes: [] } : {}),
+      }).where(eq(quickbooksConnectionsTable.id, connection.id));
+      return true;
+    });
+    return persisted ? revocationResult(state) : revocationResult("pending");
+  } catch {
+    throw new DomainError(503, "Works stopped this connection, but could not save Intuit's revocation result. Reload settings and retry this same grant; do not reconnect yet.");
+  }
+}
 
 export class QuickBooksRequestError extends Error {
   constructor(message: string, readonly status: number, readonly faultType?: string, readonly faultCode?: string) {
