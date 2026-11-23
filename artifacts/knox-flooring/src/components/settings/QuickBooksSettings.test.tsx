@@ -3,10 +3,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { QuickBooksSettings } from "./QuickBooksSettings";
 
 const state = vi.hoisted(() => ({
-  fetch: vi.fn(), environment: "sandbox", capabilityEnvironment: "sandbox",
+  fetch: vi.fn(), toast: vi.fn(), environment: "sandbox", capabilityEnvironment: "sandbox",
 }));
 vi.mock("@workspace/api-client-react", () => ({ customFetch: state.fetch }));
-vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
+vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: state.toast }) }));
 vi.mock("@/lib/operations", () => ({ useOperation: () => ({ data: {
   enabled: true, realmId: "111", environment: state.capabilityEnvironment,
 } }) }));
@@ -70,4 +70,37 @@ it("requires an explicit mapped sales category before approving an estimate", as
   await waitFor(() => expect(state.fetch).toHaveBeenCalledWith("/api/quickbooks/queue/approve", {
     method: "POST", body: JSON.stringify({ ids: ["estimate-approval"], estimateCategories: { "estimate-approval": "Labor" } }), responseType: "json",
   }));
+});
+
+it("shows an unconfirmed Intuit revocation and offers only an explicit same-grant retry", async () => {
+  const original = state.fetch.getMockImplementation()!;
+  let stopped = false;
+  state.fetch.mockImplementation(async (path: string, options?: unknown) => {
+    if (path === "/api/quickbooks/disconnect") { stopped = true; return { revocation: "unknown", message: "Intuit did not confirm revocation." }; }
+    if (path === "/api/quickbooks/status" && stopped) return { configured: true, demoAvailable: false, connection: { connected: false, status: "disconnected", readinessStatus: "revocation_unknown" } };
+    return original(path, options);
+  });
+  render(<QuickBooksSettings />);
+  fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+  expect(await screen.findByText(/Works has stopped using this connection/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Connect a real company" })).toBeDisabled();
+  expect(state.toast).toHaveBeenCalledWith({ title: "Intuit revocation not confirmed", description: "Intuit did not confirm revocation." });
+  fireEvent.click(screen.getByRole("button", { name: "Retry revocation" }));
+  await waitFor(() => expect(state.fetch).toHaveBeenCalledWith("/api/quickbooks/disconnect", { method: "POST", body: JSON.stringify({ retryRevocation: true }), responseType: "json" }));
+});
+
+it("claims provider revocation only after an explicit confirmed response", async () => {
+  const original = state.fetch.getMockImplementation()!;
+  let stopped = false;
+  state.fetch.mockImplementation(async (path: string, options?: unknown) => {
+    if (path === "/api/quickbooks/disconnect") { stopped = true; return { revocation: "confirmed", message: "Intuit confirmed revocation." }; }
+    if (path === "/api/quickbooks/status" && stopped) return { configured: true, demoAvailable: false, connection: { connected: false, status: "disconnected", readinessStatus: "revocation_confirmed" } };
+    return original(path, options);
+  });
+  render(<QuickBooksSettings />);
+  fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+  expect(await screen.findByText(/Existing accounting history has been preserved/)).toBeVisible();
+  expect(state.toast).toHaveBeenCalledWith({ title: "QuickBooks access revoked", description: "Intuit confirmed revocation." });
+  expect(screen.getByRole("button", { name: "Connect a real company" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Retry revocation" })).not.toBeInTheDocument();
 });

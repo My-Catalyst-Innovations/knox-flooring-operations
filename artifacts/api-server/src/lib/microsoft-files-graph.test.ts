@@ -33,6 +33,15 @@ describe("Microsoft selected file authorization", () => {
   });
 });
 describe("Microsoft attachment safety and integrity", () => {
+  it("lists only actual child folders and binds every continuation to the approved parent",async()=>{
+    const child={id:"child",name:"Customer jobs",folder:{},parentReference:{id:"approved",driveId:"drive"}};
+    const request=vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({value:[child,{id:"file",name:"Private report.pdf",file:{}},{...child,id:"shortcut",remoteItem:{}}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/drives/drive/items/approved/children?$skiptoken=next"})).mockResolvedValueOnce(Response.json({value:[]}));
+    expect(await microsoftFilesGraph("synthetic",request).folders("drive","approved")).toEqual({folders:[child],complete:true});
+    expect(request.mock.calls.every(([,options])=>!options?.method||options.method==="GET")).toBe(true);
+    const invalid=vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({value:[],"@odata.nextLink":"https://graph.microsoft.com/v1.0/drives/another/items/outside/children"}));
+    await expect(microsoftFilesGraph("synthetic",invalid).folders("drive","approved")).rejects.toThrow(/continuation/);expect(invalid).toHaveBeenCalledTimes(1);
+    const moved=vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({value:[{...child,parentReference:{id:"elsewhere",driveId:"drive"}}]}));await expect(microsoftFilesGraph("synthetic",moved).folders("drive","approved")).rejects.toThrow(/outside/);
+  });
   it.each([["", "AAAAAAAAAAAAAAAAAAAAAAAAAAA="], ["a", "YQAAAAAAAAAAAAAAAQAAAAAAAAA="], ["Hello World!", "SCgDG9jwBhBc4Q1ybAMZQgAAAAA="], ["flooring".repeat(40), "AAAAAAAAAAAAAAAAQAEAAAAAAAA="]])("matches independent .NET reference vectors for QuickXor checksums", (value, expected) => {
     expect(quickXorHash(Buffer.from(value))).toBe(expected);
   });

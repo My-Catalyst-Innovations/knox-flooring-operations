@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { prepareQuickBooksInvoiceCreate, QuickBooksInvoiceValidationError, reconcileQuickBooksInvoiceCreate } from "./quickbooks-invoice-create";
+import { prepareQuickBooksInvoiceCreate, QuickBooksInvoiceValidationError, reconcileQuickBooksInvoiceCreate,sameInvoice } from "./quickbooks-invoice-create";
 import { QuickBooksRequestError } from "./quickbooks";
 
 vi.mock("@workspace/db", () => ({ db: {}, quickbooksConnectionsTable: {} }));
@@ -32,6 +32,14 @@ function mockProvider(query: (statement: string) => Promise<unknown>, post: (pat
 }
 
 describe("first QuickBooks customer invoice creation", () => {
+  it("preserves the approved true ProjectRef and refuses a posted invoice with a different or unexpected project",()=>{
+    const approved=prepareQuickBooksInvoiceCreate(company,"project-invoice",{...invoice,ProjectRef:{value:"000-project-42"}});
+    expect(approved.document.ProjectRef).toEqual({value:"000-project-42"});
+    expect(sameInvoice(approved.document,{...posted,...approved.document})).toBe(true);
+    expect(sameInvoice(approved.document,{...posted,...approved.document,ProjectRef:{value:"42"}})).toBe(false);
+    expect(sameInvoice(approved.document,posted)).toBe(false);
+    expect(sameInvoice(attempt.document,{...posted,ProjectRef:{value:"000-project-42"}})).toBe(false);
+  });
   it("uses one valid request ID for each realm, environment, and local invoice", () => {
     expect(attempt.requestId).toHaveLength(50);
     expect(attempt.document.PrivateNote).toBe(`Delivery arranged\n\nCatalyst Works invoice ${attempt.requestId}`);

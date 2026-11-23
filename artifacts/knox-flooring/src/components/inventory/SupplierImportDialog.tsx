@@ -1,4 +1,4 @@
-import { useMemo, useState, type ChangeEvent } from "react";
+import { useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -9,6 +9,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/contexts/auth";
 import { operation, useOperation } from "@/lib/operations";
 import {
@@ -130,6 +131,8 @@ function SupplierImportContent({
     "operations",
   ]);
   const [csv, setCsv] = useState<string | null>(null);
+  const [draftCsv, setDraftCsv] = useState("");
+  const inputVersion = useRef(0);
   const [fileError, setFileError] = useState("");
   const [reading, setReading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -190,8 +193,8 @@ function SupplierImportContent({
     setApprovalError("");
   }
 
-  const readFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0];
+  const clearPreview = () => {
+    inputVersion.current++;
     setCsv(null);
     setFileError("");
     setApprovalError("");
@@ -201,6 +204,14 @@ function SupplierImportContent({
     setOnlyReview(false);
     setChosenSkus(new Map());
     setPickerLine(null);
+    return inputVersion.current;
+  };
+
+  const readFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    const version = clearPreview();
+    setDraftCsv("");
     if (!file) return;
     if (file.size > maxFileSize) {
       setFileError("Choose a CSV file of 2 MB or less.");
@@ -208,12 +219,25 @@ function SupplierImportContent({
     }
     setReading(true);
     try {
-      setCsv(await file.text());
+      const data = await file.text();
+      if (inputVersion.current !== version) return;
+      setDraftCsv(data);
+      setCsv(data);
     } catch {
       setFileError("The file could not be read. Choose the CSV again.");
     } finally {
       setReading(false);
     }
+  };
+
+  const previewPasted = () => {
+    clearPreview();
+    if (!draftCsv.trim()) return;
+    if (new TextEncoder().encode(draftCsv).length > maxFileSize) {
+      setFileError("Use CSV text of 2 MB or less.");
+      return;
+    }
+    setCsv(draftCsv);
   };
 
   const approve = async () => {
@@ -237,10 +261,13 @@ function SupplierImportContent({
         productSku: row.product!.sku,
         unit: row.unit,
         unitCost: row.unitCost,
-        ...(row.unit.trim().toLowerCase() === row.product!.unit.trim().toLowerCase() ? {} : {
-          stockUnit: row.product!.unit,
-          stockUnitsPerBuyUnit: row.stockUnitsPerBuyUnit,
-        }),
+        ...(row.unit.trim().toLowerCase() ===
+        row.product!.unit.trim().toLowerCase()
+          ? {}
+          : {
+              stockUnit: row.product!.unit,
+              stockUnitsPerBuyUnit: row.stockUnitsPerBuyUnit,
+            }),
       })),
     };
     if (!payload.rows.length) return;
@@ -289,7 +316,9 @@ function SupplierImportContent({
       <DialogHeader className="pr-8">
         <DialogTitle>Preview supplier CSV</DialogTitle>
         <DialogDescription>
-          Review supplier SKUs and negotiated buy costs before approval. If supplier and stock units differ, enter stock units per supplier unit in the CSV.
+          Review supplier SKUs and negotiated buy costs before approval. If
+          supplier and stock units differ, enter stock units per supplier unit
+          in the CSV.
         </DialogDescription>
       </DialogHeader>
       <div className="flex flex-wrap items-end gap-2">
@@ -309,6 +338,41 @@ function SupplierImportContent({
           >
             Download template
           </a>
+        </Button>
+      </div>
+      <div className="space-y-2">
+        <label htmlFor="supplier-import-paste" className="text-sm font-medium">
+          Paste supplier CSV
+        </label>
+        <Textarea
+          id="supplier-import-paste"
+          rows={5}
+          className="font-mono text-xs"
+          value={draftCsv}
+          disabled={reading || saving}
+          placeholder={template.trim()}
+          aria-describedby="supplier-import-paste-help"
+          onChange={(event) => {
+            setDraftCsv(event.target.value);
+            clearPreview();
+          }}
+        />
+        <p
+          id="supplier-import-paste-help"
+          className="text-xs text-muted-foreground"
+        >
+          Include the CSV header and supplier rows shown in the template.
+          Supplier SKUs and manufacturer part numbers keep their leading zeros.
+          Preview the text, then choose an effective date and price source
+          before explicit owner approval.
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={reading || saving || !draftCsv.trim()}
+          onClick={previewPasted}
+        >
+          Preview pasted supplier CSV
         </Button>
       </div>
       <p className="text-sm text-muted-foreground">
@@ -414,11 +478,16 @@ function SupplierImportContent({
                           CSV {row.unitCost} USD{row.unit && ` / ${row.unit}`}
                         </p>
                       )}
-                      {row.product && row.stockUnitCost !== undefined && row.unit.trim().toLowerCase() !== row.product.unit.trim().toLowerCase() && (
-                        <p className="text-muted-foreground">
-                          1 {row.unit} = {row.stockUnitsPerBuyUnit} {row.product.unit} · {row.stockUnitCost} USD / {row.product.unit}
-                        </p>
-                      )}
+                      {row.product &&
+                        row.stockUnitCost !== undefined &&
+                        row.unit.trim().toLowerCase() !==
+                          row.product.unit.trim().toLowerCase() && (
+                          <p className="text-muted-foreground">
+                            1 {row.unit} = {row.stockUnitsPerBuyUnit}{" "}
+                            {row.product.unit} · {row.stockUnitCost} USD /{" "}
+                            {row.product.unit}
+                          </p>
+                        )}
                       {row.latestPrice ? (
                         <p className="text-muted-foreground">
                           Latest approved {row.latestPrice.unitCost} USD /{" "}

@@ -4,6 +4,7 @@ import { QuickBooksRequestError } from "./quickbooks";
 
 const document = z.object({
   CustomerRef: z.object({ value: z.string().regex(/^\d{1,30}$/) }),
+  ProjectRef: z.object({ value: z.string().min(1).max(200).refine(value=>value===value.trim()&&!/\p{C}/u.test(value)) }).optional(),
   DocNumber: z.string().regex(/^[\w./-]{1,21}$/),
   TxnDate: z.string().optional(),
   DueDate: z.string().optional(),
@@ -98,6 +99,7 @@ export function sameInvoice(expected: QuickBooksInvoiceDocument, posted: unknown
     (invoice.CurrencyRef && invoice.CurrencyRef.value !== "USD") || /^Voided\b/i.test(invoice.PrivateNote) ||
     invoice.LinkedTxn?.some(({ TxnType }) => ["CreditMemo", "RefundReceipt"].includes(TxnType)))) return false;
   return invoice.DocNumber === expected.DocNumber && invoice.CustomerRef.value === expected.CustomerRef.value &&
+    invoice.ProjectRef?.value === expected.ProjectRef?.value &&
     (!expected.TxnDate || invoice.TxnDate === expected.TxnDate) && (!expected.DueDate || invoice.DueDate === expected.DueDate) &&
     (existing || invoice.PrivateNote === expected.PrivateNote) && Math.round(invoice.TotalAmt * 100) === totalInCents &&
     (!expected.CurrencyRef || invoice.CurrencyRef?.value === expected.CurrencyRef.value) &&

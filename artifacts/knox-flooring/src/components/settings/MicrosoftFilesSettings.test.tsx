@@ -11,6 +11,7 @@ it("requires explicit folder selection and reports rejected Microsoft folder acc
   fixture.operation.mockRejectedValue(new Error("The app does not have write access to this folder."));
   render(<MicrosoftFilesSettings />);
   expect(fixture.operation).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText("Administrator folder setup"));
   const save = screen.getByRole("button", { name: "Verify and use folder" });
   expect(save).toBeDisabled();
   fireEvent.change(screen.getByLabelText("Drive ID"), { target: { value: " drive-one " } });

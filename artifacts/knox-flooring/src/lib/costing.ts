@@ -14,6 +14,7 @@ export interface JobCosting {
   actualLaborCost: number;
   actualMaterialCost: number;
   actualAddOnCost: number;
+  trackedExpenseCost: number;
   actualCost: number;
   actualGrossProfit: number;
   actualMarginPct: number;
@@ -34,10 +35,11 @@ export function computeCosting(job: Job): JobCosting {
   const estMarginPct = estRevenue > 0 ? (estGrossProfit / estRevenue) * 100 : 0;
 
   const actualRevenue = job.actualRevenue || 0;
-  const actualLaborCost = job.actualLaborCost || 0;
+  const actualLaborCost = job.actualLaborCost || job.trackedLaborCost || 0;
   const actualMaterialCost = job.actualMaterialCost || job.trackedMaterialCost || 0;
   const actualAddOnCost = job.actualAddOnCost || 0;
-  const actualCost = actualLaborCost + actualMaterialCost + actualAddOnCost;
+  const trackedExpenseCost = job.trackedExpenseCost || 0;
+  const actualCost = actualLaborCost + actualMaterialCost + actualAddOnCost + trackedExpenseCost;
   const actualGrossProfit = actualRevenue - actualCost;
   const actualMarginPct =
     actualRevenue > 0 ? (actualGrossProfit / actualRevenue) * 100 : 0;
@@ -47,6 +49,8 @@ export function computeCosting(job: Job): JobCosting {
     actualLaborCost > 0 ||
     actualMaterialCost > 0 ||
     job.trackedMaterialCost !== undefined ||
+    (job.trackedLaborCost !== undefined && job.trackedLaborCost !== null) ||
+    trackedExpenseCost > 0 ||
     actualAddOnCost > 0;
 
   const effectiveRevenue = actualRevenue > 0 ? actualRevenue : estRevenue;
@@ -66,6 +70,7 @@ export function computeCosting(job: Job): JobCosting {
     actualLaborCost,
     actualMaterialCost,
     actualAddOnCost,
+    trackedExpenseCost,
     actualCost,
     actualGrossProfit,
     actualMarginPct,
@@ -78,10 +83,10 @@ export function computeCosting(job: Job): JobCosting {
   };
 }
 
-export function jobCostingGaps(job: Pick<Job, "actualRevenue" | "actualLaborCost" | "actualMaterialCost" | "trackedMaterialCost">) {
+export function jobCostingGaps(job: Pick<Job, "actualRevenue" | "actualLaborCost" | "trackedLaborCost" | "unpricedLaborCount" | "actualMaterialCost" | "trackedMaterialCost">) {
   return [
     job.actualRevenue > 0 ? "" : "revenue",
-    job.actualLaborCost > 0 ? "" : "labor cost",
+    job.actualLaborCost > 0 ? "" : (job.unpricedLaborCount ?? 0) > 0 ? "review of unpriced labor" : job.trackedLaborCost === undefined || job.trackedLaborCost === null ? "labor cost" : "",
     job.actualMaterialCost > 0 ? "" : job.trackedMaterialCost === undefined ? "material cost" : "review of inventory-derived material cost",
   ].filter(Boolean);
 }

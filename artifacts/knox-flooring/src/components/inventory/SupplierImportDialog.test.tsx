@@ -22,6 +22,102 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+it("previews pasted supplier identifiers as text and invalidates matches when the draft changes", async () => {
+  vi.mocked(operation).mockResolvedValue({
+    aliasesAdded: 1,
+    pricesAdded: 1,
+    alreadyApproved: 0,
+  });
+  render(
+    <SupplierImportDialog
+      disabled={false}
+      products={[
+        {
+          id: "product-1",
+          sku: "KF-001",
+          supplier: "Sample Supply",
+          unit: "box",
+          cost: 48,
+          name: "Oak flooring",
+          active: true,
+        },
+      ]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Preview supplier CSV" }));
+  const input = screen.getByLabelText("Paste supplier CSV");
+  const pasted =
+    "supplier,supplier_sku,internal_sku,manufacturer_part_number,unit,unit_cost\nSample Supply,00123,KF-001,000042,box,48";
+  fireEvent.change(input, { target: { value: pasted } });
+  expect(
+    screen.queryByRole("list", { name: "Supplier CSV preview" }),
+  ).not.toBeInTheDocument();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Preview pasted supplier CSV" }),
+  );
+  expect(screen.getByText("Line 2 · 00123")).toBeVisible();
+  expect(screen.getByText("Mfr. part 000042")).toBeVisible();
+  fireEvent.change(screen.getByLabelText("Effective date"), {
+    target: { value: "2026-11-23" },
+  });
+  fireEvent.change(screen.getByLabelText("Price source"), {
+    target: { value: "Reviewed price source" },
+  });
+  fireEvent.change(input, {
+    target: { value: pasted.replace(",box,48", ",box,49") },
+  });
+  expect(
+    screen.queryByRole("button", { name: "Approve matched rows" }),
+  ).not.toBeInTheDocument();
+  expect(operation).not.toHaveBeenCalled();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Preview pasted supplier CSV" }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Approve matched rows" }));
+  expect(
+    await screen.findByText(
+      "Saved 1 mappings and 1 prices. 0 rows were already approved.",
+    ),
+  ).toBeVisible();
+  expect(operation).toHaveBeenCalledExactlyOnceWith(
+    "/inventory/supplier-crosswalk/approve",
+    "POST",
+    {
+      effectiveOn: "2026-11-23",
+      source: "Reviewed price source",
+      rows: [
+        {
+          supplier: "Sample Supply",
+          supplierSku: "00123",
+          manufacturerPartNumber: "000042",
+          productId: "product-1",
+          productSku: "KF-001",
+          unit: "box",
+          unitCost: "49",
+        },
+      ],
+    },
+  );
+  fireEvent.change(input, { target: { value: pasted } });
+  expect(screen.queryByText(/Saved 1 mappings/)).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Approve matched rows" }),
+  ).not.toBeInTheDocument();
+});
+
+it("rejects oversized pasted supplier CSV without saving any mapping", () => {
+  render(<SupplierImportDialog disabled={false} products={[]} />);
+  fireEvent.click(screen.getByRole("button", { name: "Preview supplier CSV" }));
+  fireEvent.change(screen.getByLabelText("Paste supplier CSV"), {
+    target: { value: "x".repeat(2 * 1024 * 1024 + 1) },
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Preview pasted supplier CSV" }),
+  );
+  expect(screen.getByRole("alert")).toHaveTextContent("2 MB");
+  expect(operation).not.toHaveBeenCalled();
+});
+
 it("previews supplier rows and saves only the mappings the owner can approve", async () => {
   vi.mocked(operation).mockResolvedValue({
     aliasesAdded: 2,

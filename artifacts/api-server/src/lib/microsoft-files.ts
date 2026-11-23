@@ -5,7 +5,8 @@ import { db, jobsTable, jobDocumentsTable, jobPhotosTable, microsoftFilesConnect
 import { workspaceScopeKey } from "@workspace/db/workspace";
 import { assertOwnedFile, filePurpose, getFile, getFileMetadata, isLegacyFilePath, maxFileBytes } from "./file-store";
 import { fetchOutlookToken, normalizeOutlookScopes, openOutlookSecret, sealOutlookSecret, OutlookError } from "./outlook-graph";
-import { getMicrosoftFilesConfig, hasSelectedFilesScope, MicrosoftFilesError, microsoftFilesGraph, safeMicrosoftName, safeMicrosoftWebUrl, verifyMirroredItem } from "./microsoft-files-graph";
+import { getMicrosoftFilesConfig, getMicrosoftFilesApprovedRoot, hasSelectedFilesScope, MicrosoftFilesError, microsoftFilesGraph, safeMicrosoftName, safeMicrosoftWebUrl, verifyMirroredItem } from "./microsoft-files-graph";
+import { assertMicrosoftFolderUnderRoot,browseApprovedMicrosoftFolders,type ApprovedMicrosoftRoot } from "./microsoft-files-browse";
 import { DomainError } from "./operations-rules";
 import { audit } from "./auth";
 
@@ -80,24 +81,50 @@ async function withGraph<T>(action: (context: Awaited<ReturnType<typeof graphCon
 export async function microsoftFilesStatus() {
   const config = getMicrosoftFilesConfig(), [connection] = await db.select().from(connections).where(eq(connections.id, 1));
   const connected = !!config && connection?.clientId === config.clientId && connection.status === "connected" && !!connection.accessToken && !!connection.refreshToken && hasSelectedFilesScope(connection.grantedScopes);
+  let root:ApprovedMicrosoftRoot|null=null,setupError:string|null=null;
+  try{root=getMicrosoftFilesApprovedRoot();}catch{setupError="The approved Microsoft company folder needs administrator review before browsing or copying files.";}
+  const [used]=await db.select({jobId:folders.jobId}).from(folders).limit(1);
   return { configured: !!config, status: !config ? "not_configured" : connected ? "connected" : connection?.status === "reconnect_required" ? "reconnect_required" : "disconnected",
     appClientId: config?.clientId ?? null, accountEmail: connection?.accountEmail ?? null,
+    browserAvailable:connected&&!setupError&&Boolean(root||(connection.driveId&&connection.folderId)),approvedRootConfigured:Boolean(root||setupError),targetLocked:Boolean(used),setupError,
     target: connection?.driveId && connection.folderId ? { driveId: connection.driveId, folderId: connection.folderId, name: connection.folderName!, webUrl: connection.folderWebUrl, verifiedAt: connection.verifiedAt! } : null };
+}
+function browserRoot(connection:Connection):ApprovedMicrosoftRoot {
+  const root=getMicrosoftFilesApprovedRoot();if(root)return root;
+  if(connection.driveId&&connection.folderId)return {driveId:connection.driveId,folderId:connection.folderId};
+  throw new DomainError(409,"The Microsoft administrator must approve a company folder before it can be browsed. Connecting your account does not grant folder access.");
+}
+function browserRootKey(connection:Connection,root:ApprovedMicrosoftRoot){return createHash("sha256").update(JSON.stringify([workspaceScopeKey(),connection.clientId,connection.accountId,root.driveId,root.folderId])).digest("hex");}
+export async function browseMicrosoftFolders(folderPath:readonly string[]) {
+  return withGraph(async({graph,connection,config})=>{const root=browserRoot(connection);const result=await browseApprovedMicrosoftFolders(graph,root,folderPath,config.clientId);return {...result,root:{...result.root,key:browserRootKey(connection,root)}};});
+}
+async function saveVerifiedMicrosoftTarget(connection:Connection,driveId:string,folderId:string,item:{name:string;webUrl?:string},actorUserId:string) {
+  await db.transaction(async(tx)=>{
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('catalyst:microsoft-files'))`);
+    const [current]=await tx.select().from(connections).where(eq(connections.id,1)).for("update");
+    if(!current||current.status!=="connected"||current.accountId!==connection.accountId||current.clientId!==connection.clientId||current.driveId!==connection.driveId||current.folderId!==connection.folderId)throw new DomainError(409,"The Microsoft file connection or target changed. Refresh and choose the target again.");
+    const [used]=await tx.select({id:folders.jobId}).from(folders).limit(1);
+    if(used&&(current.driveId!==driveId||current.folderId!==folderId))throw new DomainError(409,"Existing job folders are bound to the current Microsoft target. Review a storage migration before changing that target.");
+    const now=nowIso();await tx.update(connections).set({driveId,folderId,folderName:item.name,folderWebUrl:safeMicrosoftWebUrl(item.webUrl),verifiedAt:now,updatedAt:now}).where(eq(connections.id,1));
+    await audit("microsoft_files.target_selected",{userId:actorUserId,details:{driveId,folderId}},tx);
+  });
+  return microsoftFilesStatus();
+}
+export async function selectMicrosoftFilesFolder(folderPath:readonly string[],rootKey:string,actorUserId:string) {
+  return withGraph(async({graph,connection,config})=>{
+    const root=browserRoot(connection);
+    if(rootKey!==browserRootKey(connection,root))throw new DomainError(409,"The approved company folder changed. Refresh it before choosing a target.");
+    const result=await browseApprovedMicrosoftFolders(graph,root,folderPath,config.clientId);
+    const verified=await graph.target(root.driveId,result.current.id,config.clientId);
+    await assertMicrosoftFolderUnderRoot(graph,root,root.driveId,verified.id,config.clientId);
+    return saveVerifiedMicrosoftTarget(connection,root.driveId,verified.id,verified,actorUserId);
+  });
 }
 export async function selectMicrosoftFilesTarget(driveId: string, folderId: string, actorUserId: string) {
   return withGraph(async ({ graph, connection, config }) => {
+    if(getMicrosoftFilesApprovedRoot())throw new DomainError(409,"Choose the target using the approved company folder browser.");
     const item = await graph.target(driveId, folderId, config.clientId);
-    await db.transaction(async (tx) => {
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('catalyst:microsoft-files'))`);
-      const [current] = await tx.select().from(connections).where(eq(connections.id, 1)).for("update");
-      if (!current || current.accountId !== connection.accountId || current.clientId !== connection.clientId) throw new DomainError(409, "The Microsoft file connection changed. Refresh and choose the target again.");
-      const [used] = await tx.select({ id: folders.jobId }).from(folders).limit(1);
-      if (used && (current.driveId !== driveId || current.folderId !== folderId)) throw new DomainError(409, "Existing job folders are bound to the current Microsoft target. Review a storage migration before changing that target.");
-      const now = nowIso();
-      await tx.update(connections).set({ driveId, folderId, folderName: item.name, folderWebUrl: safeMicrosoftWebUrl(item.webUrl), verifiedAt: now, updatedAt: now }).where(eq(connections.id, 1));
-      await audit("microsoft_files.target_selected", { userId: actorUserId, details: { driveId, folderId } }, tx);
-    });
-    return microsoftFilesStatus();
+    return saveVerifiedMicrosoftTarget(connection,driveId,folderId,item,actorUserId);
   });
 }
 export async function disconnectMicrosoftFiles() {
@@ -151,7 +178,7 @@ export async function jobFiles(jobId: string) {
   ]);
   return { documents: documents.map(({ id, jobId, name, objectPath, size, sha256, createdAt }) => ({ id, jobId, name, objectPath, size, sha256, createdAt })),
     photos: photos.map(({ id, objectPath, caption, createdAt }) => ({ id, objectPath, name: caption || `Photo ${id}`, caption, createdAt })),
-    microsoft: { connected: status.status === "connected", targetReady: status.status === "connected" && !!status.target, folderUrl: folder[0]?.webUrl ?? null, mirrors: savedMirrors.map(mirrorResult) } };
+    microsoft: { connected: status.status === "connected", targetReady: status.status === "connected" && !!status.target&&!status.setupError, folderUrl: folder[0]?.webUrl ?? null, mirrors: savedMirrors.map(mirrorResult) } };
 }
 
 export async function syncJobMicrosoftFile(jobId: string, sourceType: "document" | "photo", sourceId: string, requestKey: string, actorUserId: string) {
@@ -162,6 +189,8 @@ export async function syncJobMicrosoftFile(jobId: string, sourceType: "document"
   if ("sha256" in source && source.sha256 !== content.sha256) throw new DomainError(409, "The stored document content changed after attachment. Review the original file before syncing.");
   const context = await graphConnection(), { connection } = context;
   if (!connection.driveId || !connection.folderId) throw new DomainError(409, "Choose and verify a Microsoft target folder in Settings first.");
+  const approvedRoot=getMicrosoftFilesApprovedRoot();
+  if(approvedRoot)await assertMicrosoftFolderUnderRoot(context.graph,approvedRoot,connection.driveId,connection.folderId,context.config.clientId);
   const key = targetKey(connection), attemptId = randomUUID(), now = nowIso();
   const claimed = await db.transaction(async (tx) => {
     const [job] = await tx.select().from(jobsTable).where(eq(jobsTable.id, jobId)).for("update");
@@ -193,6 +222,8 @@ export async function syncJobMicrosoftFile(jobId: string, sourceType: "document"
   try {
     const result = await withGraph(async ({ graph, connection: current, config }) => {
       if (targetKey(current) !== key) throw new DomainError(409, "The Microsoft target changed before this attachment was submitted.");
+      const currentRoot=getMicrosoftFilesApprovedRoot();
+      if(currentRoot)await assertMicrosoftFolderUnderRoot(graph,currentRoot,folder.driveId,folder.parentId,config.clientId);
       await graph.target(folder.driveId, folder.parentId, config.clientId);
       let remoteFolder = folder.itemId ? await graph.item(folder.driveId, folder.itemId) : await graph.child(folder.driveId, folder.parentId, folder.name);
       if (!remoteFolder) {

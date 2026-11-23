@@ -5,6 +5,7 @@ export const quickbooksConnectionsTable = pgTable("quickbooks_connections", {
   realmId: text("realm_id").notNull(),
   companyName: text("company_name").notNull().default(""),
   environment: text("environment").notNull().default("sandbox"),
+  grantedScopes: text("granted_scopes").array().notNull().default([]),
   encryptedAccessToken: text("encrypted_access_token").notNull(),
   encryptedRefreshToken: text("encrypted_refresh_token").notNull(),
   accessTokenExpiresAt: text("access_token_expires_at").notNull(),

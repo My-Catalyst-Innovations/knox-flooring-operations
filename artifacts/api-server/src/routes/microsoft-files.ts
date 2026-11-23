@@ -4,7 +4,7 @@ import { requireOwner, requireRole } from "../middlewares/auth";
 import { domainRoute, id, parse } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
 import { storedFilePath } from "../lib/file-store";
-import { attachJobDocument, disconnectMicrosoftFiles, finishMicrosoftFilesConnection, jobFiles, microsoftFilesStatus, selectMicrosoftFilesTarget, syncJobMicrosoftFile } from "../lib/microsoft-files";
+import { attachJobDocument, browseMicrosoftFolders,disconnectMicrosoftFiles, finishMicrosoftFilesConnection, jobFiles, microsoftFilesStatus, selectMicrosoftFilesFolder,selectMicrosoftFilesTarget, syncJobMicrosoftFile } from "../lib/microsoft-files";
 import { getMicrosoftFilesAuthorization, getMicrosoftFilesConfig, startMicrosoftFilesAuthorization } from "../lib/microsoft-files-graph";
 
 const router = Router(), base = "/microsoft/files", cookieName = "catalyst_microsoft_files_authorization";
@@ -12,6 +12,11 @@ const cookies = (secure: boolean) => ({ httpOnly: true, secure, sameSite: "lax" 
 const key = z.string().min(8).max(180), identifier = z.string().min(1).max(256).refine((value) => !/[\u0000-\u0020\u007f]/.test(value), "Choose a valid Microsoft resource ID.");
 router.use(base, requireOwner);
 router.get(`${base}/status`, domainRoute(async (_req, res) => { res.setHeader("Cache-Control", "no-store"); res.json(await microsoftFilesStatus()); }));
+router.get(`${base}/folders`,domainRoute(async(req,res)=>{
+  const input=parse(z.object({path:z.string().max(6000).optional()}).strict(),req.query);
+  let value:unknown=[];try{value=input.path===undefined?[]:JSON.parse(input.path);}catch{throw new DomainError(400,"Choose a valid approved folder path.");}
+  const folderPath=parse(z.array(identifier).max(20),value);res.setHeader("Cache-Control","no-store");res.json(await browseMicrosoftFolders(folderPath));
+}));
 router.post(`${base}/connect`, domainRoute(async (req, res) => {
   const config = getMicrosoftFilesConfig(); if (!config) throw new DomainError(503, "Microsoft file storage is not configured on this company server.");
   const auth = startMicrosoftFilesAuthorization(config, req.auth!.userId, req.auth!.csrfToken);
@@ -27,8 +32,8 @@ router.get(`${base}/callback`, domainRoute(async (req, res) => {
   catch { res.redirect("/settings?microsoftFiles=failed"); }
 }));
 router.put(`${base}/target`, domainRoute(async (req, res) => {
-  const data = parse(z.object({ driveId: identifier, folderId: identifier }).strict(), req.body);
-  res.json(await selectMicrosoftFilesTarget(data.driveId, data.folderId, req.auth!.userId));
+  const data = parse(z.union([z.object({folderPath:z.array(identifier).max(20),rootKey:z.string().regex(/^[a-f0-9]{64}$/)}).strict(),z.object({ driveId: identifier, folderId: identifier }).strict()]), req.body);
+  res.json("folderPath" in data?await selectMicrosoftFilesFolder(data.folderPath,data.rootKey,req.auth!.userId):await selectMicrosoftFilesTarget(data.driveId, data.folderId, req.auth!.userId));
 }));
 router.post(`${base}/disconnect`, domainRoute(async (_req, res) => { await disconnectMicrosoftFiles(); res.status(204).end(); }));
 const readers = requireRole("owner", "sales", "operations");

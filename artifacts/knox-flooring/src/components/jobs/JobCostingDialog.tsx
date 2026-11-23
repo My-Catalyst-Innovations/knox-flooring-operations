@@ -98,7 +98,7 @@ export function JobCostingDialog({ open, onOpenChange, job }: Props) {
 
   const prefillFromEstimate = () => {
     setActualRevenue(job.estRevenue || 0);
-    setActualLaborCost(job.laborEstimate || 0);
+    if (job.trackedLaborCost === undefined || job.trackedLaborCost === null) setActualLaborCost(job.laborEstimate || 0);
     if (job.trackedMaterialCost === undefined) setActualMaterialCost(job.materialEstimate || 0);
     setActualAddOnCost(0);
   };
@@ -126,7 +126,9 @@ export function JobCostingDialog({ open, onOpenChange, job }: Props) {
               label="Actual Labor"
               value={actualLaborCost}
               onChange={setActualLaborCost}
-              hint={`Est: ${fmtMoney(job.laborEstimate || 0)}`}
+              hint={job.trackedLaborCost === undefined || job.trackedLaborCost === null
+                ? `Estimated: ${fmtMoney(job.laborEstimate || 0)}`
+                : `Reviewed labor: ${fmtMoney(job.trackedLaborCost)}. Enter zero to use the reviewed total; a positive amount overrides it.`}
             />
             <NumberField
               label="Actual Materials"
@@ -143,6 +145,9 @@ export function JobCostingDialog({ open, onOpenChange, job }: Props) {
             onChange={setActualAddOnCost}
             hint="Disposal, repairs, change orders, etc."
           />
+          {job.trackedExpenseCost !== undefined && <p className="rounded-md border p-3 text-sm">
+            Receipt-backed expenses: <strong>{fmtMoney(job.trackedExpenseCost)}</strong>. Included separately in actual cost. Record manual miscellaneous costs only when they are not already in the expense log.
+          </p>}
 
           <div className="rounded-md border bg-muted/30 p-3 grid grid-cols-3 gap-2 text-center">
             <div>

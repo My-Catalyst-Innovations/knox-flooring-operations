@@ -5,6 +5,13 @@ import { DomainError } from "./operations-rules";
 import { getOutlookAuthorization, startOutlookAuthorization, type OutlookConfig } from "./outlook-graph";
 
 export const microsoftFilesScope = "offline_access User.Read Files.SelectedOperations.Selected";
+export function getMicrosoftFilesApprovedRoot(env = workspaceEnvironment()) {
+  const driveId=env.MICROSOFT_FILES_ROOT_DRIVE_ID,folderId=env.MICROSOFT_FILES_ROOT_FOLDER_ID;
+  if(!driveId&&!folderId)return null;
+  if(!driveId||!folderId||[driveId,folderId].some(value=>value.length>256||/[\u0000-\u0020\u007f]/.test(value)))
+    throw new MicrosoftFilesError(503,"The approved Microsoft company folder is not configured correctly. Ask the administrator to review it.");
+  return {driveId,folderId};
+}
 export function getMicrosoftFilesConfig(env = workspaceEnvironment()): OutlookConfig | null {
   const clientId = env.MICROSOFT_FILES_CLIENT_ID, clientSecret = env.MICROSOFT_FILES_CLIENT_SECRET, secret = env.MICROSOFT_FILES_ENCRYPTION_KEY,
     redirectUri = env.MICROSOFT_FILES_REDIRECT_URI, tenant = env.MICROSOFT_FILES_TENANT_ID || "organizations";
@@ -95,7 +102,7 @@ export function microsoftFilesGraph(token: string, fetchImpl = fetch) {
     async item(driveId: string, itemId: string) { return (await read(`${path(driveId, itemId)}?${selected}`, itemModel)).data; },
     async target(driveId: string, itemId: string, clientId: string) {
       const item = (await read(`${path(driveId, itemId)}?${selected}`, itemModel)).data;
-      if (!item.folder || item.remoteItem) throw new MicrosoftFilesError(400, "Choose an actual SharePoint or OneDrive folder, rather than a file or shortcut.");
+      if (item.id!==itemId || (item.parentReference?.driveId&&item.parentReference.driveId!==driveId) || !item.folder || item.remoteItem) throw new MicrosoftFilesError(400, "Choose an actual SharePoint or OneDrive folder, rather than a file or shortcut.");
       let next: string | undefined = `${path(driveId, itemId)}/permissions?$select=roles,grantedToV2,grantedTo,grantedToIdentitiesV2,grantedToIdentities`;
       let allowed = false;
       for (let page = 0; next && page < 10; page++) {
@@ -104,6 +111,26 @@ export function microsoftFilesGraph(token: string, fetchImpl = fetch) {
       }
       if (next || !allowed) throw new MicrosoftFilesError(403, "No matching selected-folder write grant was confirmed for this app. Ask the Microsoft resource administrator to grant this app access to this folder.");
       return item;
+    },
+    async folders(driveId:string,parentId:string) {
+      const resource=`${path(driveId,parentId)}/children`;
+      let next:string|undefined=`${resource}?$select=id,name,folder,remoteItem,parentReference,webUrl&$top=100`;
+      const seen=new Set<string>(),folders=new Map<string,MicrosoftDriveItem>();
+      for(let page=0;next&&page<10;page++) {
+        const continuation=new URL(next.startsWith("/")?`/v1.0${next}`:next,"https://graph.microsoft.com");
+        if(continuation.origin!=="https://graph.microsoft.com"||continuation.pathname!==`/v1.0${resource}`||continuation.username||continuation.password||continuation.hash||seen.has(continuation.href))
+          throw new MicrosoftFilesError(502,"Microsoft returned an invalid approved-folder continuation.");
+        seen.add(continuation.href);
+        const result:{value:MicrosoftDriveItem[];"@odata.nextLink"?:string}=(await read(next,z.object({value:z.array(itemModel).max(100),"@odata.nextLink":z.string().optional()}))).data;
+        for(const item of result.value) {
+          if(!item.folder||item.remoteItem)continue;
+          if(item.parentReference?.id!==parentId||item.parentReference?.driveId!==driveId)throw new MicrosoftFilesError(409,"A folder moved outside the approved location. Refresh this folder.");
+          if(folders.has(item.id))throw new MicrosoftFilesError(409,"Microsoft folders changed during browsing. Refresh the folder list.");
+          folders.set(item.id,item);
+        }
+        next=result["@odata.nextLink"];
+      }
+      return {folders:[...folders.values()].sort((a,b)=>a.name.localeCompare(b.name)),complete:!next};
     },
     async child(driveId: string, parentId: string, name: string) {
       try { return (await read(`${path(driveId, parentId)}:/${encodeURIComponent(name)}?${selected}`, itemModel)).data; }

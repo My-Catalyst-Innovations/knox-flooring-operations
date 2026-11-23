@@ -11,6 +11,7 @@ import { ProductionVendorBills, VendorBillSandbox, type SandboxVendor } from "./
 import { ProductionStockItems, SandboxStockItems, type SandboxAccount } from "./SandboxStockItems";
 import { QuickBooksInvoiceReview } from "./QuickBooksInvoiceReview";
 import { QuickBooksStockReconciliation } from "./QuickBooksStockReconciliation";
+import { QuickBooksProjectsCapability } from "./QuickBooksProjectsCapability";
 import { useOperation } from "@/lib/operations";
 
 type Status = {
@@ -86,6 +87,18 @@ export function QuickBooksSettings() {
     const result = await customFetch<{ authorizationUrl: string }>("/api/quickbooks/connect", { responseType: "json" });
     window.location.assign(result.authorizationUrl);
   };
+  const disconnect = async (retryRevocation = false) => {
+    setBusy("disconnect");
+    try {
+      const result = await customFetch<{ revocation: string; message: string }>("/api/quickbooks/disconnect", { method: "POST", body: JSON.stringify({ retryRevocation }), responseType: "json" });
+      toast({ title: result.revocation === "confirmed" ? "QuickBooks access revoked" : "Intuit revocation not confirmed", description: result.message });
+    } catch (error) {
+      toast({ title: "Could not confirm QuickBooks disconnect", description: error instanceof Error ? error.message : String(error), variant: "destructive" });
+    } finally {
+      try { await load(); } catch { /* Keep the last known state if the connection is unavailable. */ }
+      setBusy("");
+    }
+  };
   const reconcile = async () => {
     const result = await customFetch<{ candidates: Candidate[]; connectionId: string; lists: { vendor: SandboxVendor[]; item: QuickBooksCatalogItem[]; account: SandboxAccount[] } }>("/api/quickbooks/reconcile", { method: "POST", responseType: "json" });
     setCandidates(result.candidates);
@@ -102,14 +115,15 @@ export function QuickBooksSettings() {
     }
   };
   const demoQueue = queue.filter((item) => item.payload?.demoSimulation).sort((a, b) => Number(a.payload?.flowStep ?? 0) - Number(b.payload?.flowStep ?? 0));
-  const liveQueue = queue.filter((item) => !item.payload?.demoSimulation && !["vendor_bill", "sandbox_stock_item", "production_stock_item", "stock_return_adjustment"].includes(item.entityType));
+  const liveQueue = queue.filter((item) => !item.payload?.demoSimulation && !["vendor_bill", "sandbox_stock_item", "production_stock_item", "stock_return_adjustment", "labor_time", "job_expense_purchase", "job_expense_bill", "project"].includes(item.entityType));
   const pending = liveQueue.filter((item) => item.status === "pending_approval");
   const failures = liveQueue.filter((item) => item.status === "failed");
   const needsInvoiceReview = (item: QueueItem) => item.accountingReviewRequired;
   const accountingEnabled = status?.connection.connected && invoiceAccounting.data?.enabled
     && invoiceAccounting.data.realmId === status.connection.realmId
     && invoiceAccounting.data.environment === status.connection.environment;
-  const selectable = pending.filter((item) => !needsInvoiceReview(item));
+  const legacyJobCost = (item: QueueItem) => ["labor", "expense", "time"].includes(item.entityType);
+  const selectable = pending.filter((item) => !needsInvoiceReview(item) && !legacyJobCost(item));
   const reviewedInvoice = (item: QueueItem) => accountingEnabled
     ? <QuickBooksInvoiceReview jobId={item.id} accounts={accounts} onApproved={async () => { toast({ title: "Invoice accounting approved" }); await load(); }} />
     : <p className="text-sm text-muted-foreground">This invoice requires accounting review in the connected QuickBooks company before export.</p>;
@@ -122,18 +136,18 @@ export function QuickBooksSettings() {
   </label>;
   const pendingDemo = demoQueue.filter((item) => item.status === "demo_pending");
   const completedDemo = demoQueue.filter((item) => item.status === "demo_completed");
+  const unresolvedRevocation = ["revocation_pending", "revocation_unknown", "revocation_failed"].includes(status?.connection.readinessStatus ?? "");
 
   return <div className="space-y-4">
     <Card>
       <CardHeader><div className="flex items-start justify-between gap-4"><div><CardTitle className="flex items-center gap-2">QuickBooks Online {status?.connection.connected ? <CheckCircle2 className="h-5 w-5 text-emerald-600" /> : <AlertCircle className="h-5 w-5 text-amber-600" />}</CardTitle><CardDescription>Approval-based accounting synchronization. Knox remains the operational system; QuickBooks becomes the accounting authority.</CardDescription></div><Badge variant={status?.connection.connected ? "default" : "secondary"}>{status?.connection.status?.replaceAll("_", " ") ?? "Loading"}</Badge></div></CardHeader>
       <CardContent className="space-y-4">
-        {status?.projects && !status.projects.verified && <div role="status" aria-label="QuickBooks Projects readiness" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
-          <p className="font-semibold">QuickBooks Projects requires verification</p>
-          <p className="mt-1">{status.projects.detail}</p>
-        </div>}
+        <QuickBooksProjectsCapability />
         {!status?.configured && <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">A real connection requires an Intuit developer app and a QuickBooks Online company.{status?.demoAvailable && " The interactive demo below works without either account."}</div>}
         {status?.connection.connected && <div className="grid gap-2 text-sm sm:grid-cols-2"><div><span className="text-muted-foreground">Company:</span> {status.connection.companyName || status.connection.realmId}</div><div><span className="text-muted-foreground">Environment:</span> {status.connection.environment}</div><div><span className="text-muted-foreground">Readiness:</span> {status.connection.readinessStatus.replaceAll("_", " ")}</div><div><span className="text-muted-foreground">Last import:</span> {status.connection.lastSyncAt ? new Date(status.connection.lastSyncAt).toLocaleString() : "Not yet"}</div></div>}
-        <div className="flex flex-wrap gap-2"><Button onClick={() => run("connect", connect, "Opening QuickBooks")} disabled={!status?.configured || busy !== ""}>{busy === "connect" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}{status?.connection.connected ? "Reconnect" : "Connect a real company"}</Button>{status?.connection.connected && <><Button variant="outline" disabled={busy !== ""} onClick={() => run("reconcile", reconcile, "QuickBooks lists imported for reconciliation")}>{busy === "reconcile" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}Import & reconcile</Button><Button variant="outline" disabled={busy !== ""} onClick={() => run("disconnect", () => customFetch("/api/quickbooks/disconnect", { method: "POST" }), "QuickBooks disconnected")}><Unplug className="mr-2 h-4 w-4" />Disconnect</Button></>}</div>
+        {unresolvedRevocation && <div role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">Works has stopped using this connection. Intuit has not confirmed that access was revoked. Retry revocation of this same saved grant before reconnecting. If a request is still pending, wait briefly before trying again.</div>}
+        {status?.connection.readinessStatus === "revocation_confirmed" && <p role="status" className="text-sm text-muted-foreground">Intuit confirmed revocation. Existing accounting history has been preserved.</p>}
+        <div className="flex flex-wrap gap-2"><Button onClick={() => run("connect", connect, "Opening QuickBooks")} disabled={!status?.configured || unresolvedRevocation || busy !== ""}>{busy === "connect" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}{status?.connection.connected ? "Reconnect" : "Connect a real company"}</Button>{status?.connection.connected && <Button variant="outline" disabled={busy !== ""} onClick={() => run("reconcile", reconcile, "QuickBooks lists imported for reconciliation")}>{busy === "reconcile" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}Import & reconcile</Button>}{(status?.connection.connected || status?.connection.status === "reconnect_required" || unresolvedRevocation) && <Button variant="outline" disabled={busy !== ""} onClick={() => void disconnect(unresolvedRevocation)}><Unplug className="mr-2 h-4 w-4" />{unresolvedRevocation ? "Retry revocation" : "Disconnect"}</Button>}</div>
       </CardContent>
     </Card>
 
@@ -171,9 +185,9 @@ export function QuickBooksSettings() {
     <Button size="sm" variant="ghost" disabled={busy !== ""} onClick={() => void decide(candidate, "ignore")}>Ignore</Button>{candidate.matches.length === 0 && <span className="self-center text-xs text-muted-foreground">No suggested link</span>}</div></div>)}</CardContent></Card>}
 
     <Card><CardHeader><CardTitle>Real-company accounting approval queue</CardTitle><CardDescription>Operational edits never export automatically. These records remain parked until an owner connects and approves a real QuickBooks company.</CardDescription></CardHeader><CardContent className="space-y-3">
-      {pending.length === 0 ? <p className="text-sm text-muted-foreground">No real-company records are awaiting approval.</p> : pending.map((item) => <div key={item.id} className="space-y-3 rounded-lg border p-3"><label className="flex items-start gap-3">{!needsInvoiceReview(item) && <input className="mt-1" type="checkbox" checked={selected.includes(item.id)} disabled={!status?.connection.connected} onChange={(event) => setSelected((value) => event.target.checked ? [...value, item.id] : value.filter((id) => id !== item.id))} />}<div className="min-w-0 flex-1"><div className="font-medium capitalize">{item.entityType} · {item.action}</div><div className="text-xs text-muted-foreground">Local record {item.localId}</div>{item.warnings?.map((warning) => <div key={warning} className="mt-1 text-xs text-amber-600">{warning}</div>)}</div></label>{estimateChoice(item)}{needsInvoiceReview(item) && reviewedInvoice(item)}</div>)}
+      {pending.length === 0 ? <p className="text-sm text-muted-foreground">No real-company records are awaiting approval.</p> : pending.map((item) => <div key={item.id} className="space-y-3 rounded-lg border p-3"><label className="flex items-start gap-3">{!needsInvoiceReview(item) && !legacyJobCost(item) && <input className="mt-1" type="checkbox" checked={selected.includes(item.id)} disabled={!status?.connection.connected} onChange={(event) => setSelected((value) => event.target.checked ? [...value, item.id] : value.filter((id) => id !== item.id))} />}<div className="min-w-0 flex-1"><div className="font-medium capitalize">{item.entityType} · {item.action}</div><div className="text-xs text-muted-foreground">Local record {item.localId}</div>{item.warnings?.map((warning) => <div key={warning} className="mt-1 text-xs text-amber-600">{warning}</div>)}</div></label>{estimateChoice(item)}{needsInvoiceReview(item) && reviewedInvoice(item)}{legacyJobCost(item) && <p className="text-sm text-muted-foreground">Open this job's actuals to review an individual time entry or receipt-backed expense. Generic approval cannot export this legacy request.</p>}</div>)}
       {selectable.length > 0 && <Button disabled={!status?.connection.connected || !selected.some((id) => selectable.some((item) => item.id === id)) || selected.some((id) => queue.find((item) => item.id === id)?.entityType === "estimate" && !estimateCategories[id]) || busy !== ""} onClick={() => { const ids = selectable.filter((item) => selected.includes(item.id)).map((item) => item.id); void run("approve", () => customFetch("/api/quickbooks/queue/approve", { method: "POST", body: JSON.stringify({ ids, ...(ids.some((id) => queue.find((item) => item.id === id)?.entityType === "estimate") ? { estimateCategories: Object.fromEntries(ids.filter((id) => queue.find((item) => item.id === id)?.entityType === "estimate").map((id) => [id, estimateCategories[id]])) } : {}) }), responseType: "json" }), `${ids.length} record(s) approved`).then(() => setSelected([])); }}>Approve selected for real QuickBooks</Button>}
     </CardContent></Card>
-    {failures.length > 0 && <Card><CardHeader><CardTitle>Exceptions</CardTitle><CardDescription>Validation errors stay paused until corrected. Retry transient failures here.</CardDescription></CardHeader><CardContent className="space-y-2">{failures.map((item) => <div key={item.id} className="space-y-3 rounded-lg border border-destructive/30 p-3"><div className="flex items-center justify-between gap-3"><div><div className="font-medium capitalize">{item.entityType}</div><div className="text-xs text-destructive">{item.lastError}</div></div>{!needsInvoiceReview(item) && <Button size="sm" variant="outline" onClick={() => run(`retry-${item.id}`, () => customFetch(`/api/quickbooks/queue/${item.id}/retry`, { method: "POST", responseType: "json" }), "Retry scheduled")}>Retry</Button>}</div>{needsInvoiceReview(item) && reviewedInvoice(item)}</div>)}</CardContent></Card>}
+    {failures.length > 0 && <Card><CardHeader><CardTitle>Exceptions</CardTitle><CardDescription>Validation errors stay paused until corrected. Retry transient failures here.</CardDescription></CardHeader><CardContent className="space-y-2">{failures.map((item) => <div key={item.id} className="space-y-3 rounded-lg border border-destructive/30 p-3"><div className="flex items-center justify-between gap-3"><div><div className="font-medium capitalize">{item.entityType}</div><div className="text-xs text-destructive">{item.lastError}</div></div>{!needsInvoiceReview(item) && !legacyJobCost(item) && <Button size="sm" variant="outline" onClick={() => run(`retry-${item.id}`, () => customFetch(`/api/quickbooks/queue/${item.id}/retry`, { method: "POST", responseType: "json" }), "Retry scheduled")}>Retry</Button>}</div>{needsInvoiceReview(item) && reviewedInvoice(item)}{legacyJobCost(item) && <p className="text-sm text-muted-foreground">Use the job's reviewed time or receipt expense workflow before exporting.</p>}</div>)}</CardContent></Card>}
   </div>;
 }
