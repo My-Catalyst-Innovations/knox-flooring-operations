@@ -1,4 +1,5 @@
 import { useUnsavedForm } from "@/hooks/use-unsaved-changes";
+import { TaskStaffAssignment } from "./TaskStaffAssignment";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 import { useStore } from "@/hooks/use-store";
@@ -867,6 +868,7 @@ export function InstallationSchedule({
               The crew's time zone governs availability.
             </DialogDescription>
           </DialogHeader>
+          {editingBooking?.taskId && editingBooking.status === "Confirmed" && <TaskStaffAssignment key={editingBooking.taskId} taskId={editingBooking.taskId} />}
           <fieldset disabled={busy} className="space-y-3">
             <label className="block space-y-1 text-sm">
               Job
