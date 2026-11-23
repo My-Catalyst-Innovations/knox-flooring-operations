@@ -2,8 +2,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DemoCenter } from "./DemoCenter";
 import type { TrainingStatus } from "./training-types";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 
-const mocks = vi.hoisted(() => ({ api: vi.fn(), navigate: vi.fn(), switchPersona: vi.fn(), user: { role: "owner" as const, actualRole: "owner" as "owner" | undefined, previewRole: null as null | "sales" } }));
+const mocks = vi.hoisted(() => ({ api: vi.fn(), navigate: vi.fn(), switchPersona: vi.fn(), user: { role: "owner" as "owner" | "sales" | "operations" | "installer", actualRole: "owner" as "owner" | undefined, previewRole: null as null | "sales" } }));
 vi.mock("@workspace/api-client-react", () => ({ customFetch: mocks.api }));
 vi.mock("wouter", () => ({ useLocation: () => ["/", mocks.navigate] }));
 vi.mock("@/contexts/auth", () => ({ useAuth: () => ({ user: mocks.user, switchPersona: mocks.switchPersona }) }));
@@ -55,7 +56,7 @@ function narrationResponse(provider = "ElevenLabs", fallback = false) {
 }
 
 describe("DemoCenter", () => {
-  beforeEach(() => { vi.clearAllMocks(); mocks.user.actualRole = "owner"; mocks.user.previewRole = null; });
+  beforeEach(() => { vi.clearAllMocks(); mocks.switchPersona.mockReset(); mocks.user.role = "owner"; mocks.user.actualRole = "owner"; mocks.user.previewRole = null; });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
   it("opens from the persistent Training control and completes an informational step", async () => {
@@ -193,4 +194,82 @@ describe("DemoCenter", () => {
     expect(screen.getByText(/ElevenLabs · Selected teaching voice/)).toBeInTheDocument();
     expect(screen.queryByText(/Playing the backup voice/i)).not.toBeInTheDocument();
   });
+  it("offers explicit resume for an active mission from another perspective", async () => {
+    const training = status();
+    training.missions = [{ ...mission, key: "sales", name: "Sales mission", role: "sales" }];
+    const run = { id: "other-role-run", userId: "owner", missionKey: "sales", manifestVersion: "test", status: "active" as const, currentStep: 0, voiceEnabled: false, checkpoints: [], startedAt: "now", updatedAt: "now" };
+    training.runs = [run];
+    mocks.switchPersona.mockImplementation(async () => { mocks.user.role = "sales"; mocks.user.previewRole = "sales"; });
+    mocks.api.mockImplementation((path: string) => {
+      if (path === "/api/demo/status") return Promise.resolve(training);
+      if (path === "/api/demo/missions/sales") return Promise.resolve(run);
+      throw new Error("Unexpected request: " + path);
+    });
+    render(<><button data-training-id="nav-dashboard">Dashboard</button><DemoCenter /></>);
+    await screen.findByRole("button", { name: /open dashboard page guide/i });
+    expect(screen.queryByText("Your command center")).not.toBeInTheDocument();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    fireEvent(window, new Event("knox:demo-center"));
+    fireEvent.click(await screen.findByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(mocks.switchPersona).toHaveBeenCalledWith("sales"));
+    expect(await screen.findByText("Your command center")).toBeInTheDocument();
+  });
+
+  it("hides an active lesson immediately after switching away from its role", async () => {
+    installApi();
+    const view = render(<><button data-training-id="nav-dashboard">Dashboard</button><DemoCenter /></>);
+    fireEvent(window, new Event("knox:demo-center"));
+    fireEvent.click(await screen.findByRole("button", { name: /start silently/i }));
+    expect(await screen.findByText("Your command center")).toBeInTheDocument();
+    mocks.user.role = "operations";
+    view.rerender(<><button data-training-id="nav-dashboard">Dashboard</button><DemoCenter /></>);
+    await waitFor(() => expect(screen.queryByText("Your command center")).not.toBeInTheDocument());
+  });
+
+  it("lets business dialogs own focus and Escape while training stays paused visually", async () => {
+    installApi();
+    const content = (open: boolean) => <><button data-training-id="nav-dashboard">Dashboard</button><DemoCenter /><Dialog open={open}><DialogContent><DialogTitle>Record receipt</DialogTitle><DialogDescription>Save the actual delivery.</DialogDescription><input aria-label="Received boxes" /></DialogContent></Dialog></>;
+    const view = render(content(false));
+    fireEvent(window, new Event("knox:demo-center"));
+    fireEvent.click(await screen.findByRole("button", { name: /start silently/i }));
+    expect(await screen.findByText("Your command center")).toBeInTheDocument();
+    view.rerender(content(true));
+    await waitFor(() => expect(document.querySelector('aside[aria-labelledby="training-step-title"]')).toBeNull());
+    expect(screen.getByRole("dialog", { name: "Record receipt" })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByLabelText("Received boxes"), { key: "Escape" });
+    expect(mocks.api.mock.calls.some(([path]) => String(path).endsWith("/exit"))).toBe(false);
+    view.rerender(content(false));
+    expect(await screen.findByText("Your command center")).toBeInTheDocument();
+  });
+
+  it("labels skipped completion without claiming verified practice", async () => {
+    const training = status();
+    training.runs = [{ id: "skipped-run", userId: "owner", missionKey: "executive", manifestVersion: "test", status: "completed", currentStep: 0, voiceEnabled: false, checkpoints: ["executive-dashboard:skipped"], startedAt: "now", updatedAt: "now" }];
+    mocks.api.mockResolvedValue(training);
+    render(<DemoCenter />);
+    fireEvent(window, new Event("knox:demo-center"));
+    expect(await screen.findByText("Finished with skipped steps — restart to practice")).toBeInTheDocument();
+    expect(screen.queryByText("Completed and verified")).not.toBeInTheDocument();
+  });
+
+  it("shows the title at the top when advancing a scrolled training panel", async () => {
+    const training = status();
+    training.missions[0].steps.push({ ...mission.steps[0], id: "next-step", title: "Next step heading" });
+    const run = { id: "run-1", userId: "owner", missionKey: "executive", manifestVersion: "test", status: "active", currentStep: 0, voiceEnabled: false, checkpoints: [], startedAt: "now", updatedAt: "now" };
+    mocks.api.mockImplementation((path: string) => {
+      if (path === "/api/demo/status") return Promise.resolve(training);
+      if (path.endsWith("/start")) return Promise.resolve(run);
+      if (path.endsWith("/verify")) return Promise.resolve({ ...run, currentStep: 1 });
+      throw new Error("Unexpected request: " + path);
+    });
+    render(<><button data-training-id="nav-dashboard">Dashboard</button><DemoCenter /></>);
+    fireEvent(window, new Event("knox:demo-center"));
+    fireEvent.click(await screen.findByRole("button", { name: /start silently/i }));
+    const panel = await screen.findByRole("dialog", { name: "Your command center" });
+    panel.scrollTop = 250;
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    const nextPanel = await screen.findByRole("dialog", { name: "Next step heading" });
+    expect(nextPanel.scrollTop).toBe(0);
+  });
+
 });

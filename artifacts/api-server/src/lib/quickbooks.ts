@@ -1,7 +1,7 @@
 import { workspaceEnvironment } from "@workspace/db/workspace";
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import { db, quickbooksConnectionsTable } from "@workspace/db";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { and, eq, sql } from "drizzle-orm";
+import { auditEventsTable, db, quickbooksConnectionsTable } from "@workspace/db";
 
 const getKey = () => {
   const value = workspaceEnvironment().QUICKBOOKS_ENCRYPTION_KEY;
@@ -24,18 +24,53 @@ export function decryptSecret(value: string) {
 }
 
 export function signOAuthState(value: string) { return `${value}.${createHmac("sha256", getKey()).update(value).digest("base64url")}`; }
-export function verifyOAuthState(signed: string) { const pos = signed.lastIndexOf("."); if (pos < 1) return null; const value = signed.slice(0, pos); return signOAuthState(value) === signed ? value : null; }
+export function verifyOAuthState(signed: string) { const pos = signed.lastIndexOf("."); if (pos < 1) return null; const value = signed.slice(0, pos), expected=Buffer.from(signOAuthState(value)), received=Buffer.from(signed); return expected.length===received.length&&timingSafeEqual(expected,received) ? value : null; }
 
-const apiBase = () => workspaceEnvironment().QUICKBOOKS_ENVIRONMENT === "production" ? "https://quickbooks.api.intuit.com" : "https://sandbox-quickbooks.api.intuit.com";
+export function createQuickBooksOAuthState(userId:string,csrfToken:string,now=Date.now()) {
+  return signOAuthState(JSON.stringify({userId,sessionHash:createHash("sha256").update(csrfToken).digest("hex"),issuedAt:now,nonce:randomBytes(24).toString("hex")}));
+}
+export function validQuickBooksOAuthState(state:string,userId:string,csrfToken:string,now=Date.now()) {
+  const value=verifyOAuthState(state);if(!value)return false;
+  try{const data=JSON.parse(value);return data.userId===userId&&data.sessionHash===createHash("sha256").update(csrfToken).digest("hex")&&Number.isSafeInteger(data.issuedAt)&&data.issuedAt<=now&&now-data.issuedAt<=600_000&&typeof data.nonce==="string"&&data.nonce.length===48;}catch{return false;}
+}
+export async function consumeQuickBooksOAuthState(state:string,userId:string) {
+  // The immutable audit primary key also provides a durable, single-use nonce across instances.
+  const [claimed]=await db.insert(auditEventsTable).values({id:`qbo-oauth:${createHash("sha256").update(state).digest("hex")}`,actorUserId:userId,action:"quickbooks.oauth_state_consumed",entityType:"quickbooks",createdAt:new Date().toISOString()}).onConflictDoNothing().returning({id:auditEventsTable.id});
+  return Boolean(claimed);
+}
+export const quickBooksProjectReadiness=()=>({verified:false,readiness:"blocked",legacySubcustomersPreserved:true,detail:"True QuickBooks Projects API access is not verified. Existing legacy subcustomer links remain intact, but new Project exports are blocked; a subcustomer is not a QuickBooks Project."});
+export function requireQuickBooksProjects():never {throw new Error(quickBooksProjectReadiness().detail);}
+
+const apiBase = (environment:string) => environment === "production" ? "https://quickbooks.api.intuit.com" : "https://sandbox-quickbooks.api.intuit.com";
 
 async function refresh(connection: typeof quickbooksConnectionsTable.$inferSelect) {
+  const outcome=await db.transaction(async tx=>{
+  const [current]=await tx.select().from(quickbooksConnectionsTable).where(eq(quickbooksConnectionsTable.id,connection.id)).for("update");
+  if(current?.status!=="connected")throw new Error("QuickBooks disconnected while renewing authorization.");
+  // Another process may have rotated this token while this request waited for its row lock.
+  if(current.encryptedAccessToken!==connection.encryptedAccessToken&&Date.parse(current.accessTokenExpiresAt)>Date.now()+60_000)return {connection:current};
   const auth = Buffer.from(`${workspaceEnvironment().QUICKBOOKS_CLIENT_ID}:${workspaceEnvironment().QUICKBOOKS_CLIENT_SECRET}`).toString("base64");
-  const response = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", { method: "POST", headers: { Authorization: `Basic ${auth}`, Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: decryptSecret(connection.encryptedRefreshToken) }) });
-  if (!response.ok) { await db.update(quickbooksConnectionsTable).set({ status: "reconnect_required", updatedAt: new Date().toISOString() }).where(eq(quickbooksConnectionsTable.id, connection.id)); throw new Error("QuickBooks authorization expired; reconnect required"); }
+  const response = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", { method: "POST", signal:AbortSignal.timeout(20_000), headers: { Authorization: `Basic ${auth}`, Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: decryptSecret(current.encryptedRefreshToken) }) });
+  if (!response.ok) {
+    if(response.status===400||response.status===401){await tx.update(quickbooksConnectionsTable).set({status:"reconnect_required",updatedAt:new Date().toISOString()}).where(eq(quickbooksConnectionsTable.id,current.id));return {error:new QuickBooksRequestError("QuickBooks authorization expired; reconnect required",response.status)};}
+    throw new QuickBooksRequestError(`QuickBooks token service is unavailable (${response.status}); retry later`,response.status);
+  }
   const tokens = await response.json() as { access_token: string; refresh_token: string; expires_in: number; x_refresh_token_expires_in: number };
-  const now = Date.now(); const [updated] = await db.update(quickbooksConnectionsTable).set({ encryptedAccessToken: encryptSecret(tokens.access_token), encryptedRefreshToken: encryptSecret(tokens.refresh_token), accessTokenExpiresAt: new Date(now + tokens.expires_in * 1000).toISOString(), refreshTokenExpiresAt: new Date(now + tokens.x_refresh_token_expires_in * 1000).toISOString(), status: "connected", updatedAt: new Date().toISOString() }).where(and(eq(quickbooksConnectionsTable.id, connection.id), eq(quickbooksConnectionsTable.status, "connected"))).returning();
+  if(typeof tokens?.access_token!=="string"||!tokens.access_token||typeof tokens?.refresh_token!=="string"||!tokens.refresh_token||!Number.isFinite(tokens.expires_in)||tokens.expires_in<=0||!Number.isFinite(tokens.x_refresh_token_expires_in)||tokens.x_refresh_token_expires_in<=0)throw new QuickBooksRequestError("QuickBooks returned incomplete token rotation; retry or reconnect",502);
+  const now = Date.now(); const [updated] = await tx.update(quickbooksConnectionsTable).set({ encryptedAccessToken: encryptSecret(tokens.access_token), encryptedRefreshToken: encryptSecret(tokens.refresh_token), accessTokenExpiresAt: new Date(now + tokens.expires_in * 1000).toISOString(), refreshTokenExpiresAt: new Date(now + tokens.x_refresh_token_expires_in * 1000).toISOString(), status: "connected", updatedAt: new Date().toISOString() }).where(and(eq(quickbooksConnectionsTable.id, connection.id), eq(quickbooksConnectionsTable.status, "connected"))).returning();
   if (!updated) throw new Error("QuickBooks disconnected while renewing authorization.");
-  return updated;
+  return {connection:updated};
+  });
+  if(outcome.error)throw outcome.error;
+  return outcome.connection!;
+}
+
+export async function replaceQuickBooksConnection(values:typeof quickbooksConnectionsTable.$inferInsert) {
+  await db.transaction(async tx=>{
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(1959031411)`);
+    await tx.delete(quickbooksConnectionsTable);
+    await tx.insert(quickbooksConnectionsTable).values(values);
+  });
 }
 
 export async function getConnection() { const [row] = await db.select().from(quickbooksConnectionsTable).limit(1); return row ?? null; }
@@ -47,15 +82,17 @@ export class QuickBooksRequestError extends Error {
 }
 
 export async function qboRequest(path: string, init: RequestInit = {}, expectedConnectionId?: string) {
+  if(!path.startsWith("/")||path.startsWith("//")||path.includes("\\"))throw new Error("Invalid QuickBooks request path");
   let connection = await getConnection();
   if (connection?.status !== "connected") throw new Error("QuickBooks is not connected");
   if (expectedConnectionId && connection.id !== expectedConnectionId) throw new Error("The QuickBooks connection changed. Confirm the company and try again.");
+  if(workspaceEnvironment().DEMO_MODE==="true"&&connection.environment!=="sandbox")throw new Error("A demonstration cannot use a live QuickBooks company.");
   const send = (current: typeof quickbooksConnectionsTable.$inferSelect) => {
     const headers = new Headers(init.headers);
     headers.set("Authorization", `Bearer ${decryptSecret(current.encryptedAccessToken)}`);
     headers.set("Accept", "application/json");
     headers.set("Content-Type", "application/json");
-    return fetch(`${apiBase()}/v3/company/${current.realmId}${path}${path.includes("?") ? "&" : "?"}minorversion=75`, { ...init, headers });
+    return fetch(`${apiBase(current.environment)}/v3/company/${encodeURIComponent(current.realmId)}${path}${path.includes("?") ? "&" : "?"}minorversion=75`, { ...init, signal:init.signal?AbortSignal.any([init.signal,AbortSignal.timeout(25_000)]):AbortSignal.timeout(25_000), headers });
   };
   if (new Date(connection.accessTokenExpiresAt).getTime() < Date.now() + 60_000) connection = await refresh(connection);
   let response = await send(connection);

@@ -4,11 +4,12 @@ import { Router } from "express";
 import { z } from "zod";
 import {
   auditEventsTable, crewBookingsTable, crewsTable, db, inventoryMovementsTable, inventoryReservationsTable, inventoryStockCountsTable,
-  jobsTable, laborEntriesTable, productsTable, type InventoryStockCount,
+  jobsTable, laborEntriesTable, materialUsageTable, productsTable, type InventoryStockCount,
 } from "@workspace/db";
 import { requireOwner, requireRole } from "../middlewares/auth";
 import { domainRoute, id, parse } from "../lib/domain-http";
 import { withdrawStockCosts } from "../lib/inventory-costing";
+import { priceJobMaterialUsage } from "../lib/inventory-material-cost";
 import {
   assertBinWithdrawal, ensureOpeningMovement, lockStockProduct, roundStock,
   updateStockTotal, verifyBin, verifyWarehouse, type StockTransaction,
@@ -165,19 +166,27 @@ router.post(`${path}/:id/reconcile`, requireOwner, domainRoute(async (req, res) 
     const now = new Date().toISOString();
     let movementId: string | null = null;
     if (delta !== 0) {
+      movementId = randomUUID();
       let costAllocations = null;
+      let jobCost: ReturnType<typeof priceJobMaterialUsage> | undefined;
       if (delta < 0) {
         await assertBinWithdrawal(tx, count.productId, count.warehouseId, count.binId, -delta, true);
         await assertWarehouseReservations(tx, count, -delta);
-        const { slices } = await withdrawStockCosts(tx, count, -delta);
+        const costs = await withdrawStockCosts(tx, count, -delta);
+        if (job) jobCost = priceJobMaterialUsage(current.product, movementId, -delta, now, costs);
+        const slices = jobCost?.allocations ?? costs.slices;
         costAllocations = slices.length ? slices : null;
       }
-      movementId = randomUUID();
       await ensureOpeningMovement(tx, current.product, now);
       await tx.insert(inventoryMovementsTable).values({
         id: movementId, productId: count.productId, warehouseId: count.warehouseId, binId: count.binId, jobId: job?.id,
         quantity: delta, kind: "adjustment", reason: `Stock count (${count.reason}) · ${count.note}`,
         costAllocations, actorUserId: actor.userId, idempotencyKey: `stock-count:${count.id}`, createdAt: now,
+      });
+      if (job && jobCost) await tx.insert(materialUsageTable).values({
+        id: randomUUID(), jobId: job.id, productId: count.productId, movementId,
+        material: current.product.name, quantity: -delta, cost: jobCost.cost,
+        notes: `Approved warehouse waste: ${count.note}`, createdAt: now,
       });
       await updateStockTotal(tx, current.product, delta, now);
       if (job) await audit(wasteAttributionAction, {
