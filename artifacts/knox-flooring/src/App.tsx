@@ -11,6 +11,7 @@ import LeadDetail from "@/pages/lead-detail";
 import Jobs from "@/pages/jobs";
 import JobDetail from "@/pages/job-detail";
 import WorkOrder from "@/pages/work-order";
+import WorkGuides from "@/pages/work-guides";
 import Pipeline from "@/pages/pipeline";
 import Estimator from "@/pages/estimator";
 import Proposals from "@/pages/proposals";
@@ -104,6 +105,9 @@ function Router() {
       <Route path="/welcome" component={Welcome} />
       <Route path="/jobs/:id/work-order">
         {() => hasAppAccess ? <WorkOrder /> : <Redirect to="/welcome" />}
+      </Route>
+      <Route path="/work-guides">
+        {() => hasAppAccess ? <WorkGuides /> : <Redirect to="/welcome" />}
       </Route>
       <Route>
         {() => (hasAppAccess ? <AdminRouter /> : <Redirect to="/welcome" />)}

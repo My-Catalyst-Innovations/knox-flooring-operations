@@ -46,6 +46,7 @@ import supplierCatalogRouter from "./supplier-catalog";
 import estimateDraftsRouter from "./estimate-drafts";
 import jobOperationsRouter from "./job-operations";
 import jobAccountingRouter from "./job-accounting";
+import workGuidesRouter from "./work-guides";
 
 const router: IRouter = Router();
 
@@ -59,6 +60,7 @@ router.use(publicMediaRouter);
 router.use(publicRouter);
 router.use(requireAuth);
 router.use(enforceRoleAccess);
+router.use(workGuidesRouter);
 router.use(demoRouter);
 router.use(aiEstimatesRouter);
 router.use(aiOperationsRouter);
