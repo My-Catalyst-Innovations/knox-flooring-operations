@@ -8,6 +8,7 @@ import { WarehouseBinSelect, useWarehouseBins } from "@/components/inventory/War
 import { StockPieceLabel } from "@/components/inventory/StockPieceLabel";
 import { pieceBarcode } from "@/lib/warehouse-labels";
 import { useStore } from "@/hooks/use-store";
+import { useAuth } from "@/contexts/auth";
 import { useUnsavedForm } from "@/hooks/use-unsaved-changes";
 import { useQueryControls, useUrlState } from "@/hooks/use-url-state";
 import { operation, useOperation, useRefreshOperations } from "@/lib/operations";
@@ -25,13 +26,15 @@ const descriptions = {
   return: "Measure the usable length that came back. Only that amount returns to stock and credits the original job.",
 };
 type Action = keyof typeof labels;
+type PieceCost = { layerId: string; sourceMovementId: string; source: string; acquiredAt: string; quantity: number; unitCost: string };
 type Piece = {
   id: string; label: string; sku: string; productId: string; productName: string; parentLabel: string | null;
   warehouseId: string; binId: string | null; widthInches: number; lengthInches: number; quantity: number;
   kind: "Roll" | "Remnant"; lot: string; revision: number; issuedMovementId: string | null; issuedJobId: string | null;
+  costAllocations: PieceCost[] | null; costReviewedAt: string | null;
 };
 type HistoryEvent = {
-  id: string; action: "registered" | "cut" | "moved" | "issued" | "returned"; createdAt: string;
+  id: string; action: "registered" | "cost_bound" | "cut" | "moved" | "issued" | "returned"; createdAt: string;
   details: { note?: string; childLabel?: string; quantity?: number; sourceWarehouseId?: string; sourceBinId?: string | null; destinationWarehouseId?: string; destinationBinId?: string | null };
   costAllocations: { source: string; quantity: number; unitCost: string }[] | null;
 };
@@ -124,7 +127,7 @@ function PieceEditor({ action, piece, products, jobs, warehouses, bins, defaultP
       }
       guard.reset(form);
       const messages = {
-        register: `${form.label.trim()} labeled.`, cut: `${form.label.trim()} cut and labeled.`, move: `${piece?.label} moved.`,
+        register: `${form.label.trim()} labeled. An owner must review its acquisition cost before use.`, cut: `${form.label.trim()} cut and labeled.`, move: `${piece?.label} moved.`,
         issue: `${piece?.label} issued.`, return: `${piece?.label} returned to stock.`,
       };
       onSaved(messages[action]);
@@ -214,10 +217,63 @@ function PieceEditor({ action, piece, products, jobs, warehouses, bins, defaultP
   </Dialog>;
 }
 
+const costBasis: Record<string, string> = { purchase_order: "PO receipt", stock_receipt: "Stock receipt", catalog: "Catalog rate", historical_issue: "Original job issue", reviewed_opening: "Reviewed opening stock" };
+
+function PieceCostReview({ piece, close, saved }: { piece: Piece; close(): void; saved(): void }) {
+  const sources = useOperation<{ layers: PieceCost[]; unpricedQuantity: number }>(`${path}/${encodeURIComponent(piece.id)}/cost-sources`, ["owner"]);
+  const [form, setForm] = useState({ sourceLayerId: "", reviewedUnitCost: "", note: "" });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const inFlight = useRef(false);
+  const requestKey = useInventoryRequestKey();
+  const guard = useUnsavedForm(true, form);
+  const eligible = (sources.data?.layers ?? []).filter((layer) => layer.quantity >= piece.quantity);
+  const openingAllowed = (sources.data?.unpricedQuantity ?? 0) >= piece.quantity;
+  const closing = () => { if (!inFlight.current && guard.confirmDiscard()) close(); };
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    if (inFlight.current) return;
+    inFlight.current = true; setSaving(true); setError("");
+    try {
+      const data = { revision: piece.revision, note: form.note.trim(), ...(form.sourceLayerId === "opening" ? { reviewedUnitCost: form.reviewedUnitCost } : { sourceLayerId: form.sourceLayerId }) };
+      await operation(`${path}/${encodeURIComponent(piece.id)}/bind-cost`, "POST", { ...data, idempotencyKey: requestKey.forBody(data) });
+      guard.reset(form); saved();
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "The acquisition cost could not be saved."); }
+    finally { inFlight.current = false; setSaving(false); }
+  }
+  return <Dialog open onOpenChange={(open) => !open && closing()}>
+    <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
+      <DialogHeader><DialogTitle>Review cost · {piece.label}</DialogTitle><DialogDescription>Identify the actual acquisition source for this physical piece. Its cuts, moves, job issues, and returns will retain this cost.</DialogDescription></DialogHeader>
+      <p className="text-sm">{piece.sku} · {purchaseQuantity(piece.quantity)} sq ft</p>
+      {sources.isLoading && <p role="status">Loading available cost sources…</p>}
+      {sources.isError && <p role="alert">Cost sources could not load. <button className="underline" onClick={() => void sources.refetch()}>Retry</button></p>}
+      <form className="space-y-4" onSubmit={save}>
+        <fieldset disabled={saving || !sources.data} className="space-y-3">
+          <label className="block space-y-1 text-sm font-medium">Actual acquisition source
+            <select required className={inventorySelect} value={form.sourceLayerId} onChange={(event) => setForm({ ...form, sourceLayerId: event.target.value })}>
+              <option value="">Choose the verified source</option>
+              {eligible.map((layer) => <option key={layer.layerId} value={layer.layerId}>{costBasis[layer.source] ?? layer.source} · {new Date(layer.acquiredAt).toLocaleDateString()} · ${layer.unitCost}/sq ft · {purchaseQuantity(layer.quantity)} sq ft available · {layer.sourceMovementId}</option>)}
+              {openingAllowed && <option value="opening">Previously unpriced stock — enter verified actual cost</option>}
+            </select>
+          </label>
+          {form.sourceLayerId === "opening" && <label className="block space-y-1 text-sm font-medium">Verified acquisition cost per sq ft
+            <Input required inputMode="decimal" pattern="[0-9]{1,12}(\.[0-9]{1,6})?" value={form.reviewedUnitCost} onChange={(event) => setForm({ ...form, reviewedUnitCost: event.target.value })} />
+          </label>}
+          <label className="block space-y-1 text-sm font-medium">Review note
+            <Input required maxLength={500} placeholder="Invoice or receipt reference used to identify this roll" value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} />
+          </label>
+          {sources.data && !eligible.length && !openingAllowed && <p className="text-sm">No single available acquisition source covers this piece. Reconcile its receipt quantities and physical labels before use.</p>}
+        </fieldset>
+        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        <div className="flex justify-end gap-2"><Button type="button" variant="outline" disabled={saving} onClick={closing}>Cancel</Button><Button type="submit" disabled={saving || !form.sourceLayerId || !form.note.trim()}>{saving ? "Saving…" : "Confirm reviewed cost"}</Button></div>
+      </form>
+    </DialogContent>
+  </Dialog>;
+}
+
 function PieceHistory({ piece, warehouses, bins, close }: { piece: Piece; warehouses: Warehouse[]; bins: WarehouseBin[]; close: () => void }) {
   const history = useOperation<HistoryEvent[]>(`${path}/${encodeURIComponent(piece.id)}/history`, inventoryRoles);
-  const eventLabels = { registered: "Labeled in stock", cut: "Cut recorded", moved: "Location changed", issued: "Issued to job", returned: "Returned from job" };
-  const basis: Record<string, string> = { purchase_order: "PO receipt", stock_receipt: "Stock receipt", catalog: "Catalog rate", historical_issue: "Original job issue" };
+  const eventLabels = { registered: "Labeled in stock", cost_bound: "Acquisition cost reviewed", cut: "Cut recorded", moved: "Location changed", issued: "Issued to job", returned: "Returned from job" };
   return <Dialog open onOpenChange={(open) => !open && close()}>
     <DialogContent className="max-h-[90dvh] overflow-y-auto">
       <DialogHeader><DialogTitle>History · {piece.label}</DialogTitle><DialogDescription>Cut lineage, stock changes, and recorded cost sources.</DialogDescription></DialogHeader>
@@ -233,7 +289,7 @@ function PieceHistory({ piece, warehouses, bins, close }: { piece: Piece; wareho
             {" → "}{warehouseName(warehouses, event.details.destinationWarehouseId)} · {binName(bins, event.details.destinationBinId ?? null)}
           </p>}
           {event.details.note && <p className="break-words">{event.details.note}</p>}
-          {event.costAllocations?.map((slice, index) => <p className="text-muted-foreground" key={index}>{basis[slice.source] ?? slice.source} · {purchaseQuantity(slice.quantity)} sq ft at ${slice.unitCost} / sq ft</p>)}
+          {event.costAllocations?.map((slice, index) => <p className="text-muted-foreground" key={index}>{costBasis[slice.source] ?? slice.source} · {purchaseQuantity(slice.quantity)} sq ft at ${slice.unitCost} / sq ft</p>)}
         </li>)}
       </ol>
     </DialogContent>
@@ -247,9 +303,11 @@ export default function PhysicalPieces() {
   const [status, setStatus] = useUrlState<string>("status", "all");
   const [editor, setEditor] = useState<{ action: Action; piece: Piece | null } | null>(null);
   const [history, setHistory] = useState<Piece | null>(null);
+  const [costReview, setCostReview] = useState<Piece | null>(null);
   const [printPiece, setPrintPiece] = useState<Piece | null>(null);
   const [notice, setNotice] = useState("");
   const { products, jobs } = useStore();
+  const { user } = useAuth();
   const warehouses = useOperation<Warehouse[]>("/inventory/warehouses", inventoryRoles);
   const bins = useWarehouseBins();
   const stock = useOperation<{ pieces: Piece[]; hasMore: boolean }>(withQuery({
@@ -295,6 +353,8 @@ export default function PhysicalPieces() {
         </div>
         <p className="text-sm">{piece.sku} · {piece.productName}</p>
         <p className="text-sm">{piece.kind} · {dimensions(piece.widthInches, piece.lengthInches)} · {purchaseQuantity(piece.quantity)} sq ft</p>
+        {!piece.costAllocations?.length && <p className="text-sm font-medium text-amber-700 dark:text-amber-400">Cost review required{piece.issuedMovementId ? " after return" : " before cutting, moving, or issuing"}.</p>}
+        {!!piece.costAllocations?.length && <p className="text-sm text-muted-foreground">Reviewed acquisition cost · {piece.costAllocations.map((slice) => `${purchaseQuantity(slice.quantity)} sq ft at $${slice.unitCost}`).join("; ")}</p>}
         <p className="text-sm text-muted-foreground">
           {piece.issuedJobId
             ? <Link className="underline" href={`/jobs/${encodeURIComponent(piece.issuedJobId)}`}>{jobs.find(({ id }) => id === piece.issuedJobId)?.jobNumber ?? "Open issuing job"}</Link>
@@ -303,7 +363,8 @@ export default function PhysicalPieces() {
         </p>
         <div className="flex flex-wrap gap-2">
           {(["cut", "move", "issue", "return"] as const).filter((action) => piece.issuedMovementId ? action === "return" : action !== "return").map((action) =>
-            <Button key={action} size="sm" variant="outline" disabled={(action === "move" || action === "return") && !locationReady} onClick={() => { setNotice(""); setEditor({ action, piece }); }}>{labels[action]}</Button>)}
+            <Button key={action} size="sm" variant="outline" disabled={(action !== "return" && !piece.costAllocations?.length) || ((action === "move" || action === "return") && !locationReady)} onClick={() => { setNotice(""); setEditor({ action, piece }); }}>{labels[action]}</Button>)}
+          {!piece.issuedMovementId && !piece.costAllocations?.length && user?.role === "owner" && <Button size="sm" onClick={() => setCostReview(piece)}>Review cost</Button>}
           <Button size="sm" variant="ghost" onClick={() => setHistory(piece)}>History</Button>
           <Button size="sm" variant="ghost" disabled={!locationReady} onClick={() => setPrintPiece(piece)}>Print label</Button>
         </div>
@@ -314,6 +375,7 @@ export default function PhysicalPieces() {
       setEditor(null); setNotice(message); void refresh();
     }} />}
     {history && <PieceHistory piece={history} warehouses={warehouses.data ?? []} bins={bins.data ?? []} close={() => setHistory(null)} />}
+    {costReview && <PieceCostReview piece={costReview} close={() => setCostReview(null)} saved={() => { setCostReview(null); setNotice(`${costReview.label} acquisition cost reviewed.`); void refresh(); }} />}
     {printPiece && <StockPieceLabel label={printPiece.label} code={pieceBarcode(printPiece.label)} fields={[
       ["SKU", printPiece.sku], ["Piece ID", printPiece.id], ["Dimensions", dimensions(printPiece.widthInches, printPiece.lengthInches)],
       ["Quantity", `${purchaseQuantity(printPiece.quantity)} sq ft`],

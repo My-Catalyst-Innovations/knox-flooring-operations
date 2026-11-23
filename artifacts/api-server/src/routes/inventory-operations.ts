@@ -576,7 +576,7 @@ router.post(
       let allocations: InventoryCostSlice[] | null = null;
       let jobCost: ReturnType<typeof priceJobIssue> | undefined;
       if (delta < 0) {
-        const costs = await withdrawStockCosts(tx, location, -delta);
+        const costs = await withdrawStockCosts(tx, location, -delta, piece?.id);
         if (issuingJob) jobCost = priceJobIssue(product, movementId, -delta, now, costs);
         allocations = jobCost?.allocations ?? costs.slices;
       } else if (returnCredit || data.unitCost !== undefined) {
@@ -823,7 +823,7 @@ router.patch(
         await ensureOpeningMovement(tx, product, now);
         const movementId = randomUUID();
         const location = { productId: product.id, warehouseId: current.warehouseId, binId };
-        const costs = await withdrawStockCosts(tx, location, current.quantity);
+        const costs = await withdrawStockCosts(tx, location, current.quantity, piece?.id);
         const jobCost = priceJobIssue(product, movementId, current.quantity, now, costs);
         const [movement] = await tx
           .insert(inventoryMovementsTable)

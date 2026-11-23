@@ -35,11 +35,16 @@ export function reviewedInvoicesAvailable(
   company: Company | null,
   env = workspaceEnvironment(),
 ) {
+  if (
+    env.DEMO_MODE === "true" ||
+    company?.status !== "connected" ||
+    company.environment !== env.QUICKBOOKS_ENVIRONMENT
+  )
+    return false;
+  if (company.environment === "sandbox") return true;
   return (
-    env.DEMO_MODE !== "true" &&
     env.QUICKBOOKS_ENVIRONMENT === "production" &&
     env.QUICKBOOKS_PRODUCTION_REVIEWED_INVOICES_ENABLED === "true" &&
-    company?.status === "connected" &&
     company.environment === "production" &&
     !!env.QUICKBOOKS_PRODUCTION_REVIEWED_INVOICES_REALM_ID &&
     company.realmId === env.QUICKBOOKS_PRODUCTION_REVIEWED_INVOICES_REALM_ID
@@ -47,11 +52,12 @@ export function reviewedInvoicesAvailable(
 }
 
 export const requiresInvoiceReview = (
-  invoice: Pick<InvoiceRow, "taxAmount" | "depositAmount" | "discountAmount">,
+  invoice: Pick<InvoiceRow, "taxAmount" | "depositAmount" | "discountAmount" | "paidAmount">,
 ) =>
   invoice.taxAmount !== 0 ||
   invoice.depositAmount !== 0 ||
-  invoice.discountAmount !== 0;
+  invoice.discountAmount !== 0 ||
+  invoice.paidAmount !== 0;
 
 export function invoiceReviewFingerprint(
   company: Company,

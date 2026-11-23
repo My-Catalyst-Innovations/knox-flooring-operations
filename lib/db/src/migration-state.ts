@@ -9,6 +9,8 @@ export const schemaMigrationIds = [
   "0017_staging_counts_and_operational_kpis",
   "0018_workspace_identity_and_purchase_units",
   "0019_outlook_mailbox_sender",
+  "0020_physical_piece_cost_provenance",
+  "0021_user_profiles",
 ] as const;
 
 export async function assertMigrationsApplied(client: { query: (text: string) => Promise<{ rows: Array<{ id: string }> }> }) {

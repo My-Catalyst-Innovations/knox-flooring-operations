@@ -3,7 +3,7 @@ import { setCsrfToken } from "@workspace/api-client-react";
 
 export type AppRole = "owner" | "sales" | "operations" | "installer";
 type User = { id: string; email: string; name: string; role: AppRole; actualRole?: AppRole; previewRole?: AppRole | null };
-type AuthContextValue = { user: User | null; loading: boolean; login(email: string, password: string): Promise<void>; enterDemo(): Promise<void>; logout(): Promise<void>; switchPersona(role: Exclude<AppRole, "owner"> | null): Promise<void>; forgot(email: string): Promise<string>; reset(token: string, password: string): Promise<void>; acceptInvitation(token: string, password: string): Promise<void>; changePassword(currentPassword: string, newPassword: string): Promise<void> };
+type AuthContextValue = { user: User | null; loading: boolean; refreshSession(): Promise<void>; login(email: string, password: string): Promise<void>; enterDemo(): Promise<void>; logout(): Promise<void>; switchPersona(role: Exclude<AppRole, "owner"> | null): Promise<void>; forgot(email: string): Promise<string>; reset(token: string, password: string): Promise<void>; acceptInvitation(token: string, password: string): Promise<void>; changePassword(currentPassword: string, newPassword: string): Promise<void> };
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 async function request(path: string, init?: RequestInit) {
@@ -17,6 +17,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const accept = (body: any) => { setUser(body.user); setCsrf(body.csrfToken); setCsrfToken(body.csrfToken); };
   useEffect(() => { request("/auth/session").then(accept).catch(() => { setUser(null); setCsrfToken(null); }).finally(() => setLoading(false)); }, []);
   const value = useMemo<AuthContextValue>(() => ({ user, loading,
+    refreshSession: async () => { accept(await request("/auth/session")); },
     login: async (email, password) => { const body = await request("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }); accept(body); },
     enterDemo: async () => { const body = await request("/auth/demo", { method: "POST" }); accept(body); },
     logout: async () => { await request("/auth/logout", { method: "POST", headers: csrf ? { "x-csrf-token": csrf } : {} }); sessionStorage.removeItem("knox-demo-entered"); setUser(null); setCsrf(null); setCsrfToken(null); },

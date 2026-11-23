@@ -29,6 +29,7 @@ import WarehouseBins from "@/pages/warehouse-bins";
 import PhysicalPieces from "@/pages/physical-pieces";
 import Reports from "@/pages/reports";
 import Settings from "@/pages/settings";
+import Profile from "@/pages/profile";
 import PublicStatus from "@/pages/public-status";
 import PublicQuote from "@/pages/public-quote";
 import PublicPrint from "@/pages/public-print";
@@ -71,6 +72,7 @@ function AdminRouter() {
         <Route path="/inventory/physical-pieces" component={PhysicalPieces} />
         <Route path="/reports" component={Reports} />
         <Route path="/settings" component={Settings} />
+        <Route path="/profile" component={Profile} />
         <Route path="/integration-health" component={IntegrationHealth} />
         <Route path="/demo-outbox" component={DemoOutbox} />
         <Route path="/communications" component={Messages} />

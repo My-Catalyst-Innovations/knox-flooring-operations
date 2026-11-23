@@ -6,6 +6,7 @@ import {
 import { quickBooksInvoiceLines } from "./quickbooks-invoice";
 import {
   reviewedInvoicesAvailable,
+  requiresInvoiceReview,
   verifyClassicInvoiceTax,
   verifyExistingInvoice,
   verifyInvoiceReviewCompany,
@@ -90,6 +91,36 @@ it("unlocks reviewed production accounting only in the configured connected comp
   expect(
     reviewedInvoicesAvailable({ ...company, status: "disconnected" }, env),
   ).toBe(false);
+  expect(reviewedInvoicesAvailable(company, {
+    ...env, QUICKBOOKS_PRODUCTION_REVIEWED_INVOICES_ENABLED: "false",
+  })).toBe(false);
+  expect(reviewedInvoicesAvailable(company, {
+    ...env, QUICKBOOKS_ENVIRONMENT: "sandbox",
+  })).toBe(false);
+});
+
+it("permits the same owner accounting review in a connected real sandbox without opening production books", () => {
+  const sandbox = { ...company, environment: "sandbox" };
+  const env = { DEMO_MODE: "false", QUICKBOOKS_ENVIRONMENT: "sandbox" };
+  expect(reviewedInvoicesAvailable(sandbox, env)).toBe(true);
+  expect(reviewedInvoicesAvailable(sandbox, { ...env, DEMO_MODE: "true" })).toBe(false);
+  expect(reviewedInvoicesAvailable(sandbox, { ...env, QUICKBOOKS_ENVIRONMENT: "production" })).toBe(false);
+  expect(reviewedInvoicesAvailable(sandbox, { DEMO_MODE: "false" })).toBe(false);
+  expect(reviewedInvoicesAvailable({ ...sandbox, status: "disconnected" }, env)).toBe(false);
+  expect(reviewedInvoicesAvailable(null, env)).toBe(false);
+  expect(reviewedInvoicesAvailable(company, env)).toBe(false);
+  expect(reviewedInvoicesAvailable({ ...company, environment: "unrecognized" }, {
+    QUICKBOOKS_ENVIRONMENT: "unrecognized",
+  })).toBe(false);
+});
+
+it("requires accounting review for an existing payment even without tax, discount or deposit", () => {
+  const plain = { taxAmount: 0, discountAmount: 0, depositAmount: 0, paidAmount: 0 };
+  expect(requiresInvoiceReview(plain)).toBe(false);
+  expect(requiresInvoiceReview({ ...plain, paidAmount: 25 })).toBe(true);
+  expect(requiresInvoiceReview({ ...plain, taxAmount: 9.25 })).toBe(true);
+  expect(requiresInvoiceReview({ ...plain, discountAmount: 10 })).toBe(true);
+  expect(requiresInvoiceReview({ ...plain, depositAmount: 25 })).toBe(true);
 });
 
 it("verifies the exact classic US tax on discounted lines and will not guess an AST rate", async () => {
@@ -134,7 +165,7 @@ it("verifies the exact classic US tax on discounted lines and will not guess an 
   ).rejects.toThrow(/automated sales tax/i);
 });
 
-it("posts only the frozen discounted/taxed invoice document and rejects a different QuickBooks calculation", async () => {
+it.each(["production", "sandbox"])("posts only the frozen %s discounted/taxed invoice and rejects a different QuickBooks calculation", async (environment) => {
   const invoice = { ...source, taxAmount: 8.33 };
   const lineItems = quickBooksInvoiceLines(
     invoice,
@@ -143,7 +174,7 @@ it("posts only the frozen discounted/taxed invoice document and rejects a differ
     true,
     new Set(["line1"]),
   );
-  const attempt = prepareQuickBooksInvoiceCreate(company, "local-invoice", {
+  const attempt = prepareQuickBooksInvoiceCreate({ ...company, environment }, "local-invoice", {
     CustomerRef: { value: "32" },
     DocNumber: "F-100",
     Line: lineItems,

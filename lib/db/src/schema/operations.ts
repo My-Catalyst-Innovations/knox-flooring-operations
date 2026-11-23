@@ -141,7 +141,7 @@ export const inventoryTransfersTable = pgTable("inventory_transfers", {
 export type InventoryCostSlice = {
   layerId: string | null;
   sourceMovementId: string;
-  source: "purchase_order" | "stock_receipt" | "catalog" | "historical_issue";
+  source: "purchase_order" | "stock_receipt" | "catalog" | "historical_issue" | "reviewed_opening";
   acquiredAt: string;
   quantity: number;
   unitCost: string;

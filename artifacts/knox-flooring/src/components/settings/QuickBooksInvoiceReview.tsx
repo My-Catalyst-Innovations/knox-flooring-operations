@@ -8,6 +8,7 @@ import type { SandboxAccount } from "./SandboxStockItems";
 type Source = {
   invoiceNumber: string;
   company: string;
+  environment: "sandbox" | "production";
   tax: number;
   discount: number;
   deposit: number;
@@ -17,6 +18,7 @@ type Source = {
 type Preview = {
   fingerprint: string;
   realmId: string;
+  environment: "sandbox" | "production";
   discount: number;
   tax: number;
   deposit: number;
@@ -132,6 +134,9 @@ export function QuickBooksInvoiceReview({
           <p className="font-medium">
             Invoice {source.invoiceNumber} · {source.company}
           </p>
+          <p className="text-muted-foreground">
+            {source.environment === "sandbox" ? "Intuit sandbox company" : "QuickBooks production company"}
+          </p>
           <label className="block max-w-64 space-y-1">
             Existing QuickBooks invoice ID{!needsExisting && " (optional)"}
             <Input
@@ -240,7 +245,7 @@ export function QuickBooksInvoiceReview({
           {preview && (
             <div className="space-y-2 rounded-md bg-muted/50 p-3">
               <p className="font-medium">
-                {source.company} · company {preview.realmId}
+                {source.company} · {preview.environment === "sandbox" ? "sandbox" : "production"} company {preview.realmId}
               </p>
               <p>
                 Customer {preview.evidence.customer.DisplayName} (
@@ -296,8 +301,12 @@ export function QuickBooksInvoiceReview({
                   onChange={(event) => setConfirmed(event.target.checked)}
                 />
                 {existingId
-                  ? "I approve linking this existing QuickBooks invoice."
-                  : "I approve creating this invoice in QuickBooks Online."}
+                  ? preview.environment === "sandbox"
+                    ? "I approve linking this existing QuickBooks sandbox invoice."
+                    : "I approve linking this existing QuickBooks invoice."
+                  : preview.environment === "sandbox"
+                    ? "I approve creating this invoice in the QuickBooks sandbox."
+                    : "I approve creating this invoice in QuickBooks Online."}
               </label>
               <Button
                 type="button"

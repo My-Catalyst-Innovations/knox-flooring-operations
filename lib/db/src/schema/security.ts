@@ -5,6 +5,8 @@ export const usersTable = pgTable("users", {
   email: text("email").notNull(),
   passwordHash: text("password_hash").notNull(),
   name: text("name").notNull().default("Owner"),
+  phone: text("phone").notNull().default(""),
+  jobTitle: text("job_title").notNull().default(""),
   role: text("role").notNull().default("owner"),
   active: boolean("active").notNull().default(true),
   failedLoginCount: integer("failed_login_count").notNull().default(0),

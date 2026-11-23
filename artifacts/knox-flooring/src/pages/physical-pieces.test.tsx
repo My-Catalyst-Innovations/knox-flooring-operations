@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PhysicalPieces from "./physical-pieces";
 
-const mocks = vi.hoisted(() => ({ operation: vi.fn(), refresh: vi.fn(), issued: false }));
+const mocks = vi.hoisted(() => ({ operation: vi.fn(), refresh: vi.fn(), issued: false, bound: true, role: "owner" }));
 const piece = {
   id: "piece-1", label: "CARPET-CUT-1", sku: "CARPET-1", productId: "product-1", productName: "Carpet",
   parentLabel: "ROLL-1", warehouseId: "warehouse-1", binId: "bin-1", widthInches: 120,
@@ -14,6 +14,7 @@ vi.mock("@/hooks/use-store", () => ({
     products: [], jobs: [{ id: "job-1", jobNumber: "KNOX-100", customerName: "Customer", status: "Approved" }],
   }),
 }));
+vi.mock("@/contexts/auth", () => ({ useAuth: () => ({ user: { role: mocks.role } }) }));
 vi.mock("@/lib/operations", async (original) => ({
   ...await original<typeof import("@/lib/operations")>(),
   operation: mocks.operation,
@@ -22,10 +23,12 @@ vi.mock("@/lib/operations", async (original) => ({
     const stockData = {
       pieces: [{
         ...piece, issuedMovementId: mocks.issued ? "issue-1" : null, issuedJobId: mocks.issued ? "job-1" : null,
+        costAllocations: mocks.bound ? [{ layerId: "receipt:0", sourceMovementId: "receipt", source: "stock_receipt", acquiredAt: "2026-11-23T12:00:00Z", quantity: 25, unitCost: "2.000000" }] : null,
       }],
       hasMore: false,
     };
-    const data = path.startsWith("/inventory/reservations")
+    const data = path.endsWith("/cost-sources") ? { layers: [{ layerId: "actual-receipt:0", sourceMovementId: "actual-receipt", source: "stock_receipt", acquiredAt: "2026-11-23T12:00:00Z", quantity: 100, unitCost: "4.250000" }], unpricedQuantity: 0 }
+      : path.startsWith("/inventory/reservations")
       ? [{ id: "reservation-1", status: "Active", warehouseId: "warehouse-1", jobId: "job-1", quantity: 25, revision: 1 }]
       : path === "/inventory/warehouses"
         ? [{ id: "warehouse-1", name: "Main warehouse" }, { id: "warehouse-2", name: "Second warehouse" }]
@@ -39,12 +42,34 @@ vi.mock("@/lib/operations", async (original) => ({
 beforeEach(() => {
   window.history.replaceState({}, "", "/inventory/physical-pieces");
   mocks.issued = false;
+  mocks.bound = true; mocks.role = "owner";
   mocks.operation.mockReset().mockResolvedValue({});
   mocks.refresh.mockReset().mockResolvedValue(undefined);
 });
 afterEach(cleanup);
 
 describe("labeled stock jobs", () => {
+  it("requires owner acquisition review before an unbound piece can be cut, moved, or issued", async () => {
+    mocks.bound = false;
+    render(<PhysicalPieces />);
+    for (const label of ["Cut a piece", "Move piece", "Issue to a job"]) expect(screen.getByRole("button", { name: label })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Review cost" }));
+    const form = within(screen.getByRole("dialog"));
+    fireEvent.change(form.getByLabelText("Actual acquisition source"), { target: { value: "actual-receipt:0" } });
+    fireEvent.change(form.getByLabelText("Review note"), { target: { value: "Matched physical tag to vendor invoice 14" } });
+    fireEvent.click(form.getByRole("button", { name: "Confirm reviewed cost" }));
+    await waitFor(() => expect(mocks.operation).toHaveBeenCalledWith("/inventory/physical-pieces/piece-1/bind-cost", "POST", expect.objectContaining({
+      revision: 2, sourceLayerId: "actual-receipt:0", note: "Matched physical tag to vendor invoice 14", idempotencyKey: expect.any(String),
+    })));
+  });
+
+  it("keeps unreviewed historical issues returnable without granting operations cost review", () => {
+    mocks.bound = false; mocks.issued = true; mocks.role = "operations";
+    render(<PhysicalPieces />);
+    expect(screen.getByRole("button", { name: "Return from job" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Review cost" })).toBeNull();
+  });
+
   it("uses the matching existing reservation when an operator issues a piece", async () => {
     render(<PhysicalPieces />);
     fireEvent.click(screen.getByRole("button", { name: "Issue to a job" }));
