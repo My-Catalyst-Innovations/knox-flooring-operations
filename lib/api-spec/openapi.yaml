@@ -441,6 +441,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /communications/email/status:
+    get:
+      operationId: getEmailDeliveryStatus
+      tags: [communications]
+      summary: Determine whether company email senders are available
+      responses:
+        "200":
+          description: Email delivery mode and connected mailbox status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailDeliveryStatus"
   /communications/sms/status:
     get:
       operationId: getSmsDeliveryStatus
@@ -5140,6 +5152,28 @@ components:
         message:
           type: string
           nullable: true
+    EmailDeliveryStatus:
+      type: object
+      required: [mode, resend, outlook]
+      properties:
+        mode:
+          type: string
+          enum: [capture, allowlist, live]
+        resend:
+          type: object
+          required: [configured]
+          properties:
+            configured:
+              type: boolean
+        outlook:
+          type: object
+          required: [connected, mailboxEmail]
+          properties:
+            connected:
+              type: boolean
+            mailboxEmail:
+              type: string
+              nullable: true
     SmsDeliveryStatus:
       type: object
       required: [mode, provider, serverSendAvailable]
@@ -5202,6 +5236,10 @@ components:
         providerMessageId:
           type: string
           nullable: true
+        emailProvider:
+          type: string
+          enum: [resend, outlook]
+          nullable: true
         errorMessage:
           type: string
           nullable: true
@@ -5214,6 +5252,10 @@ components:
         - subject
         - body
       properties:
+        provider:
+          type: string
+          enum: [resend, outlook]
+          description: Sender selected for this message. Defaults to the company Resend sender.
         idempotencyKey:
           type: string
           description: Reuse for retries of one immutable message. Required for external delivery.

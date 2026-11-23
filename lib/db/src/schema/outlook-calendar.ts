@@ -8,6 +8,8 @@ export const outlookCalendarConnectionTable = pgTable(
     id: integer("id").primaryKey().default(1),
     accountId: text("account_id").notNull(),
     accountName: text("account_name").notNull(),
+    mailboxEmail: text("mailbox_email"),
+    grantedScopes: text("granted_scopes").notNull().default(""),
     accessToken: text("access_token"),
     refreshToken: text("refresh_token"),
     accessTokenExpiresAt: text("access_token_expires_at"),

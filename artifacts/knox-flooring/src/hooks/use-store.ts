@@ -729,6 +729,7 @@ export function useCommunications(filter: CommunicationsFilter) {
     body: string;
     customerName?: string;
     idempotencyKey?: string;
+    provider?: "resend" | "outlook";
   }): Promise<Communication> => {
     const created = await sendEmailMutation.mutateAsync({
       data: { ...input, ...params },

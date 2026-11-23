@@ -565,6 +565,7 @@ export interface Communication {
   body: string;
   status: CommunicationStatus;
   providerMessageId?: string | null;
+  emailProvider?: "resend" | "outlook" | null;
   errorMessage?: string | null;
   createdAt: string;
 }

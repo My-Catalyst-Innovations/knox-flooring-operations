@@ -25,5 +25,6 @@ it("distinguishes demo captures, provider submission, and delivery", () => {
   expect(communicationStatus({ status: "unknown" })).toBe(
     "Submission unconfirmed",
   );
+  expect(communicationStatus({ status: "sent", emailProvider: "outlook", providerMessageId: null })).toBe("Submitted to Outlook");
   expect(communicationStatus({ status: "failed" })).toBe("Failed");
 });

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useStore } from "@/hooks/use-store";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { SelectOrOther } from "@/components/ui/select-or-other";
 import { OWNER_ROLES } from "@/lib/options";
 import { Label } from "@/components/ui/label";
@@ -207,9 +208,9 @@ export default function Settings() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-4 md:grid-cols-3">
-            <div className="space-y-2"><Label htmlFor="current-password">Current password</Label><Input id="current-password" type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></div>
-            <div className="space-y-2"><Label htmlFor="new-password">New password</Label><Input id="new-password" type="password" autoComplete="new-password" minLength={12} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></div>
-            <div className="space-y-2"><Label htmlFor="confirm-password">Confirm new password</Label><Input id="confirm-password" type="password" autoComplete="new-password" minLength={12} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></div>
+            <div className="space-y-2"><Label htmlFor="current-password">Current password</Label><PasswordInput id="current-password" passwordLabel="current password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></div>
+            <div className="space-y-2"><Label htmlFor="new-password">New password</Label><PasswordInput id="new-password" passwordLabel="new password" autoComplete="new-password" minLength={12} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></div>
+            <div className="space-y-2"><Label htmlFor="confirm-password">Confirm new password</Label><PasswordInput id="confirm-password" passwordLabel="new password confirmation" autoComplete="new-password" minLength={12} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></div>
           </div>
           <Button disabled={passwordBusy || !currentPassword || !newPassword || !confirmPassword} onClick={savePassword}>{passwordBusy ? "Updating…" : "Update Password"}</Button>
         </CardContent>

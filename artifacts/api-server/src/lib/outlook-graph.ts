@@ -22,7 +22,9 @@ export interface OutlookConfig {
   encryptionKey: Buffer;
 }
 
-export function getOutlookConfig(env = workspaceEnvironment()): OutlookConfig | null {
+export function getOutlookConfig(
+  env = workspaceEnvironment(),
+): OutlookConfig | null {
   const {
     OUTLOOK_CLIENT_ID: clientId,
     OUTLOOK_CLIENT_SECRET: clientSecret,
@@ -111,6 +113,7 @@ const oauthState = z.object({
   verifier: z.string(),
   sessionHash: z.string(),
   expiresAt: z.number(),
+  scope: z.string().min(1),
 });
 const sessionHash = (userId: string, csrfToken: string) =>
   createHash("sha256").update(`${userId}\0${csrfToken}`).digest("base64url");
@@ -120,7 +123,9 @@ export function startOutlookAuthorization(
   userId: string,
   csrfToken: string,
   now = Date.now(),
+  options: { mail?: boolean } = {},
 ) {
+  const scope = `${config.scope}${options.mail ? " Mail.Send" : ""}`;
   const state = randomBytes(32).toString("base64url");
   const verifier = randomBytes(32).toString("base64url");
   const cookie = sealOutlookSecret(
@@ -130,6 +135,7 @@ export function startOutlookAuthorization(
       verifier,
       sessionHash: sessionHash(userId, csrfToken),
       expiresAt: now + connectLifetimeMs,
+      scope,
     }),
     "oauth-state",
   );
@@ -139,7 +145,7 @@ export function startOutlookAuthorization(
     response_type: "code",
     response_mode: "query",
     redirect_uri: config.redirectUri,
-    scope: config.scope,
+    scope,
     state,
     prompt: "select_account",
     code_challenge: createHash("sha256").update(verifier).digest("base64url"),
@@ -152,7 +158,7 @@ export function startOutlookAuthorization(
   };
 }
 
-export function getOutlookVerifier(
+export function getOutlookAuthorization(
   config: OutlookConfig,
   cookie: string,
   state: string,
@@ -173,11 +179,45 @@ export function getOutlookVerifier(
     const received = Buffer.from(state);
     return expected.length === received.length &&
       timingSafeEqual(expected, received)
-      ? saved.verifier
+      ? { verifier: saved.verifier, scope: saved.scope }
       : null;
   } catch {
     return null;
   }
+}
+
+export function getOutlookVerifier(
+  config: OutlookConfig,
+  cookie: string,
+  state: string,
+  userId: string,
+  csrfToken: string,
+  now = Date.now(),
+) {
+  return (
+    getOutlookAuthorization(config, cookie, state, userId, csrfToken, now)
+      ?.verifier ?? null
+  );
+}
+
+/** Only Microsoft token responses establish delegated capabilities. */
+export function normalizeOutlookScopes(scope: string | null | undefined) {
+  return [
+    ...new Set(
+      (scope ?? "")
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((entry) =>
+          entry.replace(/^https:\/\/graph\.microsoft\.com\//i, ""),
+        ),
+    ),
+  ]
+    .sort()
+    .join(" ");
+}
+
+export function hasOutlookMailScope(scope: string | null | undefined) {
+  return normalizeOutlookScopes(scope).split(" ").includes("Mail.Send");
 }
 
 export class OutlookError extends Error {
@@ -185,6 +225,7 @@ export class OutlookError extends Error {
     message: string,
     readonly status = 502,
     readonly retryAfterSeconds = 60,
+    readonly submissionUnknown = false,
   ) {
     super(message);
   }
@@ -194,17 +235,20 @@ const tokens = z.object({
   access_token: z.string().min(1),
   refresh_token: z.string().min(1).optional(),
   expires_in: z.coerce.number().finite().positive(),
+  scope: z.string().optional(),
 });
 
 export async function fetchOutlookToken(
   config: OutlookConfig,
-  request: { code: string; verifier: string } | { refreshToken: string },
+  request: ({ code: string; verifier: string } | { refreshToken: string }) & {
+    scope?: string;
+  },
   fetchImpl = fetch,
 ) {
   const body = new URLSearchParams({
     client_id: config.clientId,
     client_secret: config.clientSecret,
-    scope: config.scope,
+    scope: request.scope ?? config.scope,
   });
   if ("code" in request) {
     body.set("grant_type", "authorization_code");
@@ -248,6 +292,7 @@ const graphPerson = z.object({
   id: z.string().min(1),
   displayName: z.string().nullish(),
   userPrincipalName: z.string().nullish(),
+  mail: z.string().nullish(),
 });
 const graphCalendar = z.object({
   id: z.string().min(1),
@@ -283,6 +328,7 @@ function graphUrl(resource: string) {
 
 export function outlookGraph(accessToken: string, fetchImpl = fetch) {
   async function request(resource: string, options: RequestInit = {}) {
+    const sendingMail = resource === "/me/sendMail";
     const url = graphUrl(resource);
     const response = await fetchImpl(url, {
       ...options,
@@ -295,7 +341,14 @@ export function outlookGraph(accessToken: string, fetchImpl = fetch) {
         Prefer: 'IdType="ImmutableId"',
       },
     }).catch(() => {
-      throw new OutlookError("Outlook Calendar could not be reached.");
+      throw new OutlookError(
+        sendingMail
+          ? "Microsoft did not confirm email submission. Check Outlook Sent Items before sending again."
+          : "Outlook Calendar could not be reached.",
+        502,
+        60,
+        sendingMail,
+      );
     });
     if (response.ok) return response;
     if (response.status === 401)
@@ -305,24 +358,39 @@ export function outlookGraph(accessToken: string, fetchImpl = fetch) {
       );
     if (response.status === 403)
       throw new OutlookError(
-        "Microsoft denied write access to this calendar.",
+        sendingMail
+          ? "Microsoft denied permission to send from the connected mailbox."
+          : "Microsoft denied write access to this calendar.",
         403,
       );
     if (response.status === 404)
       throw new OutlookError(
-        "The Outlook calendar or event could not be found.",
+        sendingMail
+          ? "The connected Outlook mailbox could not be found."
+          : "The Outlook calendar or event could not be found.",
         404,
       );
     if (response.status === 429) {
       const retry = Number(response.headers.get("Retry-After"));
       throw new OutlookError(
-        "Outlook is limiting requests. Catalyst will retry.",
+        sendingMail
+          ? "Microsoft refused this email because of request limits. Try again later."
+          : "Outlook is limiting requests. Catalyst will retry.",
         429,
         Number.isFinite(retry) && retry > 0 ? retry : 60,
       );
     }
     throw new OutlookError(
-      "Microsoft could not complete the calendar request.",
+      sendingMail
+        ? response.status >= 500 || response.status === 408
+          ? "Microsoft did not confirm email submission. Check Outlook Sent Items before sending again."
+          : "Microsoft refused this email submission. Check the mailbox and message before trying again."
+        : "Microsoft could not complete the calendar request.",
+      sendingMail && response.status < 500 && response.status !== 408
+        ? response.status
+        : 502,
+      60,
+      sendingMail && (response.status >= 500 || response.status === 408),
     );
   }
 
@@ -360,7 +428,28 @@ export function outlookGraph(accessToken: string, fetchImpl = fetch) {
     `${calendarPath(calendarId)}/events/${encodeURIComponent(eventId)}`;
   return {
     account: () =>
-      read("/me?$select=id,displayName,userPrincipalName", graphPerson),
+      read("/me?$select=id,displayName,userPrincipalName,mail", graphPerson),
+    async sendMail(message: { to: string; subject: string; body: string }) {
+      const response = await request("/me/sendMail", {
+        method: "POST",
+        body: JSON.stringify({
+          message: {
+            subject: message.subject,
+            body: { contentType: "Text", content: message.body },
+            toRecipients: [{ emailAddress: { address: message.to } }],
+          },
+          saveToSentItems: true,
+        }),
+      });
+      if (response.status !== 202)
+        throw new OutlookError(
+          "Microsoft did not confirm email submission. Check Outlook Sent Items before sending again.",
+          502,
+          60,
+          true,
+        );
+      return { accepted: true as const };
+    },
     calendars: async () =>
       (
         await list("/me/calendars?$select=id,name,owner,canEdit", graphCalendar)

@@ -12,6 +12,13 @@ const state = vi.hoisted(() => ({
   >,
   inbound: new Map<string, CommunicationInsert>(),
   capture: vi.fn(),
+  outlookSend: vi.fn(),
+  outlookCapability: vi.fn(),
+}));
+
+vi.mock("../lib/outlook-calendar", () => ({
+  sendOutlookEmail: state.outlookSend,
+  outlookEmailCapability: state.outlookCapability,
 }));
 
 vi.mock("@workspace/db", async () => {
@@ -122,6 +129,7 @@ vi.mock("@workspace/db", async () => {
 });
 
 import communicationsRouter from "./communications";
+import { OutlookError } from "../lib/outlook-graph";
 import {
   signalWireInboundWebhook,
   signalWireStatusWebhook,
@@ -198,6 +206,12 @@ beforeEach(() => {
   state.inbound.clear();
   state.capture.mockReset();
   fetch.mockReset();
+  state.outlookSend.mockReset();
+  state.outlookCapability.mockReset();
+  state.outlookCapability.mockResolvedValue({
+    connected: false,
+    mailboxEmail: null,
+  });
   vi.stubGlobal("fetch", fetch);
   vi.stubEnv("DEMO_MODE", "false");
   vi.stubEnv("DEMO_ACCESS_ENABLED", "false");
@@ -253,6 +267,135 @@ it("submits one send per idempotency key and rejects a changed message using tha
   });
   expect(repeat.body).toEqual(first.body);
   expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+it("submits through the selected Outlook mailbox once without claiming delivery or a provider ID", async () => {
+  state.outlookSend.mockResolvedValue({
+    accepted: true,
+    mailboxEmail: "owner@example.com",
+  });
+  const input = { ...email, provider: "outlook" };
+  const first = await request(app)
+    .post("/communications/email")
+    .send(input)
+    .expect(201);
+  const repeat = await request(app)
+    .post("/communications/email")
+    .send(input)
+    .expect(200);
+  expect(first.body).toMatchObject({
+    status: "sent",
+    emailProvider: "outlook",
+    fromAddress: "owner@example.com",
+  });
+  expect(first.body.providerMessageId).toBeUndefined();
+  expect(repeat.body).toEqual(first.body);
+  await request(app)
+    .post("/communications/email")
+    .send({ ...input, provider: "resend" })
+    .expect(409);
+  expect(state.outlookSend).toHaveBeenCalledExactlyOnceWith({
+    to: "customer@example.com",
+    subject: email.subject,
+    body: email.body,
+  });
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("does not silently change a Resend claim to Outlook, including older rows without a provider", async () => {
+  fetch.mockResolvedValue(Response.json({ id: "mocked-message" }));
+  await request(app).post("/communications/email").send(email).expect(201);
+  state.row = { ...state.row!, emailProvider: null };
+  await request(app)
+    .post("/communications/email")
+    .send({ ...email, provider: "outlook" })
+    .expect(409);
+  await request(app).post("/communications/email").send(email).expect(200);
+  expect(state.outlookSend).not.toHaveBeenCalled();
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+it("retains an ambiguous Outlook submission on retry and never falls back to another sender", async () => {
+  const error = new OutlookError(
+    "Microsoft did not confirm submission. Check Sent Items before sending again.",
+    502,
+  );
+  Object.assign(error, { submissionUnknown: true });
+  state.outlookSend.mockRejectedValue(error);
+  const input = { ...email, provider: "outlook" };
+  const first = await request(app)
+    .post("/communications/email")
+    .send(input)
+    .expect(201);
+  expect(first.body.status).toBe("unknown");
+  const repeat = await request(app)
+    .post("/communications/email")
+    .send(input)
+    .expect(200);
+  expect(repeat.body).toEqual(first.body);
+  expect(state.outlookSend).toHaveBeenCalledTimes(1);
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("records a definitive Outlook permission rejection as failed", async () => {
+  state.outlookSend.mockRejectedValue(
+    new OutlookError("Reconnect Microsoft and allow email sending.", 403),
+  );
+  const result = await request(app)
+    .post("/communications/email")
+    .send({ ...email, provider: "outlook" })
+    .expect(201);
+  expect(result.body).toMatchObject({
+    status: "failed",
+    emailProvider: "outlook",
+  });
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("keeps Outlook inside capture and allowlist protection and validates the provider", async () => {
+  await request(app)
+    .post("/communications/email")
+    .send({ ...email, provider: "unrecognized" })
+    .expect(400);
+  vi.stubEnv("COMMS_DELIVERY_MODE", "allowlist");
+  vi.stubEnv("COMMS_ALLOWLIST", "owner@example.com");
+  const result = await request(app)
+    .post("/communications/email")
+    .send({ ...email, provider: "outlook" })
+    .expect(201);
+  expect(result.body).toMatchObject({
+    status: "captured",
+    emailProvider: "outlook",
+  });
+  expect(state.outlookSend).not.toHaveBeenCalled();
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("applies email suppression to Outlook and exposes only safe sender readiness", async () => {
+  state.suppression = true;
+  const result = await request(app)
+    .post("/communications/email")
+    .send({ ...email, provider: "outlook" })
+    .expect(201);
+  expect(result.body.status).toBe("failed");
+  expect(state.outlookSend).not.toHaveBeenCalled();
+  state.outlookCapability.mockResolvedValue({
+    connected: true,
+    mailboxEmail: "owner@example.com",
+  });
+  await request(app)
+    .get("/communications/email/status")
+    .expect(200, {
+      mode: "live",
+      resend: { configured: true },
+      outlook: { connected: true, mailboxEmail: "owner@example.com" },
+    });
+  vi.stubEnv("READ_ONLY_RECOVERY", "true");
+  const readiness = await request(app)
+    .get("/communications/email/status")
+    .expect(200);
+  expect(readiness.body.resend.configured).toBe(false);
+  expect(readiness.body.outlook.connected).toBe(false);
 });
 
 it("requires a request identifier for external delivery and preserves an unconfirmed response on retry", async () => {

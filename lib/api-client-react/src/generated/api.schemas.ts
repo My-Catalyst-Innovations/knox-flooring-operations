@@ -1307,6 +1307,30 @@ export interface GoogleSyncResult {
   message?: string | null;
 }
 
+export type EmailDeliveryStatusMode = typeof EmailDeliveryStatusMode[keyof typeof EmailDeliveryStatusMode];
+
+
+export const EmailDeliveryStatusMode = {
+  capture: 'capture',
+  allowlist: 'allowlist',
+  live: 'live',
+} as const;
+
+export type EmailDeliveryStatusResend = {
+  configured: boolean;
+};
+
+export type EmailDeliveryStatusOutlook = {
+  connected: boolean;
+  mailboxEmail: string | null;
+};
+
+export interface EmailDeliveryStatus {
+  mode: EmailDeliveryStatusMode;
+  resend: EmailDeliveryStatusResend;
+  outlook: EmailDeliveryStatusOutlook;
+}
+
 export type SmsDeliveryStatusMode = typeof SmsDeliveryStatusMode[keyof typeof SmsDeliveryStatusMode];
 
 
@@ -1359,6 +1383,14 @@ export const CommunicationStatus = {
   received: 'received',
 } as const;
 
+export type CommunicationEmailProvider = typeof CommunicationEmailProvider[keyof typeof CommunicationEmailProvider] | null;
+
+
+export const CommunicationEmailProvider = {
+  resend: 'resend',
+  outlook: 'outlook',
+} as const;
+
 export interface Communication {
   id: string;
   leadId?: string | null;
@@ -1372,11 +1404,25 @@ export interface Communication {
   body: string;
   status: CommunicationStatus;
   providerMessageId?: string | null;
+  emailProvider?: CommunicationEmailProvider;
   errorMessage?: string | null;
   createdAt: string;
 }
 
+/**
+ * Sender selected for this message. Defaults to the company Resend sender.
+ */
+export type SendEmailRequestProvider = typeof SendEmailRequestProvider[keyof typeof SendEmailRequestProvider];
+
+
+export const SendEmailRequestProvider = {
+  resend: 'resend',
+  outlook: 'outlook',
+} as const;
+
 export interface SendEmailRequest {
+  /** Sender selected for this message. Defaults to the company Resend sender. */
+  provider?: SendEmailRequestProvider;
   /** Reuse for retries of one immutable message. Required for external delivery. */
   idempotencyKey?: string;
   to: string;

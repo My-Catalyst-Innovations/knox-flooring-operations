@@ -7,6 +7,7 @@
  */
 import type { CommunicationChannel } from './communicationChannel';
 import type { CommunicationDirection } from './communicationDirection';
+import type { CommunicationEmailProvider } from './communicationEmailProvider';
 import type { CommunicationStatus } from './communicationStatus';
 
 export interface Communication {
@@ -22,6 +23,7 @@ export interface Communication {
   body: string;
   status: CommunicationStatus;
   providerMessageId?: string | null;
+  emailProvider?: CommunicationEmailProvider;
   errorMessage?: string | null;
   createdAt: string;
 }

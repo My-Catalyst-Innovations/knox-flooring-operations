@@ -1,7 +1,7 @@
 import type { Communication } from "@/lib/types";
 
 export function communicationStatus(
-  message: Pick<Communication, "providerMessageId" | "status">,
+  message: Pick<Communication, "providerMessageId" | "status" | "emailProvider">,
 ) {
   if (message.providerMessageId?.startsWith("demo:")) return "Captured in demo";
   switch (message.status) {
@@ -12,7 +12,7 @@ export function communicationStatus(
         ? "Queued by provider"
         : "Submission pending";
     case "sent":
-      return "Submitted to provider";
+      return message.emailProvider === "outlook" ? "Submitted to Outlook" : "Submitted to provider";
     case "delivered":
       return "Delivered";
     case "failed":

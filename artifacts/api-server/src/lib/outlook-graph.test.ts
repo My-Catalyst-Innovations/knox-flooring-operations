@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   fetchOutlookToken,
   getOutlookConfig,
+  getOutlookAuthorization,
   getOutlookVerifier,
+  hasOutlookMailScope,
   openOutlookSecret,
   outlookGraph,
   reconcileOutlookInstallation,
@@ -130,6 +132,84 @@ describe("Outlook calendar OAuth", () => {
     ).toBeNull();
   });
 
+  it("binds optional mailbox consent to the owner session and the token exchange", async () => {
+    const start = startOutlookAuthorization(config, "owner", "csrf", 1000, {
+      mail: true,
+    });
+    const params = new URL(start.authorizationUrl).searchParams;
+    const authorization = getOutlookAuthorization(
+      config,
+      start.cookie,
+      params.get("state")!,
+      "owner",
+      "csrf",
+      1200,
+    )!;
+    expect(authorization.scope).toBe(
+      "offline_access User.Read Calendars.ReadWrite.Shared Mail.Send",
+    );
+    expect(params.get("scope")).toBe(authorization.scope);
+    expect(
+      getOutlookAuthorization(
+        config,
+        start.cookie,
+        params.get("state")!,
+        "owner",
+        "other-csrf",
+        1200,
+      ),
+    ).toBeNull();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        Response.json({
+          access_token: "opaque-token",
+          refresh_token: "refresh",
+          expires_in: 3600,
+          scope: "User.Read Calendars.ReadWrite.Shared",
+        }),
+      );
+    const granted = await fetchOutlookToken(
+      config,
+      { code: "code", ...authorization },
+      fetchMock,
+    );
+    expect(
+      (fetchMock.mock.calls[0][1]?.body as URLSearchParams).get("scope"),
+    ).toBe(authorization.scope);
+    // Requesting Mail.Send is not evidence Microsoft actually granted it.
+    expect(hasOutlookMailScope(granted.scope)).toBe(false);
+    expect(hasOutlookMailScope(undefined)).toBe(false);
+    expect(
+      hasOutlookMailScope("User.Read https://graph.microsoft.com/Mail.Send"),
+    ).toBe(true);
+    expect(hasOutlookMailScope("Mail.Send.Shared Mail.Read")).toBe(false);
+  });
+
+  it("refreshes only the previously granted scopes and retains the returned capability response", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        Response.json({
+          access_token: "opaque-token",
+          expires_in: 3600,
+          scope: "User.Read Calendars.ReadWrite.Shared",
+        }),
+      );
+    const response = await fetchOutlookToken(
+      config,
+      {
+        refreshToken: "refresh",
+        scope: "offline_access User.Read Calendars.ReadWrite.Shared Mail.Send",
+      },
+      fetchMock,
+    );
+    expect(
+      (fetchMock.mock.calls[0][1]?.body as URLSearchParams).get("scope"),
+    ).toBe("offline_access User.Read Calendars.ReadWrite.Shared Mail.Send");
+    expect(hasOutlookMailScope(response.scope)).toBe(false);
+  });
+
   it("exchanges codes with the verifier and refreshes without exposing provider details", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -176,6 +256,76 @@ describe("Outlook calendar OAuth", () => {
     expect(
       (fetchMock.mock.calls[1][1]?.body as URLSearchParams).get("grant_type"),
     ).toBe("refresh_token");
+  });
+});
+
+describe("Outlook mailbox submissions", () => {
+  const message = {
+    to: "owner@example.test",
+    subject: "Internal verification",
+    body: "No client data.",
+  };
+
+  it("submits plain text as the connected mailbox, saves Sent Items and reports acceptance only", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 202 }));
+    await expect(
+      outlookGraph("opaque-token", fetchMock).sendMail(message),
+    ).resolves.toEqual({ accepted: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, request] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe("https://graph.microsoft.com/v1.0/me/sendMail");
+    expect(request?.method).toBe("POST");
+    const payload = JSON.parse(String(request?.body));
+    expect(payload).toEqual({
+      message: {
+        subject: message.subject,
+        body: { contentType: "Text", content: message.body },
+        toRecipients: [{ emailAddress: { address: message.to } }],
+      },
+      saveToSentItems: true,
+    });
+    expect(payload.message).not.toHaveProperty("from");
+  });
+
+  it.each([400, 401, 403, 404, 429])(
+    "classifies Microsoft %i as a refused submission without sending again",
+    async (status) => {
+      const fetchMock = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(null, { status }));
+      await expect(
+        outlookGraph("opaque-token", fetchMock).sendMail(message),
+      ).rejects.toMatchObject({ status, submissionUnknown: false });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([408, 500, 502, 503, 504, 200, 204])(
+    "blocks automatic retry after an ambiguous Microsoft %i response",
+    async (status) => {
+      const fetchMock = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(null, { status }));
+      await expect(
+        outlookGraph("opaque-token", fetchMock).sendMail(message),
+      ).rejects.toMatchObject({ status: 502, submissionUnknown: true });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("does not retry a network failure whose remote outcome cannot be known", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(new Error("connection lost after write"));
+    await expect(
+      outlookGraph("opaque-token", fetchMock).sendMail(message),
+    ).rejects.toMatchObject({
+      submissionUnknown: true,
+      message: expect.stringContaining("Check Outlook Sent Items"),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

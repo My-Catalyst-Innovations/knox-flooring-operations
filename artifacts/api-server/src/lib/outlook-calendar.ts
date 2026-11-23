@@ -9,9 +9,12 @@ import {
   outlookCalendarConnectionTable,
 } from "@workspace/db";
 import { DomainError } from "./operations-rules";
+import { z } from "zod";
 import {
   fetchOutlookToken,
   getOutlookConfig,
+  hasOutlookMailScope,
+  normalizeOutlookScopes,
   openOutlookSecret,
   OutlookError,
   outlookGraph,
@@ -66,18 +69,33 @@ async function accessToken(
     !forceRefresh &&
     Date.parse(connection.accessTokenExpiresAt ?? "") > Date.now() + 120_000
   ) {
-    return openOutlookSecret(
-      config,
-      connection.accessToken,
-      connectionKey(connection.accountId, "access"),
-    );
+    return {
+      token: openOutlookSecret(
+        config,
+        connection.accessToken,
+        connectionKey(connection.accountId, "access"),
+      ),
+      grantedScopes: connection.grantedScopes,
+    };
   }
   const refresh = openOutlookSecret(
     config,
     connection.refreshToken,
     connectionKey(connection.accountId, "refresh"),
   );
-  const tokens = await fetchOutlookToken(config, { refreshToken: refresh });
+  // Refresh only scopes actually granted by Microsoft. Legacy calendar-only rows
+  // have no recorded scopes and must never silently acquire Mail.Send.
+  const scope = connection.grantedScopes
+    ? normalizeOutlookScopes(`${connection.grantedScopes} offline_access`)
+    : config.scope;
+  const tokens = await fetchOutlookToken(config, {
+    refreshToken: refresh,
+    scope,
+  });
+  const grantedScopes =
+    tokens.scope === undefined
+      ? connection.grantedScopes
+      : normalizeOutlookScopes(tokens.scope);
   await tx
     .update(outlookCalendarConnectionTable)
     .set({
@@ -96,30 +114,30 @@ async function accessToken(
       accessTokenExpiresAt: new Date(
         Date.now() + tokens.expires_in * 1000,
       ).toISOString(),
+      grantedScopes,
       updatedAt: nowIso(),
     })
     .where(eq(outlookCalendarConnectionTable.id, connectionId));
-  return tokens.access_token;
+  return { token: tokens.access_token, grantedScopes };
 }
 
 async function withGraph<T>(
   tx: Transaction,
   config: OutlookConfig,
   connection: Connection,
-  action: (graph: Graph) => Promise<T>,
+  action: (graph: Graph, grantedScopes: string) => Promise<T>,
 ) {
   const token = await accessToken(tx, config, connection, false);
   try {
-    return await action(outlookGraph(token));
+    return await action(outlookGraph(token.token), token.grantedScopes);
   } catch (error) {
     if (!(error instanceof OutlookError) || error.status !== 401) throw error;
     const [fresh] = await tx
       .select()
       .from(outlookCalendarConnectionTable)
       .where(eq(outlookCalendarConnectionTable.id, connectionId));
-    return action(
-      outlookGraph(await accessToken(tx, config, fresh ?? connection, true)),
-    );
+    const refreshed = await accessToken(tx, config, fresh ?? connection, true);
+    return action(outlookGraph(refreshed.token), refreshed.grantedScopes);
   }
 }
 
@@ -146,8 +164,9 @@ export async function finishOutlookConnection(
   config: OutlookConfig,
   code: string,
   verifier: string,
+  scope = config.scope,
 ) {
-  const tokens = await fetchOutlookToken(config, { code, verifier });
+  const tokens = await fetchOutlookToken(config, { code, verifier, scope });
   if (!tokens.refresh_token)
     throw new OutlookError(
       "Microsoft did not grant offline access. Reconnect and grant calendar permissions.",
@@ -187,6 +206,11 @@ export async function finishOutlookConnection(
       accountId: account.id,
       accountName:
         account.displayName || account.userPrincipalName || "Microsoft account",
+      mailboxEmail:
+        [account.mail, account.userPrincipalName]
+          .map((value) => z.string().email().safeParse(value))
+          .find((result) => result.success)?.data ?? null,
+      grantedScopes: normalizeOutlookScopes(tokens.scope),
       accessToken: sealOutlookSecret(
         config,
         tokens.access_token,
@@ -274,6 +298,7 @@ export async function disconnectOutlookCalendar() {
         accessToken: null,
         refreshToken: null,
         accessTokenExpiresAt: null,
+        grantedScopes: "",
         status: "disconnected",
         updatedAt: nowIso(),
       })
@@ -316,11 +341,93 @@ export async function outlookCalendarStatus() {
       ? (connection?.status ?? "disconnected")
       : "not_configured",
     accountName: connection?.accountName ?? null,
+    mailConnected: mailConnected(configured, connection),
+    mailboxEmail: connection?.mailboxEmail ?? null,
     calendar: connection?.calendarId
       ? { id: connection.calendarId, name: connection.calendarName }
       : null,
     pending,
   };
+}
+
+function mailConnected(
+  configured: boolean,
+  connection: Connection | undefined,
+) {
+  return Boolean(
+    configured &&
+    connection?.status === "connected" &&
+    connection.accessToken &&
+    connection.refreshToken &&
+    connection.mailboxEmail &&
+    hasOutlookMailScope(connection.grantedScopes),
+  );
+}
+
+/** Minimal capability for staff compose dialogs; no calendar or token metadata. */
+export async function outlookEmailCapability() {
+  const connection = await getConnection();
+  const connected = mailConnected(Boolean(getOutlookConfig()), connection);
+  return {
+    connected,
+    mailboxEmail: connected ? connection!.mailboxEmail : null,
+  };
+}
+
+export async function sendOutlookEmail(message: {
+  to: string;
+  subject: string;
+  body: string;
+}): Promise<{ accepted: true; mailboxEmail: string | null }> {
+  const config = requireConfig();
+  let accepted = false;
+  try {
+    const outcome = await serialOutlook(async (tx) => {
+      const connection = await getConnection(tx);
+      if (!mailConnected(true, connection))
+        throw new OutlookError(
+          "Enable Outlook email in Settings before sending from Microsoft.",
+          409,
+        );
+      try {
+        const result = await withGraph(
+          tx,
+          config,
+          connection!,
+          async (graph, grantedScopes) => {
+            if (!hasOutlookMailScope(grantedScopes))
+              throw new OutlookError(
+                "Microsoft email permission is no longer available. Enable Outlook email in Settings.",
+                403,
+              );
+            await graph.sendMail(message);
+            accepted = true;
+            return {
+              accepted: true as const,
+              mailboxEmail: connection!.mailboxEmail,
+            };
+          },
+        );
+        return { result } as const;
+      } catch (error) {
+        if (error instanceof OutlookError && error.status === 401)
+          await markReconnect(tx);
+        // Commit token refresh/reconnect status even when submission is refused.
+        return { error } as const;
+      }
+    });
+    if (outcome.result) return outcome.result;
+    throw outcome.error;
+  } catch (error) {
+    if (accepted)
+      throw new OutlookError(
+        "Microsoft accepted the email but Catalyst could not finish recording it. Check Outlook Sent Items before sending again.",
+        502,
+        60,
+        true,
+      );
+    throw error;
+  }
 }
 
 export async function trackOutlookBooking(

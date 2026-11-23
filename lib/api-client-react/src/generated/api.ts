@@ -39,6 +39,7 @@ import type {
   Customer,
   CustomerSite,
   DraftConversion,
+  EmailDeliveryStatus,
   Error,
   ErrorEnvelope,
   EstimateDraft,
@@ -1544,6 +1545,83 @@ export const useSendSms = <TError = ErrorType<Error>,
       > => {
       return useMutation(getSendSmsMutationOptions(options));
     }
+
+export const getGetEmailDeliveryStatusUrl = () => {
+
+
+
+
+  return `/api/communications/email/status`
+}
+
+/**
+ * @summary Determine whether company email senders are available
+ */
+export const getEmailDeliveryStatus = async ( options?: RequestInit): Promise<EmailDeliveryStatus> => {
+
+  return customFetch<EmailDeliveryStatus>(getGetEmailDeliveryStatusUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetEmailDeliveryStatusQueryKey = () => {
+    return [
+    `/api/communications/email/status`
+    ] as const;
+    }
+
+
+export const getGetEmailDeliveryStatusQueryOptions = <TData = Awaited<ReturnType<typeof getEmailDeliveryStatus>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getEmailDeliveryStatus>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetEmailDeliveryStatusQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getEmailDeliveryStatus>>> = ({ signal }) => getEmailDeliveryStatus({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getEmailDeliveryStatus>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetEmailDeliveryStatusQueryResult = NonNullable<Awaited<ReturnType<typeof getEmailDeliveryStatus>>>
+export type GetEmailDeliveryStatusQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Determine whether company email senders are available
+ */
+
+export function useGetEmailDeliveryStatus<TData = Awaited<ReturnType<typeof getEmailDeliveryStatus>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getEmailDeliveryStatus>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetEmailDeliveryStatusQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
 
 export const getGetSmsDeliveryStatusUrl = () => {
 

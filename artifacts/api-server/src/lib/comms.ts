@@ -75,6 +75,13 @@ function emailConfig(env = workspaceEnvironment()) {
   return { key, from, replyTo };
 }
 
+export function emailDeliveryCapability(env = workspaceEnvironment()) {
+  return {
+    mode: communicationMode(env),
+    configured: Boolean(emailConfig(env)),
+  };
+}
+
 function twilioConfig(env = workspaceEnvironment()) {
   const account = env.TWILIO_ACCOUNT_SID?.trim() ?? "";
   const key = env.TWILIO_API_KEY_SID?.trim() ?? "";

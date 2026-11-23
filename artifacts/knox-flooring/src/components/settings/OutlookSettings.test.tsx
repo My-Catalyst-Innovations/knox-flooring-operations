@@ -16,6 +16,8 @@ const fixture = vi.hoisted(() => ({
     configured: true,
     status: "connected",
     accountName: "Sample account",
+    mailConnected: false,
+    mailboxEmail: null as string | null,
     calendar: null as null | { id: string; name: string },
     pending: [],
   },
@@ -37,6 +39,8 @@ afterEach(() => {
   vi.resetAllMocks();
   fixture.allowed = true;
   fixture.status.calendar = null;
+  fixture.status.mailConnected = false;
+  fixture.status.mailboxEmail = null;
 });
 
 describe("Outlook settings", () => {
@@ -90,5 +94,28 @@ describe("Outlook settings", () => {
     fixture.allowed = false;
     const { container } = render(<OutlookSettings />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("requests mailbox consent only after the owner enables Outlook email", async () => {
+    fixture.operation.mockRejectedValue(new Error("Microsoft sign-in is temporarily unavailable."));
+    render(<OutlookSettings />);
+    expect(screen.getByText(/does not read your inbox/)).toBeVisible();
+    expect(fixture.operation).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Enable Outlook email" }));
+    await waitFor(() => expect(fixture.operation).toHaveBeenCalledExactlyOnceWith(
+      "/calendar/outlook/connect", "POST", { mail: true },
+    ));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Microsoft sign-in is temporarily unavailable.");
+    expect(screen.getByRole("button", { name: "Choose calendar" })).toBeEnabled();
+  });
+
+  it("shows the authorized mailbox without claiming inbox access or email delivery", () => {
+    fixture.status.mailConnected = true;
+    fixture.status.mailboxEmail = "owner@example.test";
+    render(<OutlookSettings />);
+    expect(screen.getByText(/Customer emails can be sent from owner@example.test/)).toBeVisible();
+    expect(screen.getByText(/Submitted messages appear in Outlook Sent Items/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Enable Outlook email" })).not.toBeInTheDocument();
+    expect(screen.getByText(/Password resets and other system emails/)).toBeVisible();
   });
 });

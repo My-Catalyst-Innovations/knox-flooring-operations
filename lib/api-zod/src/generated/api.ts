@@ -1308,6 +1308,7 @@ export const ListCommunicationsResponseItem = zod.object({
   "body": zod.string(),
   "status": zod.enum(['captured', 'queued', 'sent', 'delivered', 'failed', 'unknown', 'received']),
   "providerMessageId": zod.string().nullish(),
+  "emailProvider": zod.enum(['resend', 'outlook']).nullish(),
   "errorMessage": zod.string().nullish(),
   "createdAt": zod.string()
 })
@@ -1318,6 +1319,7 @@ export const ListCommunicationsResponse = zod.array(ListCommunicationsResponseIt
  * @summary Send an email and log it as a communication
  */
 export const SendEmailBody = zod.object({
+  "provider": zod.enum(['resend', 'outlook']).optional().describe('Sender selected for this message. Defaults to the company Resend sender.'),
   "idempotencyKey": zod.string().optional().describe('Reuse for retries of one immutable message. Required for external delivery.'),
   "to": zod.string(),
   "subject": zod.string(),
@@ -1340,6 +1342,7 @@ export const SendEmailResponse = zod.object({
   "body": zod.string(),
   "status": zod.enum(['captured', 'queued', 'sent', 'delivered', 'failed', 'unknown', 'received']),
   "providerMessageId": zod.string().nullish(),
+  "emailProvider": zod.enum(['resend', 'outlook']).nullish(),
   "errorMessage": zod.string().nullish(),
   "createdAt": zod.string()
 })
@@ -1370,8 +1373,24 @@ export const SendSmsResponse = zod.object({
   "body": zod.string(),
   "status": zod.enum(['captured', 'queued', 'sent', 'delivered', 'failed', 'unknown', 'received']),
   "providerMessageId": zod.string().nullish(),
+  "emailProvider": zod.enum(['resend', 'outlook']).nullish(),
   "errorMessage": zod.string().nullish(),
   "createdAt": zod.string()
+})
+
+
+/**
+ * @summary Determine whether company email senders are available
+ */
+export const GetEmailDeliveryStatusResponse = zod.object({
+  "mode": zod.enum(['capture', 'allowlist', 'live']),
+  "resend": zod.object({
+  "configured": zod.boolean()
+}),
+  "outlook": zod.object({
+  "connected": zod.boolean(),
+  "mailboxEmail": zod.string().nullable()
+})
 })
 
 

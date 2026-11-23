@@ -20,6 +20,8 @@ interface OutlookStatus {
     | "connected"
     | "reconnect_required";
   accountName: string | null;
+  mailConnected: boolean;
+  mailboxEmail: string | null;
   calendar: { id: string; name: string | null } | null;
   pending: {
     bookingId: string;
@@ -75,6 +77,15 @@ export function OutlookSettings() {
     }
   }
 
+  async function connect(mail = false) {
+    const connection = await operation<{ authorizationUrl: string }>(
+      `${path}/connect`,
+      "POST",
+      mail ? { mail: true } : undefined,
+    );
+    window.location.assign(connection.authorizationUrl);
+  }
+
   if (!allowed) return null;
   const callbackError =
     callback === "account_mismatch"
@@ -86,9 +97,10 @@ export function OutlookSettings() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Outlook Calendar</CardTitle>
+        <CardTitle>Microsoft Outlook</CardTitle>
         <CardDescription>
-          Publish confirmed crew bookings to a calendar you choose.
+          Publish confirmed crew bookings to your chosen calendar and optionally
+          send customer emails from your Microsoft mailbox.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -132,10 +144,7 @@ export function OutlookSettings() {
                   disabled={busy}
                   onClick={() =>
                     void run(async () => {
-                      const connection = await operation<{
-                        authorizationUrl: string;
-                      }>(`${path}/connect`, "POST");
-                      window.location.assign(connection.authorizationUrl);
+                      await connect();
                     })
                   }
                 >
@@ -184,6 +193,36 @@ export function OutlookSettings() {
                 </>
               )}
             </div>
+            {connected && (
+              <div className="space-y-2 rounded-md border p-3 text-sm">
+                <p className="font-medium">Outlook email</p>
+                {status.mailConnected ? (
+                  <p>
+                    Customer emails can be sent from {status.mailboxEmail ?? "your connected Microsoft mailbox"}.
+                    {" "}Choose Outlook when composing an email. Submitted messages
+                    appear in Outlook Sent Items.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-muted-foreground">
+                      Allow Catalyst Works to send email as your connected Microsoft
+                      account. This requests send permission and does not read your
+                      inbox. Your calendar connection continues to work separately.
+                    </p>
+                    <Button
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => void run(() => connect(true))}
+                    >
+                      Enable Outlook email
+                    </Button>
+                  </>
+                )}
+                <p className="text-muted-foreground">
+                  Password resets and other system emails use the company email service.
+                </p>
+              </div>
+            )}
             {connected &&
               calendars &&
               (calendars.length ? (
@@ -290,7 +329,7 @@ export function OutlookSettings() {
             )}
           </>
         )}
-        {(error || (callbackError && !connected)) && (
+        {(error || callbackError) && (
           <p role="alert" className="text-sm text-destructive">
             {error || callbackError}
           </p>

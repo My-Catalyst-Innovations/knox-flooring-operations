@@ -21,6 +21,7 @@ import {
   canSendCommunication,
   CommsError,
   emailAddress,
+  emailDeliveryCapability,
   sendEmail,
   sendSms,
   signalWirePendingKey,
@@ -38,6 +39,11 @@ import { smsRecipientSuppressed } from "../lib/sms-consent";
 import { customerKey } from "../lib/customer-key";
 import { domainRoute, parse } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
+import {
+  outlookEmailCapability,
+  sendOutlookEmail,
+} from "../lib/outlook-calendar";
+import { OutlookError } from "../lib/outlook-graph";
 
 const router: IRouter = Router();
 
@@ -63,9 +69,25 @@ router.get("/communications/sms/status", (_req, res) => {
   const capability = smsDeliveryCapability();
   res.set("Cache-Control", "no-store").json({
     ...capability,
-    serverSendAvailable: capability.serverSendAvailable && process.env.READ_ONLY_RECOVERY !== "true",
+    serverSendAvailable:
+      capability.serverSendAvailable &&
+      process.env.READ_ONLY_RECOVERY !== "true",
   });
 });
+
+router.get(
+  "/communications/email/status",
+  domainRoute(async (_req, res) => {
+    const capability = emailDeliveryCapability();
+    const outlook = await outlookEmailCapability();
+    const readOnly = process.env.READ_ONLY_RECOVERY === "true";
+    res.set("Cache-Control", "no-store").json({
+      mode: capability.mode,
+      resend: { configured: capability.configured && !readOnly },
+      outlook: { ...outlook, connected: outlook.connected && !readOnly },
+    });
+  }),
+);
 
 router.get(
   "/communications",
@@ -138,6 +160,12 @@ function messageFields(req: Request, channel: CommunicationChannel) {
         .update(JSON.stringify([req.auth!.userId, channel, requestKey]))
         .digest("hex")
     : randomUUID();
+  const emailProvider: CommunicationInsert["emailProvider"] =
+    channel === "email"
+      ? "provider" in input && input.provider === "outlook"
+        ? "outlook"
+        : "resend"
+      : null;
   return {
     id,
     capture,
@@ -152,6 +180,7 @@ function messageFields(req: Request, channel: CommunicationChannel) {
       toAddress: recipient,
       subject,
       body: input.body,
+      emailProvider,
     },
   };
 }
@@ -168,6 +197,7 @@ function matchesFields(
     | "toAddress"
     | "subject"
     | "body"
+    | "emailProvider"
   >,
 ) {
   return (
@@ -178,7 +208,9 @@ function matchesFields(
     row.direction === fields.direction &&
     row.toAddress === fields.toAddress &&
     row.subject === fields.subject &&
-    row.body === fields.body
+    row.body === fields.body &&
+    (row.emailProvider ?? (row.channel === "email" ? "resend" : null)) ===
+      (fields.emailProvider ?? null)
   );
 }
 
@@ -259,34 +291,56 @@ function submit(channel: CommunicationChannel) {
           "This phone number has opted out of texts from this sender. Use another contact channel until they reply START or UNSTOP.",
           409,
         );
-      const response =
-        channel === "email"
-          ? await sendEmail({
-              to: fields.toAddress,
-              subject: fields.subject,
-              body: fields.body,
-              idempotencyKey: `outbound/${id}`,
-              communicationId: id,
-            })
-          : await sendSms(
-              { to: fields.toAddress, body: fields.body, communicationId: id },
-              undefined,
-              undefined,
-              texting,
-            );
-      outcome = response;
+      if (channel === "email" && fields.emailProvider === "outlook") {
+        const response = await sendOutlookEmail({
+          to: fields.toAddress,
+          subject: fields.subject,
+          body: fields.body,
+        });
+        // Graph's 202 acknowledges submission only. It has no provider message ID
+        // or delivery receipt, so retain an accurate submitted state.
+        outcome = { status: "sent", fromAddress: response.mailboxEmail ?? "" };
+      } else {
+        const response =
+          channel === "email"
+            ? await sendEmail({
+                to: fields.toAddress,
+                subject: fields.subject,
+                body: fields.body,
+                idempotencyKey: `outbound/${id}`,
+                communicationId: id,
+              })
+            : await sendSms(
+                {
+                  to: fields.toAddress,
+                  body: fields.body,
+                  communicationId: id,
+                },
+                undefined,
+                undefined,
+                texting,
+              );
+        outcome = response;
+      }
     } catch (error) {
       outcome =
-        error instanceof CommsError
+        error instanceof OutlookError
           ? {
-              status: error.ambiguous ? "unknown" : "failed",
+              status: error.submissionUnknown ? "unknown" : "failed",
               errorMessage: error.message,
             }
-          : {
-              status: "unknown",
-              errorMessage:
-                "The provider did not confirm the submission. Check the provider before sending again.",
-            };
+          : error instanceof DomainError
+            ? { status: "failed", errorMessage: error.message }
+            : error instanceof CommsError
+              ? {
+                  status: error.ambiguous ? "unknown" : "failed",
+                  errorMessage: error.message,
+                }
+              : {
+                  status: "unknown",
+                  errorMessage:
+                    "The provider did not confirm the submission. Check the provider before sending again.",
+                };
     }
     const recorded = await db.transaction(async (tx) => {
       const [previous] = await tx

@@ -134,6 +134,13 @@
       "when": 1795226523801,
       "tag": "0018_workspace_identity_and_purchase_units",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795449538367,
+      "tag": "0019_outlook_mailbox_sender",
+      "breakpoints": true
     }
   ]
 }

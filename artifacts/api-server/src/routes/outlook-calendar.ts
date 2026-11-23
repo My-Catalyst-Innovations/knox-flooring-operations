@@ -5,7 +5,7 @@ import { domainRoute, parse } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
 import {
   getOutlookConfig,
-  getOutlookVerifier,
+  getOutlookAuthorization,
   OutlookError,
   startOutlookAuthorization,
 } from "../lib/outlook-graph";
@@ -44,10 +44,16 @@ router.post(
     const config = getOutlookConfig();
     if (!config)
       throw new DomainError(503, "Outlook is not configured on this server.");
+    const options = parse(
+      z.object({ mail: z.boolean().optional() }).strict(),
+      req.body ?? {},
+    );
     const authorization = startOutlookAuthorization(
       config,
       req.auth!.userId,
       req.auth!.csrfToken,
+      Date.now(),
+      options,
     );
     res.setHeader("Cache-Control", "no-store");
     res.cookie(cookieName, authorization.cookie, {
@@ -70,9 +76,9 @@ router.get(
     );
     const cookie = req.cookies?.[cookieName];
     const { state, code } = req.query;
-    const verifier =
+    const authorization =
       config && typeof cookie === "string" && typeof state === "string"
-        ? getOutlookVerifier(
+        ? getOutlookAuthorization(
             config,
             cookie,
             state,
@@ -80,12 +86,17 @@ router.get(
             req.auth!.csrfToken,
           )
         : null;
-    if (!config || !verifier || typeof code !== "string" || !code) {
+    if (!config || !authorization || typeof code !== "string" || !code) {
       res.redirect("/settings?outlook=invalid");
       return;
     }
     try {
-      await finishOutlookConnection(config, code, verifier);
+      await finishOutlookConnection(
+        config,
+        code,
+        authorization.verifier,
+        authorization.scope,
+      );
       res.redirect("/settings?outlook=connected");
     } catch (error) {
       if (!(error instanceof OutlookError))

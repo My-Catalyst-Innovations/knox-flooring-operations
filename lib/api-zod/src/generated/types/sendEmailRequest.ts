@@ -5,8 +5,11 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { SendEmailRequestProvider } from './sendEmailRequestProvider';
 
 export interface SendEmailRequest {
+  /** Sender selected for this message. Defaults to the company Resend sender. */
+  provider?: SendEmailRequestProvider;
   /** Reuse for retries of one immutable message. Required for external delivery. */
   idempotencyKey?: string;
   to: string;
