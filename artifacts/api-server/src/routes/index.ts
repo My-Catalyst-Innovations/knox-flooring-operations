@@ -16,6 +16,7 @@ import { signalWireInboundWebhook, signalWireStatusWebhook } from "./sms-webhook
 import { signalWireWebhookPath } from "../lib/comms";
 import measurementsRouter from "./measurements";
 import settingsRouter from "./settings";
+import companySetupRouter from "./company-setup";
 import tasksRouter from "./tasks";
 import googleCalendarRouter from "./google-calendar";
 import outlookCalendarRouter from "./outlook-calendar";
@@ -88,6 +89,7 @@ router.use(productsRouter);
 router.use(communicationsRouter);
 router.use(measurementsRouter);
 router.use(settingsRouter);
+router.use(companySetupRouter);
 router.use(tasksRouter);
 router.use(googleCalendarRouter);
 router.use(outlookCalendarRouter);
