@@ -66,7 +66,7 @@ it("offers evaluation entry only when the company server explicitly enables it",
 it("keeps normal sign-in available without offering evaluation entry when options are unavailable", async () => {
   mocks.operation.mockRejectedValue(new Error("Unavailable"));
   render(<Welcome />);
-  expect(screen.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Sign in" })).toBeEnabled();
   expect(screen.queryByRole("button", { name: "Enter Demo" })).not.toBeInTheDocument();
   expect(screen.queryByText("Knoxville Flooring Center")).not.toBeInTheDocument();
 });
