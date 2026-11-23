@@ -33,7 +33,10 @@ import Profile from "@/pages/profile";
 import PublicStatus from "@/pages/public-status";
 import PublicQuote from "@/pages/public-quote";
 import PublicPrint from "@/pages/public-print";
-import Welcome, { hasEnteredDemo } from "@/pages/welcome";
+import Welcome from "@/pages/welcome";
+import CompanySignup from "@/pages/company-signup";
+import PlatformBilling from "@/pages/platform-billing";
+import PlatformVerify from "@/pages/platform-verify";
 import VideoPage from "@/pages/video";
 import { AuthProvider, useAuth } from "@/contexts/auth";
 import { Loader2 } from "lucide-react";
@@ -85,10 +88,13 @@ function AdminRouter() {
 function Router() {
   const { user, loading } = useAuth();
   if (loading) return <div className="flex min-h-screen items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
-  const hasAppAccess = Boolean(user && hasEnteredDemo());
+  const hasAppAccess = Boolean(user);
   return (
     <Switch>
       <Route path="/video" component={VideoPage} />
+      <Route path="/signup" component={CompanySignup} />
+      <Route path="/account/billing" component={PlatformBilling} />
+      <Route path="/account/verify" component={PlatformVerify} />
       <Route path="/p/:token/print/invoice/:invoiceId">
         {(params) => <PublicPrint key={`${params.token}-inv`} />}
       </Route>

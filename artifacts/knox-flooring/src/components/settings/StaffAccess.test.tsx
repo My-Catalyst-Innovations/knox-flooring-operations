@@ -36,6 +36,7 @@ it("lets the owner prepare a private invitation link without exposing a self-dea
 it("uses the invite-only endpoint and returns the recipient to sign-in", async () => {
   window.history.replaceState({}, "", `/welcome#invite=${token}`);
   mocks.acceptInvitation.mockResolvedValue(undefined);
+  mocks.operation.mockResolvedValue({ demoAccessEnabled: false });
   render(<Welcome />);
   expect(screen.getByRole("heading", { name: "Set up your account" })).toBeVisible();
   expect(window.location.hash).toBe("");
@@ -53,4 +54,19 @@ it("uses the invite-only endpoint and returns the recipient to sign-in", async (
   expect(mocks.acceptInvitation).toHaveBeenCalledExactlyOnceWith(token, password);
   expect(mocks.reset).not.toHaveBeenCalled();
   expect(screen.getByRole("heading", { name: "Sign in to your workspace" })).toBeVisible();
+});
+
+it("offers evaluation entry only when the company server explicitly enables it", async () => {
+  mocks.operation.mockResolvedValue({ demoAccessEnabled: true });
+  render(<Welcome />);
+  expect(await screen.findByRole("button", { name: "Enter Demo" })).toBeVisible();
+  expect(mocks.operation).toHaveBeenCalledWith("/auth/options");
+});
+
+it("keeps normal sign-in available without offering evaluation entry when options are unavailable", async () => {
+  mocks.operation.mockRejectedValue(new Error("Unavailable"));
+  render(<Welcome />);
+  expect(screen.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Enter Demo" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Knoxville Flooring Center")).not.toBeInTheDocument();
 });

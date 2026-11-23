@@ -242,6 +242,29 @@ describe("DemoCenter", () => {
     expect(await screen.findByText("Your command center")).toBeInTheDocument();
   });
 
+  it("leaves Escape with a newly opened business dialog before its observer runs", async () => {
+    installApi();
+    render(<><button data-training-id="nav-dashboard">Dashboard</button><DemoCenter /></>);
+    fireEvent(window, new Event("knox:demo-center"));
+    fireEvent.click(await screen.findByRole("button", { name: /start silently/i }));
+    expect(await screen.findByRole("dialog", { name: "Your command center" })).toBeInTheDocument();
+    const businessDialog = document.createElement("div");
+    businessDialog.setAttribute("role", "dialog");
+    businessDialog.setAttribute("data-state", "open");
+    const input = document.createElement("input");
+    businessDialog.append(input);
+    try {
+      act(() => {
+        // The first keystroke may arrive before MutationObserver updates React.
+        document.body.append(businessDialog);
+        fireEvent.keyDown(input, { key: "Escape" });
+      });
+      expect(mocks.api.mock.calls.some(([path]) => String(path).endsWith("/exit"))).toBe(false);
+    } finally {
+      act(() => businessDialog.remove());
+    }
+  });
+
   it("labels skipped completion without claiming verified practice", async () => {
     const training = status();
     training.runs = [{ id: "skipped-run", userId: "owner", missionKey: "executive", manifestVersion: "test", status: "completed", currentStep: 0, voiceEnabled: false, checkpoints: ["executive-dashboard:skipped"], startedAt: "now", updatedAt: "now" }];

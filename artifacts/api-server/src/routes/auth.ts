@@ -21,6 +21,11 @@ export function isDemoAccessEnabled() {
   return workspaceEnvironment().DEMO_ACCESS_ENABLED === "true";
 }
 
+router.get("/auth/options", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ demoAccessEnabled: process.env.READ_ONLY_RECOVERY !== "true" && isDemoAccessEnabled() });
+});
+
 router.post("/auth/demo", async (req, res) => {
   if (!isDemoAccessEnabled()) {
     res.status(404).json({ error: "Demo access is not enabled" });

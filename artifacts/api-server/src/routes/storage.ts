@@ -2,7 +2,7 @@ import { workspaceEnvironment } from "@workspace/db/workspace";
 import { raw, Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import { pipeline } from "node:stream/promises";
 import { and, eq, sql } from "drizzle-orm";
-import { db, jobPhotosTable, jobsTable, leadsTable, productsTable, settingsTable, type AppRole } from "@workspace/db";
+import { db, jobPhotosTable, jobDocumentsTable, microsoftFileMirrorsTable, jobsTable, leadsTable, productsTable, settingsTable, type AppRole } from "@workspace/db";
 import { domainRoute } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
 import { canUploadFile, filePurpose, getFile, getFileMetadata, isFilePurpose, isLegacyFilePath, isPortalPhoto, isUploaderPreview, maxFileBytes, safeFileHeaders, saveFile, storedFilePath, type FileDownload, type FilePurpose } from "../lib/file-store";
@@ -31,7 +31,7 @@ function authorizeUpload(req: Request, res: Response, next: NextFunction) {
 router.post("/storage/files/:purpose", authorizeUpload, domainRoute(async (req, res) => {
   const purpose = req.params.purpose as FilePurpose;
   const recordId = req.query.recordId ?? "";
-  const needsRecord = purpose === "job-photo" || purpose === "portal-photo" || purpose === "lead-document";
+  const needsRecord = purpose === "job-photo" || purpose === "portal-photo" || purpose === "job-document" || purpose === "lead-document";
   if (typeof recordId !== "string" || (needsRecord ? !/^[a-zA-Z0-9_-]{1,128}$/.test(recordId) : recordId !== "")) {
     throw new DomainError(400, "Select the record for this upload.");
   }
@@ -64,7 +64,11 @@ async function streamFile(res: Response, file: FileDownload, attachment = false)
 async function attachedToJob(path: string, jobId?: string) {
   const [photo] = await db.select({ id: jobPhotosTable.id }).from(jobPhotosTable)
     .where(and(eq(jobPhotosTable.objectPath, path), jobId ? eq(jobPhotosTable.jobId, jobId) : undefined)).limit(1);
-  return !!photo;
+  if (photo) return true;
+  const [mirror] = await db.select({ id: microsoftFileMirrorsTable.id }).from(microsoftFileMirrorsTable).where(and(
+    eq(microsoftFileMirrorsTable.sourceType, "photo"), eq(microsoftFileMirrorsTable.objectPath, path), jobId ? eq(microsoftFileMirrorsTable.jobId, jobId) : undefined,
+  )).limit(1);
+  return !!mirror;
 }
 
 async function attachedToLead(path: string, leadId?: string) {
@@ -93,6 +97,10 @@ function canReadFilePurpose(purpose: FilePurpose, role: AppRole) {
 
 async function isAttachedFile(path: string, purpose: FilePurpose, recordId: string) {
   switch (purpose) {
+    case "job-document": {
+      const [document] = await db.select({ id: jobDocumentsTable.id }).from(jobDocumentsTable).where(and(eq(jobDocumentsTable.jobId, recordId), eq(jobDocumentsTable.objectPath, path))).limit(1);
+      return !!document;
+    }
     case "job-photo":
     case "portal-photo":
       return !!recordId && attachedToJob(path, recordId);
@@ -119,7 +127,7 @@ router.get("/storage/objects/*path", domainRoute(async (req, res) => {
     if (!metadata || (!isPreview && !(await isAttachedFile(path, purpose, metadata.recordId)))) {
       throw new DomainError(404, "File not found.");
     }
-    attachment = purpose === "lead-document";
+    attachment = purpose === "lead-document" || purpose === "job-document";
   } else if (isLegacyFilePath(path)) {
     const canReadDocument = (role === "owner" || role === "sales") && await attachedToLead(path);
     if (!(await attachedToJob(path)) && !canReadDocument && !(productImageReaders.includes(role) && await attachedToProduct(path)) && !(await isConfiguredLogo(path))) {

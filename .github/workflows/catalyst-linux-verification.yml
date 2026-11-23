@@ -76,10 +76,13 @@ jobs:
           pnpm --filter @workspace/db test
           pnpm --filter @workspace/api-server test
           pnpm --filter @workspace/knox-flooring test
+          node --test artifacts/catalyst-platform/src/*.test.mjs
       - name: Build production bundles with native Argon2
         run: |
           pnpm --filter @workspace/api-server build
           pnpm --filter @workspace/knox-flooring build
+      - name: Verify isolated company signup, billing and provisioning with PostgreSQL
+        run: node --test artifacts/catalyst-platform/test/platform-postgres.test.mjs
       - name: Make PostgreSQL 17 backup clients available
         shell: bash
         run: |

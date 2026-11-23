@@ -7,6 +7,7 @@ import { startOutlookBookingWorker } from "./lib/outlook-calendar";
 import { closeWorkspaceConnections } from "@workspace/db";
 import { inWorkspace, workspaceConfigs, workspaceEnvironment } from "@workspace/db/workspace";
 import { assertWorkspaceReady } from "./lib/workspace-readiness";
+import { startPlatformServices } from "./platform";
 
 const rawPort = process.env["PORT"];
 
@@ -37,6 +38,7 @@ async function start() {
       process.exit(1);
     }
     logger.info({ port }, "Server listening");
+    startPlatformServices();
     // Rehearsal databases must not process restored integration queues.
     if (process.env.BACKGROUND_WORKERS_ENABLED !== "false" && process.env.READ_ONLY_RECOVERY !== "true") {
       const startWorkspaceWorkers = () => {

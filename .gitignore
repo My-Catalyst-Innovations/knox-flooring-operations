@@ -6,6 +6,8 @@ dist-test
 tmp
 out-tsc
 *.tsbuildinfo
+**/test-results/
+**/playwright-report/
 .expo
 .expo-shared
 

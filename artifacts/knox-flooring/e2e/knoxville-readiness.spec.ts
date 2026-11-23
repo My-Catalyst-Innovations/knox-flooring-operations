@@ -37,3 +37,20 @@ test("operations can reach purchasing and bins and staff management is blocked",
   await expectPage(page, "/inventory/bins", "Warehouse bins");
   expect((await page.request.get("/api/auth/staff")).status()).toBe(403);
 });
+
+test("a signed-in owner can open a new tab without a demo-entry flag", async ({ page, context }) => {
+  test.skip(!ownerEmail || !ownerPassword, "Configure a validation owner.");
+  await signIn(page, ownerEmail!, ownerPassword!);
+  const freshTab = await context.newPage();
+  await freshTab.addInitScript(() => {
+    sessionStorage.clear();
+    Object.defineProperty(window, "sessionStorage", { get() { throw new DOMException("Storage unavailable", "SecurityError"); } });
+  });
+  await freshTab.goto("/profile");
+  const heading = freshTab.getByRole("heading", { name: "My profile", exact: true });
+  const training = freshTab.getByRole("dialog", { name: "Learn Catalyst Works", exact: true });
+  await expect.poll(async () => await heading.isVisible() || await training.isVisible()).toBe(true);
+  if (await training.isVisible()) await training.getByRole("button", { name: "Not now", exact: true }).click();
+  await expect(heading).toBeVisible();
+  await expect(freshTab.getByLabel("Sign-in email", { exact: true })).toHaveValue(ownerEmail!);
+});

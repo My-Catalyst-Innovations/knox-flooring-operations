@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { requireOwner } from "../middlewares/auth";
-import { domainRoute, parse } from "../lib/domain-http";
+import { domainRoute, id, parse } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
 import {
   getOutlookConfig,
@@ -17,6 +17,8 @@ import {
   queueUpcomingOutlookBookings,
   requestOutlookBookingSync,
   selectOutlookCalendar,
+  listOutlookBookingReviews,
+  resolveOutlookBookingReview,
 } from "../lib/outlook-calendar";
 
 const router = Router();
@@ -30,6 +32,15 @@ const cookieOptions = (secure: boolean) => ({
 });
 
 router.use(base, requireOwner);
+router.get(`${base}/reviews`, domainRoute(async (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json(await listOutlookBookingReviews());
+}));
+router.post(`${base}/reviews/:id/resolve`, domainRoute(async (req, res) => {
+  const data = parse(z.object({ bookingRevision: z.number().int().positive(), reviewRevision: z.number().int().positive(),
+    action: z.enum(["use_outlook", "reapply_local"]), note: z.string().trim().min(1).max(500) }).strict(), req.body);
+  res.json(await resolveOutlookBookingReview(id(req), data, req.auth!.userId));
+}));
 router.get(
   `${base}/status`,
   domainRoute(async (_req, res) => {

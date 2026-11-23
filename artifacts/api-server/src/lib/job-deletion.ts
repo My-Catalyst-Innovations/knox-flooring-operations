@@ -50,6 +50,8 @@ export async function deleteUnreferencedJob(tx: Transaction, jobId: string) {
     UNION ALL SELECT 'labor entries' WHERE EXISTS (SELECT 1 FROM labor_entries WHERE job_id = ${jobId})
     UNION ALL SELECT 'material usage' WHERE EXISTS (SELECT 1 FROM material_usage WHERE job_id = ${jobId})
     UNION ALL SELECT 'photos' WHERE EXISTS (SELECT 1 FROM job_photos WHERE job_id = ${jobId})
+    UNION ALL SELECT 'documents' WHERE EXISTS (SELECT 1 FROM job_documents WHERE job_id = ${jobId})
+    UNION ALL SELECT 'Microsoft files' WHERE EXISTS (SELECT 1 FROM microsoft_job_folders WHERE job_id = ${jobId} UNION ALL SELECT 1 FROM microsoft_file_mirrors WHERE job_id = ${jobId})
     UNION ALL SELECT 'measurements' WHERE EXISTS (SELECT 1 FROM measurements WHERE job_id = ${jobId})
     UNION ALL SELECT 'tasks' WHERE EXISTS (SELECT 1 FROM tasks WHERE related_job_id = ${jobId})
     UNION ALL SELECT 'accounting history' WHERE EXISTS (

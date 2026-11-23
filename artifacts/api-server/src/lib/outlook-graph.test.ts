@@ -330,6 +330,33 @@ describe("Outlook mailbox submissions", () => {
 });
 
 describe("Outlook Graph appointments", () => {
+  const reviewedEvent = { id: "event-id", "@odata.etag": 'W/"current"', changeKey: "current", subject: "Installation JOB-123",
+    start: { dateTime: "2026-11-02T13:00:00.0000000", timeZone: "UTC" }, end: { dateTime: "2026-11-02T16:00:00.0000000", timeZone: "UTC" },
+    isCancelled: false, isAllDay: false, type: "singleInstance" };
+  it("uses UTC immutable snapshots and conditional writes, preserving a concurrent-edit rejection", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json(reviewedEvent)).mockResolvedValueOnce(Response.json(reviewedEvent))
+      .mockResolvedValueOnce(new Response(null, { status: 412 })).mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const graph = outlookGraph("access", fetchMock);
+    const snapshot = await graph.readInstallation(calendarId, "event-id");
+    expect(snapshot).toMatchObject({ etag: 'W/"current"', startAt: "2026-11-02T13:00:00.000Z" });
+    await graph.updateReviewedInstallation(calendarId, "event-id", installation, snapshot!.etag, true);
+    const options = fetchMock.mock.calls[1][1]!;
+    expect(new Headers(options.headers).get("If-Match")).toBe('W/"current"');
+    expect(JSON.parse(String(options.body))).toEqual({ start: { dateTime: "2026-11-02T13:00:00.000", timeZone: "UTC" }, end: { dateTime: "2026-11-02T16:00:00.000", timeZone: "UTC" } });
+    await expect(graph.deleteReviewedInstallation(calendarId, "event-id", snapshot!.etag)).rejects.toMatchObject({ status: 412 });
+    await graph.deleteReviewedInstallation(calendarId, "event-id", snapshot!.etag);
+    expect(new Headers(fetchMock.mock.calls[3][1]?.headers).get("If-Match")).toBe(snapshot!.etag);
+  });
+  it("confirms the calendar exists before treating a missing event as deletion; denial and network failure remain errors", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(Response.json({ id: calendarId, name: "Crew", canEdit: true }))
+      .mockResolvedValueOnce(new Response(null, { status: 403 })).mockRejectedValueOnce(new Error("offline"));
+    const graph = outlookGraph("access", fetchMock);
+    expect(await graph.readInstallation(calendarId, "event-id")).toBeNull();
+    await expect(graph.readInstallation(calendarId, "event-id")).rejects.toMatchObject({ status: 403 });
+    await expect(graph.readInstallation(calendarId, "event-id")).rejects.toMatchObject({ status: 502 });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
   it("lists writable calendars across pages without forwarding a token to another host", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

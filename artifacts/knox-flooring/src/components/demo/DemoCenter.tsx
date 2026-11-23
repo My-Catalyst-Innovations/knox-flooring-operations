@@ -27,6 +27,7 @@ import { useAuth } from "@/contexts/auth";
 import type { MissionDefinition, PageGuide, TrainingRun, TrainingStatus, TrainingStep } from "./training-types";
 
 const api = <T,>(path: string, options?: RequestInit) => customFetch<T>(`/api${path}`, { ...options, responseType: "json" });
+const businessDialogSelector = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
 
 function errorText(error: unknown) {
   if (error instanceof Error) return error.message;
@@ -177,7 +178,7 @@ export function DemoCenter() {
   }, [activeStep?.id]); // Route and audio changes are intentionally tied to the registered step.
 
   useEffect(() => {
-    const inspectDialogs = () => setBusinessDialogOpen(Boolean(document.querySelector('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]')));
+    const inspectDialogs = () => setBusinessDialogOpen(Boolean(document.querySelector(businessDialogSelector)));
     inspectDialogs();
     const observer = new MutationObserver(inspectDialogs);
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state', 'role'] });
@@ -242,7 +243,8 @@ export function DemoCenter() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!activeStep || businessDialogOpen) return;
+      // A newly mounted dialog can receive a key before its observer updates state.
+      if (!activeStep || businessDialogOpen || event.defaultPrevented || document.querySelector(businessDialogSelector)) return;
       if (event.key === "Escape") { event.preventDefault(); void pauseMission(); }
       if (event.altKey && event.key === "ArrowLeft") { event.preventDefault(); void goBack(); }
     };

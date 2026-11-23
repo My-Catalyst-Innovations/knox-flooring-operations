@@ -19,7 +19,7 @@ if (await resolveGit("rev-parse", priorUi) !== priorUi) throw new Error("The pin
 await execute(process.execPath, ["artifacts/api-server/build.mjs"], { cwd: root, env: clean, windowsHide: true });
 const excluded = new Set(["node_modules", "dist", "dist-test", "test-results", "playwright-report", ".cache", "out-tsc"]);
 const filter = filename => !excluded.has(path.basename(filename)) && !path.basename(filename).endsWith(".tsbuildinfo");
-for (const folder of ["lib", "scripts", "artifacts/api-server", "artifacts/knox-ad", "artifacts/mockup-sandbox"]) await cp(path.join(root, folder), path.join(stage, folder), { recursive: true, filter });
+for (const folder of ["lib", "scripts", "artifacts/api-server", "artifacts/catalyst-platform", "artifacts/knox-ad", "artifacts/mockup-sandbox"]) await cp(path.join(root, folder), path.join(stage, folder), { recursive: true, filter });
 for (const file of ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", "tsconfig.json", "tsconfig.base.json"]) await copyFile(path.join(root, file), path.join(stage, file));
 const uiTar = path.join(output, "prior-ui.tar");
 await execute("git", [...gitArgs, "archive", "--format=tar", `--output=${uiTar}`, priorUi, "artifacts/knox-flooring"], { cwd: root, windowsHide: true });

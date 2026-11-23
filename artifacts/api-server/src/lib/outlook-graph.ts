@@ -7,6 +7,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { z } from "zod";
+import { outlookEventSnapshotSchema } from "./outlook-review";
 
 const graphOrigin = "https://graph.microsoft.com";
 const connectLifetimeMs = 10 * 60_000;
@@ -339,6 +340,7 @@ export function outlookGraph(accessToken: string, fetchImpl = fetch) {
         Accept: "application/json",
         "Content-Type": "application/json",
         Prefer: 'IdType="ImmutableId"',
+        ...Object.fromEntries(new Headers(options.headers).entries()),
       },
     }).catch(() => {
       throw new OutlookError(
@@ -370,6 +372,8 @@ export function outlookGraph(accessToken: string, fetchImpl = fetch) {
           : "The Outlook calendar or event could not be found.",
         404,
       );
+    if (response.status === 412)
+      throw new OutlookError("This Outlook event changed while Catalyst was saving. Review the latest event before applying changes.", 412);
     if (response.status === 429) {
       const retry = Number(response.headers.get("Retry-After"));
       throw new OutlookError(
@@ -459,6 +463,34 @@ export function outlookGraph(accessToken: string, fetchImpl = fetch) {
         `${calendarPath(calendarId)}?$select=id,name,owner,canEdit`,
         graphCalendar,
       ),
+    async readInstallation(calendarId: string, eventId: string) {
+      try {
+        return await read(`${eventPath(calendarId, eventId)}?$select=id,changeKey,subject,start,end,isCancelled,isAllDay,type`, outlookEventSnapshotSchema,
+          { headers: { Prefer: 'IdType="ImmutableId", outlook.timezone="UTC"' } });
+      } catch (error) {
+        if (!(error instanceof OutlookError) || error.status !== 404) throw error;
+        // Verify the calendar still exists. Missing/revoked calendars must not
+        // masquerade as an externally deleted individual installation.
+        await read(`${calendarPath(calendarId)}?$select=id,name,owner,canEdit`, graphCalendar);
+        return null;
+      }
+    },
+    async createReviewedInstallation(calendarId: string, key: string, event: InstallationEvent) {
+      return read(`${calendarPath(calendarId)}/events`, outlookEventSnapshotSchema, { method: "POST",
+        headers: { Prefer: 'IdType="ImmutableId", outlook.timezone="UTC"' },
+        body: JSON.stringify({ ...installationPayload(event), transactionId: key, singleValueExtendedProperties: [{ id: bookingProperty, value: key }] }) });
+    },
+    async updateReviewedInstallation(calendarId: string, eventId: string, event: InstallationEvent, etag: string, scheduleOnly = false) {
+      if (!etag) throw new OutlookError("Review the Outlook event's current version before changing it.", 409);
+      const payload = installationPayload(event);
+      return read(eventPath(calendarId, eventId), outlookEventSnapshotSchema, { method: "PATCH",
+        headers: { "If-Match": etag, Prefer: 'IdType="ImmutableId", outlook.timezone="UTC"' },
+        body: JSON.stringify(scheduleOnly ? { start: payload.start, end: payload.end } : payload) });
+    },
+    async deleteReviewedInstallation(calendarId: string, eventId: string, etag: string) {
+      if (!etag) throw new OutlookError("Review the Outlook event's current version before deleting it.", 409);
+      await request(eventPath(calendarId, eventId), { method: "DELETE", headers: { "If-Match": etag } });
+    },
     async findInstallation(calendarId: string, key: string) {
       const query = new URLSearchParams({
         $select: "id",

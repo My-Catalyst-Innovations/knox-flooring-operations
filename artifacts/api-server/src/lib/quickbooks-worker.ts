@@ -1,7 +1,7 @@
 import { workspaceScopeKey } from "@workspace/db/workspace";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, lte, or, sql } from "drizzle-orm";
-import { db, invoicesTable, jobsTable, productsTable, proposalsTable, quickbooksConnectionsTable, quickbooksConflictsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable, type InvoiceLineCategory } from "@workspace/db";
+import { db, withWorkspaceConnection, invoicesTable, jobsTable, productsTable, proposalsTable, quickbooksConnectionsTable, quickbooksConflictsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable, type InvoiceLineCategory } from "@workspace/db";
 import { audit } from "./auth";
 import { getConnection, qboQuery, qboRequest, QuickBooksRequestError, requireQuickBooksProjects } from "./quickbooks";
 import { logger } from "./logger";
@@ -429,11 +429,17 @@ async function pollChanges() {
 }
 
 const timers = new Map<string, NodeJS.Timeout>();
+export function stopQuickBooksWorker() {
+  const key = workspaceScopeKey();
+  const timer = timers.get(key);
+  if (timer) clearInterval(timer);
+  timers.delete(key);
+}
 export function startQuickBooksWorker() {
   const key = workspaceScopeKey();
   if (timers.has(key)) return;
   const timer = setInterval(() =>
-    Promise.all([processQuickBooksQueue(), processWebhookInbox(), pollChanges()])
+    withWorkspaceConnection(() => Promise.all([processQuickBooksQueue(), processWebhookInbox(), pollChanges()]))
       .catch((error) => logger.error({ error }, "QuickBooks worker failed")), 30_000);
   timers.set(key, timer);
   timer.unref();

@@ -38,7 +38,7 @@ export function CompanyBrand({
   companyLogoUrl?: string | null;
   className?: string;
 }) {
-  const name = companyName || "Knoxville Flooring Center";
+  const name = companyName || "Your company";
   const logo =
     companyLogoUrl ||
     (name === "Knoxville Flooring Center" ? "/kfc-logo.png" : null);

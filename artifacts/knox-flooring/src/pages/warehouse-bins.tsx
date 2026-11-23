@@ -4,6 +4,7 @@ import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { StockCounts } from "@/components/inventory/StockCounts";
 import { StockPieceLabel } from "@/components/inventory/StockPieceLabel";
+import { CameraScanButton } from "@/components/inventory/CameraScanButton";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useStore } from "@/hooks/use-store";
@@ -285,6 +286,7 @@ export default function WarehouseBins() {
         <label className="w-full max-w-sm space-y-1 text-sm font-medium">Scan a location label
           <Input maxLength={100} value={scan} onChange={(event) => { setScan(event.target.value); setScanError(""); }} placeholder="Scan or enter a warehouse or bin code" />
         </label>
+        <CameraScanButton maxLength={100} onScan={(code) => { setScan(code); setScanError(""); }} />
         <Button type="submit" variant="outline" disabled={!scan.trim()}>Open location</Button>
         {scanError && <p role="alert" className="w-full text-sm text-destructive">{scanError}</p>}
       </form>}

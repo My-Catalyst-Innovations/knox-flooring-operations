@@ -1,7 +1,7 @@
 import { workspaceEnvironment, workspaceScopeKey } from "@workspace/db/workspace";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { db, measurementsTable, leadsTable, jobsTable } from "@workspace/db";
+import { db, withWorkspaceConnection, measurementsTable, leadsTable, jobsTable } from "@workspace/db";
 import { logger } from "./logger";
 import { customerKey } from "./customer-key";
 import {
@@ -263,7 +263,7 @@ export function startAutoSync(): void {
     if (!isConfigured()) return;
     running = true;
     try {
-      const result = await runSync();
+      const result = await withWorkspaceConnection(() => runSync());
       logger.info(
         { pulled: result.pulled, pushed: result.pushed, errors: result.errors.length },
         "Measure Square auto-sync ran",

@@ -9,6 +9,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { operation, useOperation } from "@/lib/operations";
+import { OutlookChangeReviews } from "./OutlookChangeReviews";
 
 const path = "/calendar/outlook";
 
@@ -104,6 +105,7 @@ export function OutlookSettings() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {connected && <OutlookChangeReviews />}
         {isLoading && (
           <p role="status" className="text-sm">
             Checking Outlook connection…

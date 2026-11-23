@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { WarehouseBinSelect, useWarehouseBins } from "@/components/inventory/WarehouseBinSelect";
 import { StockPieceLabel } from "@/components/inventory/StockPieceLabel";
+import { CameraScanButton } from "@/components/inventory/CameraScanButton";
 import { pieceBarcode } from "@/lib/warehouse-labels";
 import { useStore } from "@/hooks/use-store";
 import { useAuth } from "@/contexts/auth";
@@ -322,11 +323,12 @@ export default function PhysicalPieces() {
       <Button disabled={!locationReady} onClick={() => { setNotice(""); setEditor({ action: "register", piece: null }); }}>{labels.register}</Button>
     </header>
     <div className="grid gap-3 rounded-lg border bg-card p-4 md:grid-cols-3">
-      <label className="space-y-1 text-sm font-medium">Search or scan a piece label
-        <Input maxLength={100} placeholder="Label, SKU or dye lot" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => {
+      <div className="space-y-1 text-sm font-medium"><label htmlFor="piece-search">Search or scan a piece label</label>
+        <Input id="piece-search" maxLength={100} placeholder="Label, SKU or dye lot" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => {
           if (event.key === "Enter" && /^piece:/i.test(event.currentTarget.value.trim())) controls.update({ q: event.currentTarget.value.trim(), warehouseId: null, status: null, productId: null });
         }} />
-      </label>
+        <CameraScanButton maxLength={100} onScan={(code) => { setSearch(code); controls.update({ q: code, warehouseId: null, status: null, productId: null }); }} />
+      </div>
       <label className="space-y-1 text-sm font-medium">Warehouse
         <select className={inventorySelect} value={warehouseId} onChange={(event) => setWarehouse(event.target.value)}>
           <option value="">All warehouses</option>
