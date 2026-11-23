@@ -4,12 +4,14 @@ import {
   availableCommunicationProviders,
   canSendCommunication,
   communicationMode,
+  emailDeliveryCapability,
   emailAddress,
   passwordResetLink,
   sendEmail,
   sendPasswordResetEmail,
   sendSms,
   smsDeliveryCapability,
+  smsCommunicationMode,
   smsNumber,
 } from "./comms";
 
@@ -28,6 +30,8 @@ const smsEnv = {
 const companySms = {
   DEMO_MODE: "false",
   COMMS_DELIVERY_MODE: "allowlist",
+  COMMS_SMS_DELIVERY_MODE: "allowlist",
+  COMMS_SMS_ALLOWLIST: "+18655550123",
   APP_BASE_URL: "https://knox.example.com",
   SIGNALWIRE_SPACE_URL: "https://knox-space.signalwire.com",
   SIGNALWIRE_PROJECT_ID: "ea108133-d6b3-407c-9536-9fad8a929a6a",
@@ -63,7 +67,7 @@ describe("outbound delivery controls", () => {
         ...allowlist,
         DEMO_MODE: "false",
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       canSendCommunication("email", "other@example.com", {
         DEMO_MODE: "false",
@@ -80,6 +84,8 @@ describe("outbound delivery controls", () => {
         DEMO_ACCESS_ENABLED: "true",
         COMMS_DELIVERY_MODE: mode,
         COMMS_ALLOWLIST: "to@example.com,+18655550123",
+        COMMS_SMS_DELIVERY_MODE: mode,
+        COMMS_SMS_ALLOWLIST: "+18655550123",
       };
       expect(communicationMode(env)).toBe("capture");
       expect(canSendCommunication("email", "to@example.com", env)).toBe(false);
@@ -109,10 +115,11 @@ describe("outbound delivery controls", () => {
   });
 
   it("prefers configured SignalWire and keeps capture and provider selection explicit", () => {
-    expect(smsDeliveryCapability({ ...smsEnv, ...companySms })).toEqual({
+    expect(smsDeliveryCapability({ ...smsEnv, ...companySms })).toMatchObject({
       mode: "allowlist",
       provider: "signalwire",
       serverSendAvailable: true,
+      readiness: "ready",
     });
     expect(
       smsDeliveryCapability({
@@ -125,7 +132,7 @@ describe("outbound delivery controls", () => {
       smsDeliveryCapability({
         ...smsEnv,
         ...companySms,
-        COMMS_DELIVERY_MODE: "capture",
+        COMMS_SMS_DELIVERY_MODE: "capture",
       }),
     ).toMatchObject({ provider: "signalwire", serverSendAvailable: false });
     expect(
@@ -135,7 +142,7 @@ describe("outbound delivery controls", () => {
         DEMO_ACCESS_ENABLED: "true",
         COMMS_DELIVERY_MODE: "live",
       }),
-    ).toEqual({ mode: "capture", provider: null, serverSendAvailable: false });
+    ).toMatchObject({ mode: "capture", provider: null, serverSendAvailable: false, readiness: "capture" });
     expect(
       smsDeliveryCapability({
         ...smsEnv,
@@ -150,6 +157,36 @@ describe("outbound delivery controls", () => {
           "https://attacker.example/knox-space.signalwire.com",
       }),
     ).toMatchObject({ provider: null, serverSendAvailable: false });
+  });
+
+  it.each([undefined,"","invalid","LIVE"])("never inherits live email policy for unset or invalid SMS mode %s",mode=>{
+    const env={...companySms,...emailEnv,COMMS_DELIVERY_MODE:"live",COMMS_ALLOWLIST:"+18655550123",COMMS_SMS_DELIVERY_MODE:mode};
+    expect(smsCommunicationMode(env)).toBe("capture");
+    expect(canSendCommunication("sms","+18655550123",env)).toBe(false);
+    expect(smsDeliveryCapability(env)).toMatchObject({provider:"signalwire",serverSendAvailable:false,readiness:"capture"});
+    expect(emailDeliveryCapability(env)).toEqual({mode:"live",configured:true});
+    expect(canSendCommunication("email","customer@example.com",env)).toBe(true);
+  });
+
+  it("uses only the independent SMS test list while preserving the email allowlist",()=>{
+    const env={...companySms,...emailEnv,COMMS_ALLOWLIST:"owner@example.com,+18655550133",COMMS_SMS_ALLOWLIST:"(865) 555-0123,not-a-phone"};
+    expect(canSendCommunication("sms","+18655550123",env)).toBe(true);
+    expect(canSendCommunication("sms","+18655550133",env)).toBe(false);
+    expect(canSendCommunication("email","owner@example.com",env)).toBe(true);
+    expect(canSendCommunication("email","other@example.com",env)).toBe(false);
+    const smsOnlyLive={...env,COMMS_SMS_DELIVERY_MODE:"live",COMMS_SMS_ALLOWLIST:""};
+    expect(canSendCommunication("sms","+18655550133",smsOnlyLive)).toBe(true);
+    expect(canSendCommunication("email","other@example.com",smsOnlyLive)).toBe(false);
+    const emailPaused={...env,COMMS_DELIVERY_MODE:"capture"};
+    expect(canSendCommunication("sms","+18655550123",emailPaused)).toBe(true);
+    expect(canSendCommunication("email","owner@example.com",emailPaused)).toBe(false);
+  });
+
+  it("explains missing provider setup and empty or invalid independent SMS test lists",()=>{
+    expect(smsDeliveryCapability({DEMO_MODE:"false",COMMS_SMS_DELIVERY_MODE:"live"})).toMatchObject({serverSendAvailable:false,readiness:"configuration_required",detail:expect.stringContaining("approved sender")});
+    for(const list of [undefined,"","owner@example.com,not-a-phone"]) {
+      expect(smsDeliveryCapability({...companySms,COMMS_SMS_ALLOWLIST:list,COMMS_ALLOWLIST:"+18655550123"})).toMatchObject({serverSendAvailable:false,readiness:"allowlist_required",detail:expect.stringContaining("approved test number")});
+    }
   });
 });
 
