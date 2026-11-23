@@ -52,17 +52,29 @@ export function communicationMode(
   return mode === "live" ? "live" : "capture";
 }
 
+export function smsCommunicationMode(env = workspaceEnvironment()): "capture" | "allowlist" | "live" {
+  if (isDemoDeliveryEnvironment(env)) return "capture";
+  const mode = env.COMMS_SMS_DELIVERY_MODE;
+  // SMS activation is independent of working email. Missing or invalid policy
+  // must never inherit a global live setting when provider credentials arrive.
+  return mode === "allowlist" || mode === "live" ? mode : "capture";
+}
+
+function smsAllowlist(env = workspaceEnvironment()) {
+  return (env.COMMS_SMS_ALLOWLIST ?? "").split(",").map(smsNumber).filter((value): value is string => value !== null);
+}
+
 export function canSendCommunication(
   channel: Channel,
   recipient: string,
   env = workspaceEnvironment(),
 ) {
-  const mode = communicationMode(env);
+  const mode = channel === "sms" ? smsCommunicationMode(env) : communicationMode(env);
   if (mode !== "allowlist") return mode === "live";
-  const normalize = channel === "email" ? emailAddress : smsNumber;
+  if (channel === "sms") return smsAllowlist(env).includes(recipient);
   return (env.COMMS_ALLOWLIST ?? "")
     .split(",")
-    .some((value) => normalize(value) === recipient);
+    .some((value) => emailAddress(value) === recipient);
 }
 
 function emailConfig(env = workspaceEnvironment()) {
@@ -170,11 +182,20 @@ export function smsConfig(env = workspaceEnvironment()) {
 
 export function smsDeliveryCapability(env = workspaceEnvironment()) {
   const provider = smsConfig(env)?.provider ?? null;
-  const mode = communicationMode(env);
+  const mode = smsCommunicationMode(env);
+  const readiness = mode === "capture" ? "capture" : !provider ? "configuration_required"
+    : mode === "allowlist" && smsAllowlist(env).length === 0 ? "allowlist_required" : "ready";
+  const detail = readiness === "capture" ? "Company texting is paused. Ask your administrator to enable SMS testing or delivery; device sharing is available."
+    : readiness === "configuration_required" ? "Company texting needs provider setup and an approved sender. Device sharing is available."
+      : readiness === "allowlist_required" ? "Company texting needs at least one approved test number. Ask your administrator to set the SMS test list."
+        : mode === "allowlist" ? "Company texting is limited to approved SMS test numbers."
+          : "Company texting is enabled. Sender registration and consent must be verified before sending.";
   return {
     mode,
     provider,
-    serverSendAvailable: mode !== "capture" && provider !== null,
+    serverSendAvailable: readiness === "ready",
+    readiness,
+    detail,
   };
 }
 

@@ -67,11 +67,11 @@ function presentCommunication(row: CommunicationRow) {
 
 router.get("/communications/sms/status", (_req, res) => {
   const capability = smsDeliveryCapability();
+  const readOnly = process.env.READ_ONLY_RECOVERY === "true";
   res.set("Cache-Control", "no-store").json({
     ...capability,
-    serverSendAvailable:
-      capability.serverSendAvailable &&
-      process.env.READ_ONLY_RECOVERY !== "true",
+    serverSendAvailable: capability.serverSendAvailable && !readOnly,
+    ...(readOnly ? { readiness: "recovery_read_only", detail: "Company texting is unavailable in read-only recovery." } : {}),
   });
 });
 

@@ -39,6 +39,8 @@ const noRoles: string[] = [];
 interface SmsProviderStatus {
   serverSendAvailable: boolean;
   mode: "capture" | "allowlist" | "live";
+  readiness?: string;
+  detail?: string;
 }
 
 function smsRecipient(value: string) {
@@ -196,6 +198,7 @@ export function SmsComposeDialog({
             </Button>
           </div>
           {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
+          {onSend && provider?.detail && !provider.serverSendAvailable && <p className="text-sm text-muted-foreground">{provider.detail}</p>}
         </div>
         <DialogFooter className="gap-2 sm:items-center">
           {canSendFromCompany && <div className="flex flex-1 flex-wrap items-center gap-2">

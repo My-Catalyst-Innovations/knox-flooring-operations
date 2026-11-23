@@ -111,3 +111,18 @@ it("does not surface a company action for device-only forms or capture mode", ()
   expect(screen.queryByRole("button", { name: "Send from company number" })).not.toBeInTheDocument();
   expect(useOperation).toHaveBeenLastCalledWith("/communications/sms/status", []);
 });
+
+it.each([
+  ["capture", "Company texting is paused. Ask your administrator to enable SMS testing or delivery; device sharing is available."],
+  ["allowlist", "Company texting needs at least one approved test number. Ask your administrator to set the SMS test list."],
+  ["live", "Company texting needs provider setup and an approved sender. Device sharing is available."],
+])("explains gated company texting in %s mode while keeping device actions available",(mode,detail)=>{
+  useOperation.mockReturnValue({data:{serverSendAvailable:false,mode,detail}});
+  const onSend=vi.fn();composer(onSend);
+  expect(screen.getByText(detail)).toBeVisible();
+  expect(screen.getByRole("link",{name:"Open Messages"})).toBeVisible();
+  expect(screen.getByRole("button",{name:"Copy message"})).toBeEnabled();
+  expect(screen.queryByRole("button",{name:"Submit company test"})).not.toBeInTheDocument();
+  expect(screen.queryByRole("button",{name:"Send from company number"})).not.toBeInTheDocument();
+  expect(onSend).not.toHaveBeenCalled();
+});

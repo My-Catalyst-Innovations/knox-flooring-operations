@@ -4,7 +4,7 @@ import { db, quickbooksConnectionsTable } from "@workspace/db";
 import { getOpenAIModel, getOpenAIUsageToday, hasOpenAI } from "../lib/openai";
 import { getTutorialNarrationStatus } from "../lib/tutorial-narration";
 import { outlookCalendarStatus } from "../lib/outlook-calendar";
-import { availableCommunicationProviders, smsDeliveryCapability } from "../lib/comms";
+import { availableCommunicationProviders, emailDeliveryCapability, smsDeliveryCapability } from "../lib/comms";
 
 const router: IRouter = Router();
 router.get("/integrations/health", async (_req, res) => {
@@ -13,13 +13,16 @@ router.get("/integrations/health", async (_req, res) => {
   const aiUsage = await getOpenAIUsageToday();
   const narration = getTutorialNarrationStatus();
   const outlook = await outlookCalendarStatus();
-  const { mode: deliveryMode, provider: smsProvider } = smsDeliveryCapability();
+  const sms = smsDeliveryCapability();
+  const { mode: deliveryMode } = emailDeliveryCapability();
+  const smsProvider = sms.provider;
   const providers = availableCommunicationProviders();
   const configured = [providers.email && "Resend email", smsProvider === "signalwire" && "SignalWire SMS", smsProvider === "twilio" && "Twilio SMS"].filter(Boolean).join(" and ");
-  const communicationStatus = deliveryMode === "capture" ? "Simulated" : configured ? "Configured" : "Disconnected";
-  const communicationDetail = deliveryMode === "capture" ? "Messages are captured in the Demo Outbox."
-    : configured ? `${configured} configured. ${deliveryMode === "allowlist" ? "Delivery is limited to approved recipients." : "Delivery is enabled."}`
-      : "Add provider credentials and a verified sender to enable delivery.";
+  const communicationStatus = deliveryMode === "capture" && sms.mode === "capture" ? "Simulated" : configured ? "Configured" : "Disconnected";
+  const emailDetail = deliveryMode === "capture" ? "Email is captured in the Demo Outbox."
+    : providers.email ? `Email is configured. ${deliveryMode === "allowlist" ? "Email delivery is limited to approved recipients." : "Email delivery is enabled."}`
+      : "Email needs provider configuration and a verified sender.";
+  const communicationDetail = `${emailDetail} ${sms.detail}`;
   res.json({
     generatedAt: new Date().toISOString(),
     integrations: [

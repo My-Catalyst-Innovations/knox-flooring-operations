@@ -172,6 +172,7 @@ const to = "+18655550122";
 
 function signalWire() {
   vi.stubEnv("COMMS_SMS_PROVIDER", "signalwire");
+  vi.stubEnv("COMMS_SMS_DELIVERY_MODE", "live");
   vi.stubEnv("APP_BASE_URL", origin);
   vi.stubEnv("SIGNALWIRE_SPACE_URL", "https://mock.signalwire.com");
   vi.stubEnv("SIGNALWIRE_API_TOKEN", "synthetic-api-token");
@@ -216,6 +217,8 @@ beforeEach(() => {
   vi.stubEnv("DEMO_MODE", "false");
   vi.stubEnv("DEMO_ACCESS_ENABLED", "false");
   vi.stubEnv("COMMS_DELIVERY_MODE", "live");
+  vi.stubEnv("COMMS_SMS_DELIVERY_MODE", "");
+  vi.stubEnv("COMMS_SMS_ALLOWLIST", "");
   vi.stubEnv("RESEND_API_KEY", "fake");
   vi.stubEnv("RESEND_FROM_EMAIL", "sender@example.com");
   vi.stubEnv("RESEND_REPLY_TO_EMAIL", "");
@@ -456,10 +459,12 @@ it("checks suppression for live email without calling Resend", async () => {
 
 it("keeps a signed delivery received before the SignalWire send response and ignores older or unrelated callbacks", async () => {
   signalWire();
-  await request(app).get("/communications/sms/status").expect(200, {
+  const capability = await request(app).get("/communications/sms/status").expect(200);
+  expect(capability.body).toMatchObject({
     mode: "live",
     provider: "signalwire",
     serverSendAvailable: true,
+    readiness: "ready",
   });
   const event = {
     AccountSid: project,
@@ -474,7 +479,9 @@ it("keeps a signed delivery received before the SignalWire send response and ign
     expect(callback).toContain(origin);
     const url = new URL(callback!);
     path = `${url.pathname}${url.search}`;
+    vi.stubEnv("COMMS_SMS_DELIVERY_MODE", "capture");
     await postCallback(path, event).expect(200);
+    vi.stubEnv("COMMS_SMS_DELIVERY_MODE", "live");
     return Response.json({
       account_sid: project,
       sid,
@@ -530,6 +537,56 @@ it("keeps a signed delivery received before the SignalWire send response and ign
     .expect(200);
   expect(replay.body).toEqual(submitted.body);
   expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+it("keeps newly configured SignalWire paused under live email policy without restricting email", async () => {
+  signalWire();
+  vi.stubEnv("COMMS_SMS_DELIVERY_MODE", "");
+  vi.stubEnv("COMMS_ALLOWLIST", to);
+  const capability=await request(app).get("/communications/sms/status").expect(200);
+  expect(capability.body).toMatchObject({mode:"capture",provider:"signalwire",serverSendAvailable:false,readiness:"capture",detail:expect.stringContaining("paused")});
+  const text=await request(app).post("/communications/sms").send({to,body:"Do not deliver",idempotencyKey:"sms-independent-default"}).expect(201);
+  expect(text.body.status).toBe("captured");expect(fetch).not.toHaveBeenCalled();
+  vi.stubEnv("COMMS_SMS_DELIVERY_MODE", "allowlist");
+  vi.stubEnv("COMMS_SMS_ALLOWLIST", to);
+  fetch.mockResolvedValueOnce(Response.json({id:"email-still-live"}));
+  const emailResult=await request(app).post("/communications/email").send(email).expect(201);
+  expect(emailResult.body).toMatchObject({status:"queued",providerMessageId:"email-still-live"});
+  expect(fetch).toHaveBeenCalledTimes(1);expect(String(fetch.mock.calls[0][0])).toBe("https://api.resend.com/emails");
+});
+
+it("submits only the independent SMS allowlist and never inherits global recipients", async () => {
+  signalWire();
+  vi.stubEnv("COMMS_SMS_DELIVERY_MODE", "allowlist");
+  vi.stubEnv("COMMS_SMS_ALLOWLIST", "(865) 555-0122");
+  vi.stubEnv("COMMS_ALLOWLIST", "+18655550133");
+  fetch.mockResolvedValueOnce(Response.json({account_sid:project,sid,from,to,status:"queued"}));
+  const allowed=await request(app).post("/communications/sms").send({to,body:"Internal consenting test",idempotencyKey:"sms-independent-approved"}).expect(201);
+  expect(allowed.body.status).toBe("queued");
+  const other=await request(app).post("/communications/sms").send({to:"+18655550133",body:"Blocked by SMS policy",idempotencyKey:"sms-independent-blocked"}).expect(201);
+  expect(other.body.status).toBe("captured");expect(fetch).toHaveBeenCalledTimes(1);
+  vi.stubEnv("COMMS_SMS_ALLOWLIST", "owner@example.com,invalid");
+  const empty=await request(app).get("/communications/sms/status").expect(200);
+  expect(empty.body).toMatchObject({mode:"allowlist",serverSendAvailable:false,readiness:"allowlist_required",detail:expect.stringContaining("approved test number")});
+});
+
+it("gates unconfigured company texting without a provider call", async () => {
+  vi.stubEnv("COMMS_SMS_DELIVERY_MODE", "live");
+  vi.stubEnv("COMMS_SMS_PROVIDER", "signalwire");
+  vi.stubEnv("SIGNALWIRE_API_TOKEN", "");
+  const capability=await request(app).get("/communications/sms/status").expect(200);
+  expect(capability.body).toMatchObject({provider:null,serverSendAvailable:false,readiness:"configuration_required",detail:expect.stringContaining("approved sender")});
+  const result=await request(app).post("/communications/sms").send({to,body:"Cannot send yet",idempotencyKey:"sms-unconfigured-policy"}).expect(201);
+  expect(result.body.status).toBe("failed");expect(fetch).not.toHaveBeenCalled();
+});
+
+it("continues authenticating and saving inbound STOP while outbound SMS is paused",async()=>{
+  signalWire();vi.stubEnv("COMMS_SMS_DELIVERY_MODE","capture");
+  const event={AccountSid:project,MessageSid:sid,From:to,To:from,Body:"STOP",NumMedia:"0"};
+  fetch.mockResolvedValueOnce(Response.json({account_sid:project,sid,from:to,to:from,body:"STOP",direction:"inbound",date_created:"Mon, 16 Nov 2026 13:00:00 +0000"}));
+  await postCallback(`${hook}/inbound`,event).expect(200);
+  expect([...state.inbound.values()][0]).toMatchObject({subject:"SMS opt-out",body:"STOP"});
+  expect(fetch).toHaveBeenCalledTimes(1);expect(fetch.mock.calls[0][1]?.method).toBeUndefined();
 });
 
 it("accepts signed replies once and leaves a conflicting conversation unassigned", async () => {
