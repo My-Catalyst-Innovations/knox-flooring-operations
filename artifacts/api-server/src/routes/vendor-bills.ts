@@ -30,6 +30,7 @@ import {
   type VendorBillInput,
 } from "../lib/vendor-bill";
 import { requireOwner } from "../middlewares/auth";
+import { uniqueSupplierBillMatch } from "../lib/vendor-bill-identifiers";
 
 const router: IRouter = Router();
 const basePath = "/quickbooks/vendor-bills";
@@ -92,6 +93,11 @@ async function billContext(
 }
 
 async function prepare(input: VendorBillInput, context: Context) {
+  const codeType = input.productCodeType ?? "supplier_sku";
+  const codeColumn = codeType === "manufacturer_part_number"
+    ? sql<string>`lower(btrim(${supplierProductAliasesTable.manufacturerPartNumber}))`
+    : codeType === "internal_sku" ? sql<string>`lower(btrim(${productsTable.sku}))`
+      : sql<string>`${supplierProductAliasesTable.supplierSkuKey}`;
   const catalog = !input.lines.length ? [] : await db
     .select({ alias: supplierProductAliasesTable, product: productsTable })
     .from(supplierProductAliasesTable)
@@ -103,7 +109,7 @@ async function prepare(input: VendorBillInput, context: Context) {
       and(
         eq(supplierProductAliasesTable.supplierKey, normalized(input.supplier)),
         inArray(
-          supplierProductAliasesTable.supplierSkuKey,
+          codeColumn,
           input.lines.map((line) => normalized(line.supplierSku)),
         ),
       ),
@@ -111,7 +117,9 @@ async function prepare(input: VendorBillInput, context: Context) {
   if (input.lines.length && !catalog.length)
     throw new DomainError(
       409,
-      "Approve the supplier SKUs in Inventory before reviewing this bill.",
+      codeType === "supplier_sku"
+        ? "Approve the supplier SKUs in Inventory before reviewing this bill."
+        : "Approve the matching manufacturer numbers or internal SKUs in Inventory before reviewing this bill.",
     );
   const rates = !catalog.length ? [] : await db
     .selectDistinctOn([supplierBuyPricesTable.aliasId])
@@ -130,9 +138,6 @@ async function prepare(input: VendorBillInput, context: Context) {
       desc(supplierBuyPricesTable.effectiveOn),
     );
   const prices = new Map(rates.map((rate) => [rate.aliasId, rate]));
-  const aliases = new Map(
-    catalog.map((row) => [row.alias.supplierSkuKey, row]),
-  );
   const itemMapping = quickbooksEntityMappingsTable;
   const itemLinks =
     catalog.length && (context.mode === "sandbox" || context.mode === "production")
@@ -156,7 +161,7 @@ async function prepare(input: VendorBillInput, context: Context) {
     itemLinks.map((link) => [link.localId, link.quickbooksId]),
   );
   const reviewedMappings = input.lines.map((line) => {
-    const row = aliases.get(normalized(line.supplierSku));
+    const row = uniqueSupplierBillMatch(catalog, line.supplierSku, codeType);
     const price = row && prices.get(row.alias.id);
     const factor = row && price ? supplierPurchaseFactor(price.unit, row.product.unit, price.stockUnitsPerBuyUnit) : null;
     if (
@@ -179,6 +184,9 @@ async function prepare(input: VendorBillInput, context: Context) {
         expectedUnitCost: price.unitCost,
         priceEffectiveOn: price.effectiveOn,
         priceSource: price.source,
+        ...(codeType === "supplier_sku" ? {} : {
+          sourceCode: { type: codeType, value: line.supplierSku },
+        }),
         ...(normalized(row.product.unit) === normalized(price.unit) ? {} : {
           stockConversion: { unit: row.product.unit, unitsPerBuyUnit: factor },
         }),
