@@ -60,4 +60,17 @@ describe("training practice access", () => {
     expect(hasMeasuredRoom({ rooms: [{ length: 10, width: 0 }] })).toBe(false);
     expect(hasMeasuredRoom({ rooms: [{ length: 10, width: 12 }] })).toBe(true);
   });
+
+  it.each([
+    "MICROSOFT_FILES_CLIENT_ID",
+    "MICROSOFT_FILES_CLIENT_SECRET",
+    "MICROSOFT_FILES_ENCRYPTION_KEY",
+    "MICROSOFT_FILES_REDIRECT_URI",
+    "MICROSOFT_FILES_TENANT_ID",
+  ])("keeps interactive practice disabled when %s is configured", (name) => {
+    expect(trainingPracticeAccess(env, host, true).enabled).toBe(true);
+    expect(trainingPracticeAccess({ ...env, [name]: "fixture-only-provider-setting" }, host, true)).toEqual({
+      enabled: false, url: null,
+    });
+  });
 });
