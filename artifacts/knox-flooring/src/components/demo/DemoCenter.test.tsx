@@ -153,7 +153,7 @@ describe("DemoCenter", () => {
     fireEvent.click(await screen.findByRole("button", { name: /start with voice/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const request = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    fireEvent.click(screen.getByRole("button", { name: "Mute narration" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Mute narration" }));
     expect(request[1].signal?.aborted).toBe(true);
     await act(async () => { resolveAudio(narrationResponse("OpenAI", true)); });
     expect(audio.audio).not.toHaveBeenCalled();

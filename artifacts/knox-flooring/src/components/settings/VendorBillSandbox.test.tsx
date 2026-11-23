@@ -18,6 +18,49 @@ afterEach(() => {
   vi.resetAllMocks();
 });
 
+it("reviews manufacturer codes through the supplier crosswalk and invalidates approval when interpretation changes", async () => {
+  operation.mockResolvedValue([]);
+  render(<VendorBillSandbox mode="review" vendors={[]} />);
+  await waitFor(() => expect(operation).toHaveBeenCalledWith("/quickbooks/vendor-bills?mode=review"));
+  fireEvent.change(screen.getByLabelText("Product codes on this bill"), { target: { value: "manufacturer_part_number" } });
+  const fields = {
+    Supplier: "Mock Flooring Supply", "Bill number": "MOCK-101", "Bill date": "2026-11-23",
+    "Source bill total (USD)": "2.90", "Manufacturer part number": "080081",
+    Unit: "sqft", Quantity: "2", "Billed unit cost": "1.45",
+  };
+  for (const [label, value] of Object.entries(fields)) {
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  }
+  const preview = {
+    mode: "review", fingerprint: "a".repeat(64), supplier: "Mock Flooring Supply",
+    billNumber: "MOCK-101", billDate: "2026-11-23", totalCents: 290, priceDiffers: false,
+    lines: [{ supplierSku: "000001", internalSku: "MOCK-KFC-0001", productName: "Mannington Serena",
+      unit: "sqft", quantity: "2", billedUnitCost: "1.45", expectedUnitCost: "1.450000",
+      priceEffectiveOn: "2026-11-23", priceSource: "MOCK test prices", priceDiffers: false,
+      sourceCode: { type: "manufacturer_part_number", value: "080081" } }],
+  };
+  operation.mockResolvedValueOnce(preview);
+  fireEvent.click(screen.getByRole("button", { name: "Preview supplier bill" }));
+  expect(await screen.findByRole("button", { name: "Queue for review" })).toBeEnabled();
+  expect(screen.getByText("Manufacturer part number 080081 → Supplier SKU 000001")).toBeVisible();
+  expect(screen.getByText("000001 → MOCK-KFC-0001 · Mannington Serena")).toBeVisible();
+  expect(operation).toHaveBeenLastCalledWith("/quickbooks/vendor-bills/preview", "POST", expect.objectContaining({
+    productCodeType: "manufacturer_part_number",
+    lines: [{ supplierSku: "080081", unit: "sqft", quantity: "2", unitCost: "1.45" }],
+  }));
+
+  fireEvent.change(screen.getByLabelText("Product codes on this bill"), { target: { value: "internal_sku" } });
+  expect(screen.queryByRole("button", { name: "Queue for review" })).not.toBeInTheDocument();
+  expect(operation).toHaveBeenCalledTimes(2);
+  fireEvent.change(screen.getByLabelText("Internal SKU"), { target: { value: "MOCK-KFC-0001" } });
+  operation.mockRejectedValueOnce(new Error("Internal-code preview inspected"));
+  fireEvent.click(screen.getByRole("button", { name: "Preview supplier bill" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Internal-code preview inspected");
+  expect(operation).toHaveBeenLastCalledWith("/quickbooks/vendor-bills/preview", "POST", expect.objectContaining({
+    productCodeType: "internal_sku", lines: [{ supplierSku: "MOCK-KFC-0001", unit: "sqft", quantity: "2", unitCost: "1.45" }],
+  }));
+});
+
 it("previews a file locally and applies exact supplier bill fields only on request", async () => {
   operation.mockResolvedValue([]);
   render(<VendorBillSandbox mode="review" vendors={[]} />);

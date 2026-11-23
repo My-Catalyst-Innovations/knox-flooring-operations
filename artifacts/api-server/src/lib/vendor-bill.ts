@@ -29,6 +29,12 @@ export const vendorBillMode = z.enum([
   "production",
 ]);
 export const vendorBillFingerprint = z.string().regex(/^[a-f\d]{64}$/);
+export const vendorBillProductCodeType = z.enum([
+  "supplier_sku",
+  "manufacturer_part_number",
+  "internal_sku",
+]);
+export type VendorBillProductCodeType = z.infer<typeof vendorBillProductCodeType>;
 const vendorBillFields = z.object({
   mode: vendorBillMode,
   supplier: text(200),
@@ -42,6 +48,7 @@ const vendorBillFields = z.object({
     .regex(/^[\w./-]{1,21}$/),
   billDate: z.string().date(),
   billTotal: z.string().regex(amount),
+  productCodeType: vendorBillProductCodeType.optional(),
   lines: z.array(line).max(50),
   charges: z.array(charge).max(20).optional(),
 });
@@ -98,6 +105,7 @@ interface SupplierBillLineMapping {
   expectedUnitCost: string;
   priceEffectiveOn: string;
   priceSource: string;
+  sourceCode?: { type: VendorBillProductCodeType; value: string };
   stockConversion?: { unit: string; unitsPerBuyUnit: string };
 }
 

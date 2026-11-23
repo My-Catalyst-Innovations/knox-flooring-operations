@@ -15,6 +15,12 @@ import type { SandboxAccount } from "./SandboxStockItems";
 import { inventorySelect } from "@/lib/purchasing";
 
 type Mode = "review" | "simulated" | "sandbox" | "production";
+const productCodeLabels = {
+  supplier_sku: "Supplier SKU",
+  manufacturer_part_number: "Manufacturer part number",
+  internal_sku: "Internal SKU",
+};
+type ProductCodeType = keyof typeof productCodeLabels;
 const chargeLabels = { freight: "Freight", supplier_tax: "Supplier tax", fee: "Fee" };
 type Charge = { kind: keyof typeof chargeLabels; description: string; amount: string; accountId: string };
 const blankCharge: Charge = { kind: "freight", description: "", amount: "", accountId: "" };
@@ -29,6 +35,7 @@ type ReviewedLine = {
   priceEffectiveOn: string;
   priceSource: string;
   priceDiffers: boolean;
+  sourceCode?: { type: ProductCodeType; value: string };
   quickBooksItemId?: string;
   stockLine?: { unit: string; quantity: string; unitCost: string };
 };
@@ -125,6 +132,9 @@ function ReviewedLines({
           <span className="font-medium">
             {line.supplierSku} → {line.internalSku} · {line.productName}
           </span>
+          {line.sourceCode && <p>
+            {productCodeLabels[line.sourceCode.type]} {line.sourceCode.value} → Supplier SKU {line.supplierSku}
+          </p>}
           <p>
             Quantity {line.quantity} · Approved {line.expectedUnitCost} /{" "}
             {line.unit} · billed {line.billedUnitCost} / {line.unit}
@@ -197,6 +207,7 @@ export function VendorBillSandbox({
   const [billNumber, setBillNumber] = useState("");
   const [billDate, setBillDate] = useState("");
   const [billTotal, setBillTotal] = useState("");
+  const [productCodeType, setProductCodeType] = useState<ProductCodeType>("supplier_sku");
   const [lines, setLines] = useState<VendorBillLine[]>([blankLine]);
   const [charges, setCharges] = useState<Charge[]>([]);
   const [preview, setPreview] = useState<Prepared>();
@@ -263,6 +274,7 @@ export function VendorBillSandbox({
     billNumber,
     billDate,
     billTotal,
+    ...(productCodeType === "supplier_sku" ? {} : { productCodeType }),
     lines: merchandise,
     ...(charges.length ? { charges: charges.map((charge) => ({ ...charge, accountId: charge.accountId || undefined })) } : {}),
   };
@@ -351,6 +363,17 @@ export function VendorBillSandbox({
                 {totalProblem && <p id={`vendor-bill-${mode}-total-error`} className="text-xs text-destructive">Enter the positive bill total with up to two decimal places and no currency symbol or separators.</p>}
               </div>
             </div>
+            <label className="block max-w-sm space-y-1 text-sm font-medium">
+              Product codes on this bill
+              <select className={inventorySelect} value={productCodeType}
+                onChange={(event) => edit(() => setProductCodeType(event.target.value as ProductCodeType))}>
+                {Object.entries(productCodeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+            <p className="text-sm text-muted-foreground">
+              Choose the code shown on the supplier document. This applies to every imported or entered line.
+              The preview matches your approved supplier list; ambiguous matches require review.
+            </p>
             {usesQuickBooksVendor && (
               <label className="block max-w-xs space-y-1 text-sm font-medium">
                 {mode === "production"
@@ -387,7 +410,7 @@ export function VendorBillSandbox({
                   const fieldId = `vendor-bill-${mode}-${index}-${field}`;
                   return (
                     <div className="space-y-1 text-sm font-medium" key={field}>
-                      <label htmlFor={fieldId}>{label}</label>
+                      <label htmlFor={fieldId}>{field === "supplierSku" ? productCodeLabels[productCodeType] : label}</label>
                       <Input
                         id={fieldId}
                         value={line[field]}
