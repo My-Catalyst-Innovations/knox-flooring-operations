@@ -49,6 +49,7 @@ import supplierCatalogRouter from "./supplier-catalog";
 import estimateDraftsRouter from "./estimate-drafts";
 import jobOperationsRouter from "./job-operations";
 import jobAccountingRouter from "./job-accounting";
+import workGuidesRouter from "./work-guides";
 
 const router: IRouter = Router();
 
@@ -64,6 +65,7 @@ router.use(requireAuth);
 router.use(enforceRoleAccess);
 router.use(installerAccessBoundary);
 router.use(taskAssignmentRouter);
+router.use(workGuidesRouter);
 router.use(demoRouter);
 router.use(aiEstimatesRouter);
 router.use(aiOperationsRouter);
