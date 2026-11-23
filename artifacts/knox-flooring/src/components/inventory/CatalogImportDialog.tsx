@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 import {
   catalogImportHeaders,
   catalogImportMaxBytes,
@@ -15,6 +15,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { operation, useRefreshOperations } from "@/lib/operations";
 
 const importPath = "/products/catalog-import";
@@ -34,6 +35,7 @@ function CatalogImportForm({ setBusy }: { setBusy(busy: boolean): void }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [created, setCreated] = useState<number | null>(null);
+  const inputVersion = useRef(0);
   const rows = preview?.rows ?? [];
   const rowsWithErrors = rows.filter((row) => row.status === "error").length;
   const existing = new Set(
@@ -60,21 +62,39 @@ function CatalogImportForm({ setBusy }: { setBusy(busy: boolean): void }) {
     }
   };
 
-  const requestPreview = async (data: string) => {
-    setPreview(
-      await operation<CatalogImportPreview>(`${importPath}/preview`, "POST", {
+  const requestPreview = async (
+    data: string,
+    version = inputVersion.current,
+  ) => {
+    if (!data.trim())
+      throw new Error("Enter CSV text with a header and product rows.");
+    if (new TextEncoder().encode(data).length > catalogImportMaxBytes)
+      throw new Error(
+        `Use CSV text of ${catalogImportMaxBytes / 1_000} KB or less.`,
+      );
+    const result = await operation<CatalogImportPreview>(
+      `${importPath}/preview`,
+      "POST",
+      {
         csv: data,
-      }),
+      },
     );
+    if (inputVersion.current === version) setPreview(result);
+  };
+
+  const editCsv = (data: string) => {
+    inputVersion.current++;
+    setCsv(data);
+    setPreview(null);
+    setCreated(null);
+    setError("");
+    return inputVersion.current;
   };
 
   const readFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
-    setCsv("");
-    setPreview(null);
-    setCreated(null);
-    setError("");
+    const version = editCsv("");
     if (!file) return;
     if (file.size > catalogImportMaxBytes) {
       setError(
@@ -84,10 +104,11 @@ function CatalogImportForm({ setBusy }: { setBusy(busy: boolean): void }) {
     }
     void run(async () => {
       const data = await file.text();
+      if (inputVersion.current !== version) return;
       if (!data.trim())
         throw new Error("The file is empty. Choose a CSV with product rows.");
       setCsv(data);
-      await requestPreview(data);
+      await requestPreview(data, version);
     });
   };
 
@@ -140,6 +161,38 @@ function CatalogImportForm({ setBusy }: { setBusy(busy: boolean): void }) {
           disabled={pending}
           onChange={readFile}
         />
+      </div>
+      <div className="space-y-2">
+        <label htmlFor="catalog-import-paste" className="text-sm font-medium">
+          Paste catalog CSV
+        </label>
+        <Textarea
+          id="catalog-import-paste"
+          rows={5}
+          className="font-mono text-xs"
+          value={csv}
+          disabled={pending}
+          placeholder={catalogImportHeaders.join(",")}
+          aria-describedby="catalog-import-paste-help"
+          onChange={(event) => editCsv(event.target.value)}
+        />
+        <p
+          id="catalog-import-paste-help"
+          className="text-xs text-muted-foreground"
+        >
+          Paste the header and product rows from a CSV, or copy the file text.
+          Keep leading zeros in SKU values. For a catalog-only import, leave
+          warehouse blank and use zero opening stock. The same{" "}
+          {catalogImportMaxRows.toLocaleString()}-row limit applies.
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={pending || !csv.trim()}
+          onClick={() => void run(() => requestPreview(csv))}
+        >
+          Preview pasted CSV
+        </Button>
       </div>
       {pending && (
         <p className="text-sm text-muted-foreground" role="status">
