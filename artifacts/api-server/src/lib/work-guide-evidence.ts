@@ -1,4 +1,31 @@
 /** Read-only saved outcomes, not a learner certificate or proof of personal work. */
+export function operationalGuideRooms(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item: unknown) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const room = item as Record<string, unknown>;
+    if (
+      typeof room.id !== "string" ||
+      typeof room.name !== "string" ||
+      typeof room.length !== "number" ||
+      !Number.isFinite(room.length) ||
+      typeof room.width !== "number" ||
+      !Number.isFinite(room.width)
+    )
+      return [];
+    // Stored JSON is not constrained by its TypeScript interface. In particular,
+    // freeform scope may contain quote prices; export structured room facts only.
+    return [
+      { id: room.id, name: room.name, length: room.length, width: room.width },
+    ];
+  });
+}
+export const operationalGuideScope = (
+  flooringType: string,
+  roomCount: number,
+) =>
+  `Flooring: ${flooringType}. ${roomCount} recorded room(s). Confirm installation instructions with the office.`;
+
 export interface GuideStep {
   key: string;
   title: string;

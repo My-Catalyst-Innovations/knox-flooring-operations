@@ -106,7 +106,6 @@ export default function WorkOrder() {
                 {data.rooms.map((room) => (
                   <li key={room.id}>
                     {room.name} · {room.length} × {room.width} ft
-                    {room.scope ? ` · ${room.scope}` : ""}
                   </li>
                 ))}
               </ul>

@@ -23,7 +23,12 @@ import {
 } from "@workspace/db";
 import type { Transaction } from "./estimate-service";
 import { DomainError } from "./operations-rules";
-import { installationGuide, warehouseGuide } from "./work-guide-evidence";
+import {
+  installationGuide,
+  operationalGuideRooms,
+  operationalGuideScope,
+  warehouseGuide,
+} from "./work-guide-evidence";
 
 export type GuideActor = { userId: string; role: AppRole };
 const jobFields = {
@@ -33,7 +38,6 @@ const jobFields = {
   address: jobsTable.address,
   city: jobsTable.city,
   flooringType: jobsTable.flooringType,
-  scopeOfWork: jobsTable.scopeOfWork,
   rooms: jobsTable.rooms,
   status: jobsTable.status,
 };
@@ -100,7 +104,12 @@ export async function assertGuideJobAccess(
       if (!booking) throw new DomainError(404, "Assigned job not found.");
     }
   }
-  return job;
+  const rooms = operationalGuideRooms(job.rooms);
+  return {
+    ...job,
+    rooms,
+    scopeOfWork: operationalGuideScope(job.flooringType, rooms.length),
+  };
 }
 
 export async function listGuideJobs(actor: GuideActor, search: string) {

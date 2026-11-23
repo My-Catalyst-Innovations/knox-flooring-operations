@@ -1,5 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { installationGuide, warehouseGuide } from "./work-guide-evidence";
+import {
+  installationGuide,
+  operationalGuideRooms,
+  operationalGuideScope,
+  warehouseGuide,
+} from "./work-guide-evidence";
+
+it("exports only structured operational room facts and a neutral summary from legacy stored JSON", () => {
+  const rooms = operationalGuideRooms([
+    {
+      id: "room-a",
+      name: "Kitchen",
+      length: 10,
+      width: 12,
+      scope: "Estimated price: $8.88",
+      unitCost: 99,
+      providerId: "private-provider",
+      nested: { token: "private-token", margin: 0.4 },
+    },
+    null,
+    { id: "room-b", name: { token: "private-token" }, length: 1, width: 2 },
+    { id: "room-c", name: "Invalid", length: "10", width: 2 },
+    {
+      id: "room-d",
+      name: "Invalid",
+      length: Number.POSITIVE_INFINITY,
+      width: 2,
+    },
+  ]);
+  expect(rooms).toEqual([
+    { id: "room-a", name: "Kitchen", length: 10, width: 12 },
+  ]);
+  expect(operationalGuideScope("Tile", rooms.length)).toBe(
+    "Flooring: Tile. 1 recorded room(s). Confirm installation instructions with the office.",
+  );
+  expect(JSON.stringify(rooms)).not.toMatch(
+    /Estimated price|unitCost|provider|token|margin|nested|scope/,
+  );
+  expect(operationalGuideRooms({ token: "not-an-array" })).toEqual([]);
+});
 
 function warehouse() {
   return {

@@ -89,7 +89,8 @@ beforeEach(() => {
       address: "100 Field Way",
       city: "Knoxville",
       flooringType: "Tile",
-      scopeOfWork: "Install assigned room",
+      scopeOfWork:
+        "Flooring: Tile. 0 recorded room(s). Confirm installation instructions with the office.",
       rooms: [],
     },
     tasks: [
@@ -186,18 +187,41 @@ it("hides stale detail and actions after access recheck fails", () => {
   mocks.detailError = true;
   render(<WorkGuides />);
   expect(screen.getByRole("alert")).toHaveTextContent("no longer accessible");
-  expect(screen.queryByText("Install assigned room")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Flooring: Tile/)).not.toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "Save job update" }),
   ).not.toBeInTheDocument();
 });
 it("prints only the safe work-order DTO and keeps installers in the authorized guide", () => {
+  mocks.data!.job.scopeOfWork =
+    "Flooring: Tile. 1 recorded room(s). Confirm installation instructions with the office.";
+  mocks.data!.job.rooms = [
+    {
+      id: "r",
+      name: "Assigned room",
+      length: 10,
+      width: 12,
+      scope: "Estimated price: $8.88",
+      unitCost: 999,
+      metadata: {
+        providerId: "private-provider-sentinel",
+        accessToken: "private-token-sentinel",
+      },
+    },
+  ] as any;
+  const print = vi.spyOn(window, "print").mockImplementation(() => {});
   render(<WorkOrder />);
-  expect(screen.getByText("Install assigned room")).toBeVisible();
+  expect(screen.getByText(/Flooring: Tile\. 1 recorded room/)).toBeVisible();
   expect(screen.getByText("Assigned install", { exact: false })).toBeVisible();
   expect(
     screen.getByRole("link", { name: "Back to work guide" }),
   ).toHaveAttribute("href", "/work-guides?job=job-a");
   expect(mocks.calls).toEqual(["/work-guides/jobs/job-a/work-order"]);
   expect(screen.queryByText(/cost|price|revenue/i)).not.toBeInTheDocument();
+  expect(document.body.innerHTML).not.toMatch(
+    /Estimated price|8\.88|private-provider-sentinel|private-token-sentinel|unitCost/,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Print work order" }));
+  expect(print).toHaveBeenCalledOnce();
+  print.mockRestore();
 });
