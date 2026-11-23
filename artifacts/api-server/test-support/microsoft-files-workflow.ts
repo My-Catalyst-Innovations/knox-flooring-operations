@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db, pool, jobDocumentsTable, jobPhotosTable, microsoftFilesConnectionTable as connections, microsoftFileMirrorsTable as mirrors, microsoftJobFoldersTable as folders, outlookCalendarConnectionTable } from "@workspace/db";
-import { attachJobDocument, disconnectMicrosoftFiles, finishMicrosoftFilesConnection, jobFiles, microsoftFilesStatus, selectMicrosoftFilesTarget, syncJobMicrosoftFile } from "../src/lib/microsoft-files";
+import { attachJobDocument,browseMicrosoftFolders, disconnectMicrosoftFiles, finishMicrosoftFilesConnection, jobFiles, microsoftFilesStatus, selectMicrosoftFilesFolder,selectMicrosoftFilesTarget, syncJobMicrosoftFile } from "../src/lib/microsoft-files";
 import { quickXorHash } from "../src/lib/microsoft-files-graph";
 import { saveFile } from "../src/lib/file-store";
 
@@ -18,6 +18,7 @@ let grants = false, serial = 0, uploads = 0, folderCreates = 0, loseUploadRespon
 let oauthScope = "", callsOutsideSelectedDrive = 0;
 const selectedScope = "User.Read Files.SelectedOperations.Selected";
 items.set(root.id, root);
+items.set("approved-subfolder",{id:"approved-subfolder",name:"Flooring jobs",folder:{},parentReference:{id:rootId,driveId},webUrl:"https://fixture.sharepoint.com/sites/Works/CompanyFiles/Flooring"});
 globalThis.fetch = (async (input: any, options: RequestInit = {}) => {
   const url = new URL(String(input)), method = options.method ?? "GET", headers = new Headers(options.headers);
   if (url.origin === "http://127.0.0.1:8181") return Response.json({ access_token: "synthetic-azure-token", expires_on: Math.floor(Date.now()/1000) + 3600 });
@@ -44,10 +45,11 @@ globalThis.fetch = (async (input: any, options: RequestInit = {}) => {
   if (url.pathname === "/v1.0/me") return Response.json({ id: "fixture-files-account", mail: "owner@fixture.invalid" });
   if (!url.pathname.startsWith(`/v1.0/drives/${driveId}/items/`)) { callsOutsideSelectedDrive++; throw new Error("Unexpected resource outside selected drive"); }
   const relative = decodeURIComponent(url.pathname.slice(`/v1.0/drives/${driveId}/items/`.length));
-  if (relative === `${rootId}/permissions`) {
+  if (relative.endsWith("/permissions")) {
     assert.equal(method, "GET", "The connector must never grant itself access");
     return Response.json({ value: grants ? [{ roles: ["write"], grantedToV2: { application: { id: "files-fixture-app" } } }] : [] });
   }
+  if(relative.endsWith("/children")&&method==="GET") {const parent=relative.slice(0,-9);return Response.json({value:[...items.values()].filter(item=>item.parentReference?.id===parent)});}
   if (relative.endsWith("/children") && method === "POST") {
     const parentId = relative.slice(0, -9), body = JSON.parse(String(options.body));
     assert.equal(body["@microsoft.graph.conflictBehavior"], "fail");
@@ -92,6 +94,19 @@ try {
   await assert.rejects(selectMicrosoftFilesTarget(driveId, rootId, actor), /No matching selected-folder write grant/);
   assert.equal((await microsoftFilesStatus()).target, null);
   grants = true; await selectMicrosoftFilesTarget(driveId, rootId, actor);
+  process.env.MICROSOFT_FILES_ROOT_DRIVE_ID=driveId;process.env.MICROSOFT_FILES_ROOT_FOLDER_ID=rootId;
+  assert.equal((await microsoftFilesStatus()).browserAvailable,true);
+  assert.equal((await microsoftFilesStatus()).approvedRootConfigured,true);
+  const browse=await browseMicrosoftFolders([]);assert.deepEqual(browse.folders.map(folder=>folder.name),["Flooring jobs"]);
+  await assert.rejects(selectMicrosoftFilesTarget(driveId,"approved-subfolder",actor),/browser/);
+  await assert.rejects(selectMicrosoftFilesFolder(["approved-subfolder"],"0".repeat(64),actor),/changed/);
+  await assert.rejects(browseMicrosoftFolders(["outside-folder"]),/no longer inside/);
+  const nested=await browseMicrosoftFolders(["approved-subfolder"]);assert.equal(nested.current.name,"Flooring jobs");
+  await selectMicrosoftFilesFolder(["approved-subfolder"],browse.root.key,actor);assert.equal((await microsoftFilesStatus()).target?.folderId,"approved-subfolder");
+  await selectMicrosoftFilesFolder([],browse.root.key,actor);assert.equal((await microsoftFilesStatus()).target?.folderId,rootId);
+  process.env.MICROSOFT_FILES_ROOT_FOLDER_ID="approved-subfolder";
+  await assert.rejects(copy("document",document.id),/outside the approved company folder/);assert.equal(uploads,0);assert.equal(folderCreates,0);
+  process.env.MICROSOFT_FILES_ROOT_FOLDER_ID=rootId;
   loseFolderResponse = true;
   const folderUnknown = await copy("document", document.id); assert.equal(folderUnknown.status, "unknown"); assert.equal(folderCreates, 1); assert.equal(uploads, 0);
   const attempts = await Promise.allSettled([copy("document", document.id), copy("document", document.id)]);
@@ -103,7 +118,9 @@ try {
   const [mirror] = await db.select().from(mirrors).where(eq(mirrors.id, result.id));
   assert.equal(mirror.itemId, "provider-file-2"); assert.ok(mirror.remoteName.includes(document.sha256));
   assert.equal((await jobFiles(jobId)).microsoft.folderUrl, "https://fixture.sharepoint.com/sites/Works/1");
-  await assert.rejects(selectMicrosoftFilesTarget(driveId, "changed-target", actor), /not found|different|bound/);
+  await assert.rejects(selectMicrosoftFilesTarget(driveId, "changed-target", actor), /browser|not found|different|bound/);
+  assert.equal((await microsoftFilesStatus()).targetLocked,true);
+  await assert.rejects(selectMicrosoftFilesFolder(["approved-subfolder"],browse.root.key,actor),/bound/);
 
   // Existing actual job photos use their normal private source and share one job folder.
   const photoPath = await saveFile("job-photo", Buffer.from([255,216,255,217]), actor, jobId, "Measured floor.jpg"), photoId = randomUUID(); photoIds.push(photoId);
@@ -115,7 +132,7 @@ try {
 
   const otherPath = await saveFile("job-document", Buffer.from("Another fixture document"), actor, jobId, "Another.txt");
   const second = await attachJobDocument(jobId, otherPath, randomUUID(), actor); savedDocuments.push(second.id);
-  grants = false; const denied = await copy("document", second.id); assert.equal(denied.status, "error"); assert.equal(uploads, 2);
+  grants = false; await assert.rejects(copy("document", second.id),/selected-folder write grant/); assert.equal(uploads, 2);
   grants = true; corruptHash = true; const corrupt = await copy("document", second.id); corruptHash = false;
   assert.equal(corrupt.status, "error"); assert.equal(uploads, 3);
   const failedAgain = await copy("document", second.id); assert.equal(failedAgain.status, "error"); assert.equal(uploads, 3, "A mismatched existing file must never be overwritten");
@@ -130,6 +147,11 @@ try {
   assert.equal((await copy("document", interrupted.id)).status, "synced");
   assert.equal(callsOutsideSelectedDrive, 0);
   assert.deepEqual(await db.select().from(outlookCalendarConnectionTable), outlookBefore, "Microsoft files must not modify working Outlook tokens, scopes or calendar choice");
+  delete process.env.MICROSOFT_FILES_ROOT_FOLDER_ID;
+  assert.ok((await microsoftFilesStatus()).setupError);
+  assert.equal((await jobFiles(jobId)).microsoft.targetReady,false);
+  assert.ok((await jobFiles(jobId)).documents.length>=savedDocuments.length,"Ordinary private attachments survive Microsoft target misconfiguration");
+  process.env.MICROSOFT_FILES_ROOT_FOLDER_ID=rootId;
   await disconnectMicrosoftFiles(); assert.equal((await microsoftFilesStatus()).status, "disconnected");
   assert.equal((await jobFiles(jobId)).documents.length >= savedDocuments.length, true);
   console.log("Microsoft files PostgreSQL/Blob/Graph simulation passed: private documents, actual selected grant, encrypted connection, stable job folders, photo mirrors, lost-response reconciliation, immutable hash mismatch and interrupted lease recovery");

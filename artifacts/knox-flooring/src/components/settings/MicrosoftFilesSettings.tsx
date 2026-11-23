@@ -5,12 +5,17 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { operation, useOperation } from "@/lib/operations";
 import { microsoftFileUrl } from "@/lib/microsoft-file-links";
+import { MicrosoftFilesFolderBrowser } from "./MicrosoftFilesFolderBrowser";
 
 interface FilesStatus {
   configured: boolean;
   status: "not_configured" | "disconnected" | "connected" | "reconnect_required";
   accountEmail: string | null;
   appClientId: string | null;
+  browserAvailable?:boolean;
+  approvedRootConfigured?:boolean;
+  targetLocked?:boolean;
+  setupError?:string|null;
   target: { driveId: string; folderId: string; name: string; webUrl: string | null; verifiedAt: string } | null;
 }
 
@@ -54,9 +59,13 @@ export function MicrosoftFilesSettings() {
           })}>Disconnect Microsoft files</Button>}
         </div>
         {connected && <div className="space-y-3 rounded-md border p-3 text-sm">
+          {data.setupError&&<p role="alert" className="text-destructive">{data.setupError}</p>}
           {data.target ? <p>Selected folder: {folderUrl ? <a className="underline" href={folderUrl} target="_blank" rel="noopener noreferrer">{data.target.name}</a> : data.target.name}</p> : <p>Choose the folder where job folders should be created.</p>}
           <p className="text-muted-foreground">Your Microsoft administrator must give Catalyst Works write access to this specific folder. Connecting your account alone does not grant folder access.</p>
-          {data.appClientId && <p className="break-all text-xs text-muted-foreground">Application ID for your administrator: {data.appClientId}</p>}
+          {(data.browserAvailable??Boolean(data.target))&&<MicrosoftFilesFolderBrowser key={`${data.appClientId}:${data.accountEmail}:${data.target?.folderId??""}`} disabled={busy} targetLocked={data.targetLocked} onSelected={async()=>{await refetch();setMessage("Folder access verified. Use a job’s Files panel to copy individual documents and photos.");}}/>}
+          {!data.browserAvailable&&!data.target&&<p className="text-muted-foreground">Your administrator needs to approve the company folder before browsing becomes available.</p>}
+          {!data.approvedRootConfigured&&!data.targetLocked&&<details className="space-y-3"><summary className="cursor-pointer">Administrator folder setup</summary>
+          {data.appClientId && <p className="break-all text-xs text-muted-foreground">Application ID: {data.appClientId}</p>}
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="space-y-1">Drive ID<Input value={driveId} maxLength={512} disabled={busy} onChange={event => setDriveId(event.target.value)} autoComplete="off" /></label>
             <label className="space-y-1">Folder ID<Input value={folderId} maxLength={512} disabled={busy} onChange={event => setFolderId(event.target.value)} autoComplete="off" /></label>
@@ -65,6 +74,7 @@ export function MicrosoftFilesSettings() {
             await operation("/microsoft/files/target", "PUT", { driveId: driveId.trim(), folderId: folderId.trim() });
             await refetch(); setDriveId(""); setFolderId(""); setMessage("Folder access verified. Use a job’s Files panel to copy individual documents and photos.");
           })}>{busy ? "Checking folder…" : "Verify and use folder"}</Button>
+          </details>}
         </div>}
       </>}
       {(error || (callback && callback !== "connected" ? "Microsoft files authorization did not finish. Connect again to retry." : "")) && <p role="alert" className="text-sm text-destructive">{error || "Microsoft files authorization did not finish. Connect again to retry."}</p>}
