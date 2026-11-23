@@ -30,6 +30,16 @@ Use a separate environment prefix for each company. For `company-one`, set `CATA
 3. For an existing company, migrate the database first and append `--adopt` to the prepare command. It requires the saved company name and an active owner's email. The first binding clears existing sessions so staff establish new sessions on the hosted workspace.
 4. Start the app with the shared manifest. Migrations and startup verify that each database is bound to the configured company. If App Service probes a management hostname, set `CATALYST_WORKSPACE_HEALTH_HOST` to that exact hostname. It serves the health probe. Application routes require a workspace hostname.
 
+## Customer record migration
+
+Owners can use **Customers → Import customers** to upload or paste CSV/TSV, map source customer IDs and contact fields, and save a batch preview. Each batch is limited to 200 rows and 200 KB. Use a stable source system ID, batch ID and source customer IDs; IDs remain text and retain leading zeroes. Unmapped columns, including balances, are not imported.
+
+Review each row as a new customer, an explicit link to a matching existing customer, or a skipped row with a reason. Possible duplicates require an explanation before creating a separate record. Links retain the source identity without changing the existing customer's contact details or locations. Creating a customer can include one imported location. Save the row decisions, explicitly approve the exact saved review, then commit it. Changing matches, revisions, source identities or merged targets requires refreshed review and approval. The commit is atomic and replay-safe; the same source customer ID cannot create another record in the company.
+
+Batch/file SHA-256, column mapping, source line, immutable approval and original customer links remain available after customer merges. An owner can inspect this provenance on the customer page or resume a saved batch from the import dialog. The workflow does not send invitations/messages, start provider synchronization, or import inventory, jobs, invoices or opening balances. Supplier migration, multiple locations on existing customers, historical document archives and financial migration are separate workflows.
+
+The additive `0025_customer_import_review` migration is required for this slice. `pnpm --filter @workspace/db test:customer-import` uses `TEST_DATABASE_URL` only on a disposable loopback PostgreSQL server; it creates and removes its own two synthetic company databases. Its app password adapter is an explicitly guarded local test fixture; no provider calls are permitted.
+
 ## Training and fictional practice
 
 The Training Center on a live workspace provides read-only workflow lessons and contextual Page Guides. To offer guided exercises, run a standalone practice deployment on a separate, access-restricted HTTPS hostname with a new PostgreSQL database, its own user accounts, and a separate private Blob container if uploads are enabled. Use fictional company settings and business records. Production logins remain on the production hostname.

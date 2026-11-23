@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { CustomerForm } from "@/components/customers/CustomerForm";
+import { CustomerImportDialog } from "@/components/customers/CustomerImportDialog";
 import { aggregateCustomers } from "@/lib/customers";
 import { currency, useOperation, useRefreshOperations, type Customer } from "@/lib/operations";
 
@@ -20,6 +21,7 @@ export default function Customers() {
   const [view, setView] = useUrlState<string>("view", "all");
   const { update } = useQueryControls();
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
   const customers = useMemo(() => aggregateCustomers(jobs, proposals, invoices, directory.data, leads), [jobs, proposals, invoices, directory.data, leads]);
   const isOwner = user?.role === "owner";
   const historyLoading = queryState.jobs.isLoading || queryState.proposals.isLoading || queryState.leads.isLoading || (isOwner && queryState.invoices.isLoading);
@@ -33,7 +35,7 @@ export default function Customers() {
   if (!directory.allowed) return <p className="p-6 text-muted-foreground">Customer records are available to the owner and sales team.</p>;
   const empty = !loading && !failed && filtered.length === 0;
   return <div className="space-y-5">
-    <header className="flex flex-wrap items-start justify-between gap-3"><div><h1 className="text-2xl font-semibold tracking-tight">Customers</h1><p className="mt-1 text-sm text-muted-foreground">One relationship across every project and location.</p></div><Button onClick={() => setCreating(true)}><Plus className="mr-2 h-4 w-4" />Add customer</Button></header>
+    <header className="flex flex-wrap items-start justify-between gap-3"><div><h1 className="text-2xl font-semibold tracking-tight">Customers</h1><p className="mt-1 text-sm text-muted-foreground">One relationship across every project and location.</p></div><div className="flex gap-2">{isOwner && <Button variant="outline" onClick={() => setImporting(true)}>Import customers</Button>}<Button onClick={() => setCreating(true)}><Plus className="mr-2 h-4 w-4" />Add customer</Button></div></header>
     <div className={`grid gap-3 ${isOwner ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
       {[{ label: "Customers", value: customers.length.toLocaleString(), detail: "Individual customer records", filter: "all" }, { label: "Returning customers", value: customers.filter(c => c.isRepeat).length.toLocaleString(), detail: "More than one linked job", filter: "repeat" }, ...(isOwner ? [{ label: "Outstanding balance", value: currency(customers.reduce((sum, c) => sum + c.outstanding, 0)), detail: "Sent, partial, and overdue invoices", filter: "outstanding" }] : [])].map(metric => <button key={metric.filter} className="rounded-xl border bg-card p-4 text-left hover:bg-muted/40" onClick={() => update({ view: metric.filter === "all" ? null : metric.filter, q: null })}><p className="text-xs font-medium text-muted-foreground">{metric.label}</p><p className="my-1 text-2xl font-semibold tabular-nums">{loading || failed ? "—" : metric.value}</p><p className="text-xs text-muted-foreground">{metric.detail}</p></button>)}
     </div>
@@ -45,5 +47,6 @@ export default function Customers() {
       <div className="hidden rounded-xl border bg-card md:block"><table className="w-full table-fixed text-left text-sm"><thead className="border-b bg-muted/40 text-xs text-muted-foreground"><tr><th className="w-[35%] p-4">Customer</th><th className="p-4">Projects</th>{isOwner && <th className="p-4 text-right">Paid invoice value</th>}{isOwner && <th className="p-4 text-right">Outstanding</th>}<th className="w-16 p-4"><span className="sr-only">Open customer</span></th></tr></thead><tbody>{filtered.map(customer => <tr key={customer.id} className="border-b last:border-0 hover:bg-muted/20"><td className="p-4"><Link href={`/customers/${customer.key}`} className="font-semibold hover:underline break-words">{customer.name}</Link><p className="mt-1 break-words text-xs text-muted-foreground">{customer.email || customer.phone || customer.city || "Contact details not recorded"}</p></td><td className="p-4"><p>{customer.jobs.length} jobs · {customer.proposals.length} proposals</p>{customer.isRepeat && <Badge variant="secondary" className="mt-1">Returning</Badge>}</td>{isOwner && <td className="p-4 text-right tabular-nums">{failed ? "—" : currency(customer.lifetimeValue)}</td>}{isOwner && <td className="p-4 text-right font-semibold tabular-nums">{failed ? "—" : currency(customer.outstanding)}</td>}<td className="p-4"><Button variant="ghost" size="icon" asChild><Link href={`/customers/${customer.key}`} aria-label={`Open ${customer.name}`}><ArrowRight className="h-4 w-4" /></Link></Button></td></tr>)}</tbody></table></div>
     </>}
     {creating && <CustomerForm onClose={() => setCreating(false)} />}
+    {importing && <CustomerImportDialog onClose={() => setImporting(false)} />}
   </div>;
 }

@@ -176,6 +176,13 @@
       "when": 1795461790952,
       "tag": "0024_job_accounting_projects",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1795475481787,
+      "tag": "0025_customer_import_review",
+      "breakpoints": true
     }
   ]
 }
