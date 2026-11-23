@@ -2,7 +2,7 @@ name: Catalyst Works Linux verification
 
 on:
   push:
-    branches: [codex/catalyst-works, codex/knoxville-supplier-preview, codex/warehouse-release-20261123, codex/works-live-completion-20261123, codex/works-accounting-completion-20261123]
+    branches: [codex/catalyst-works, codex/knoxville-supplier-preview, codex/warehouse-release-20261123, codex/works-live-completion-20261123, codex/works-accounting-completion-20261123, codex/works-sms-delivery-gates-20261123, codex/works-client-onboarding-20261123]
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.ref == 'refs/heads/codex/catalyst-works' || github.ref == 'refs/heads/codex/knoxville-supplier-preview' || github.ref == 'refs/heads/codex/warehouse-release-20261123' || github.ref == 'refs/heads/codex/works-live-completion-20261123' || github.ref == 'refs/heads/codex/works-accounting-completion-20261123'
+    if: github.ref == 'refs/heads/codex/catalyst-works' || github.ref == 'refs/heads/codex/knoxville-supplier-preview' || github.ref == 'refs/heads/codex/warehouse-release-20261123' || github.ref == 'refs/heads/codex/works-live-completion-20261123' || github.ref == 'refs/heads/codex/works-accounting-completion-20261123' || github.ref == 'refs/heads/codex/works-sms-delivery-gates-20261123' || github.ref == 'refs/heads/codex/works-client-onboarding-20261123'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:

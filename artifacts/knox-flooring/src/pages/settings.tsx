@@ -25,6 +25,7 @@ import { DemoSettings } from "@/components/settings/DemoSettings";
 import { useAuth } from "@/contexts/auth";
 import { OperatingSettings } from "@/components/settings/OperatingSettings";
 import { StaffAccess } from "@/components/settings/StaffAccess";
+import { CompanySetup } from "@/components/settings/CompanySetup";
 
 export default function Settings() {
   const { settings, updateSettings } = useStore();
@@ -171,6 +172,7 @@ export default function Settings() {
         <p className="text-muted-foreground mt-1">Manage your company profile and estimator defaults.</p>
       </div>
 
+      <CompanySetup />
       <Card>
         <CardHeader>
           <CardTitle>Owner Profile</CardTitle>
