@@ -30,7 +30,11 @@ export const customersTable = pgTable("customers", {
   mergedIntoId: text("merged_into_id"),
   revision: integer("revision").notNull().default(1),
   ...timestamps,
-});
+}, table => [
+  index("customers_import_name_match_idx").on(sql`lower(regexp_replace(btrim(${table.name}), '[[:space:]]+', ' ', 'g'))`),
+  index("customers_import_email_match_idx").on(sql`lower(btrim(${table.email}))`),
+  index("customers_import_phone_match_idx").on(sql`(CASE WHEN regexp_replace(${table.phone}, '[^0-9]', '', 'g') ~ '^1[0-9]{10}$' THEN right(regexp_replace(${table.phone}, '[^0-9]', '', 'g'), 10) ELSE regexp_replace(${table.phone}, '[^0-9]', '', 'g') END)`),
+]);
 export const customerSitesTable = pgTable("customer_sites", {
   id: text("id").primaryKey(),
   customerId: text("customer_id")
