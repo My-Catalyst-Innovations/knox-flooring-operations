@@ -36,6 +36,22 @@ afterEach(() => {
   window.history.replaceState({}, "", "/");
 });
 
+it.each(["create","link"] as const)("shows source vs Works PO and preserves the %s origin meaning without any mutation",async action=>{
+  const order:PurchaseOrder={id:"po-import",orderNumber:"PO-000123",supplier:"Example Supply",warehouseId:"north",notes:"",status:action==="create"?"Ordered":"Partially received",revision:1,createdAt:"2026-11-23",updatedAt:"2026-11-23",lines:[{id:"line-import",productId:product.id,productName:product.name,sku:product.sku,unit:product.unit,quantity:10,receivedQuantity:action==="create"?0:2,unitCost:"4.460001"}],importOrigin:{sourcePoNumber:"000078",sourceSystem:"legacy-test",action,sourceSnapshotAt:"2026-11-23T14:00:00-05:00",cutoverAt:"2026-11-23T15:00:00-05:00"}};
+  customFetch.mockImplementation(async(path:string)=>{
+    if(path===purchasePath)return [order];
+    if(path==="/api/inventory/warehouses")return warehouses;
+    if(path==="/api/inventory/bins")return bins;
+    if(path===`${purchasePath}/${order.id}/receipts`)return [];
+    throw new Error(`Unexpected request ${path}`);
+  });
+  mount(<PurchaseOrders/>,`/inventory/purchase-orders?order=${order.id}`);
+  const origin=await screen.findByRole("complementary",{name:"Imported source"});
+  expect(origin).toHaveTextContent("Source PO 000078 (legacy-test) → Works PO-000123");
+  expect(origin).toHaveTextContent(action==="create"?"Earlier source receipts were not added to Works":"Its existing Works receipts were preserved");
+  expect(customFetch.mock.calls.every(([,init])=>!init||init.method==="GET")).toBe(true);
+});
+
 it("creates an order and retries a split partial receipt with the original idempotency key", async () => {
   let order: PurchaseOrder | undefined;
   let receipt: PurchaseReceipt | undefined;

@@ -47,7 +47,7 @@ router.post("/jobs/:id/material-usage", domainRoute(async (req, res) => {
   const parsed = CreateMaterialUsageBody.safeParse(req.body);
   if (!parsed.success) {
     req.log.warn(
-      { errors: parsed.error.message },
+      { diagnostic: "request_validation_failed" },
       "Invalid material usage body",
     );
     res.status(400).json({ error: parsed.error.message });
@@ -93,7 +93,7 @@ router.patch(
     const parsed = UpdateMaterialUsageBody.safeParse(req.body);
     if (!parsed.success) {
       req.log.warn(
-        { errors: parsed.error.message },
+        { diagnostic: "request_validation_failed" },
         "Invalid material usage update body",
       );
       res.status(400).json({ error: parsed.error.message });

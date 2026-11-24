@@ -38,7 +38,7 @@ router.post("/jobs/:id/photos", domainRoute(async (req, res) => {
 
   const parsed = CreateJobPhotoBody.safeParse(req.body);
   if (!parsed.success) {
-    req.log.warn({ errors: parsed.error.message }, "Invalid job photo body");
+    req.log.warn({ diagnostic: "request_validation_failed" }, "Invalid job photo body");
     res.status(400).json({ error: parsed.error.message });
     return;
   }

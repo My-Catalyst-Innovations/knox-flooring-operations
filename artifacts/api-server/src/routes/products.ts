@@ -106,7 +106,7 @@ router.post("/products/catalog-import", requireRole("owner", "operations"), doma
 router.post("/products", requireRole("owner", "operations"), domainRoute(async (req, res) => {
   const parsed = CreateProductBody.safeParse(req.body);
   if (!parsed.success) {
-    req.log.warn({ errors: parsed.error.message }, "Invalid product body");
+    req.log.warn({ diagnostic: "request_validation_failed" }, "Invalid product body");
     res.status(400).json({ error: parsed.error.message });
     return;
   }

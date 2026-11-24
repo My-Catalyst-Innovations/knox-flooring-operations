@@ -1,3 +1,4 @@
+import { safeDiagnostic } from "./safe-logging";
 import { logger } from "./logger";
 import type { MeasurementRoom, MeasurementProduct } from "@workspace/db";
 import { workspaceEnvironment } from "@workspace/db/workspace";
@@ -73,7 +74,7 @@ export async function getStatus(): Promise<MeasureSquareStatus> {
       message: `Measure Square responded with an error (HTTP ${res.status}).`,
     };
   } catch (err) {
-    logger.warn({ err }, "Measure Square status probe failed");
+    logger.warn(safeDiagnostic("measure_square_status_failed", err), "Measure Square status probe failed");
     return {
       connected: false,
       configured: true,
@@ -123,7 +124,7 @@ export async function pullMeasurements(): Promise<ExternalMeasurement[]> {
   try {
     res = await fetch(`${apiUrl()}/measurements`, { headers: authHeaders() });
   } catch (err) {
-    logger.warn({ err }, "Measure Square pull request failed");
+    logger.warn(safeDiagnostic("measure_square_pull_failed", err), "Measure Square pull request failed");
     throw new MeasureSquareError(
       "Could not reach Measure Square to pull measurements.",
       503,
@@ -164,7 +165,7 @@ export async function pushMeasurement(
       body: JSON.stringify(input),
     });
   } catch (err) {
-    logger.warn({ err }, "Measure Square push request failed");
+    logger.warn(safeDiagnostic("measure_square_push_failed", err), "Measure Square push request failed");
     throw new MeasureSquareError(
       "Could not reach Measure Square to push the measurement.",
       503,

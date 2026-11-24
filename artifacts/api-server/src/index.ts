@@ -1,3 +1,4 @@
+import { safeDiagnostic } from "./lib/safe-logging";
 import app from "./app";
 import { logger } from "./lib/logger";
 import { startAutoSync } from "./lib/sync-measurements";
@@ -20,7 +21,7 @@ if (!rawPort) {
 const port = Number(rawPort);
 
 if (Number.isNaN(port) || port <= 0) {
-  throw new Error(`Invalid PORT value: "${rawPort}"`);
+  throw new Error("PORT must be a positive number.");
 }
 
 async function start() {
@@ -34,7 +35,7 @@ async function start() {
   }
   app.listen(port, process.env.HOST || "0.0.0.0", (err) => {
     if (err) {
-      logger.error({ err }, "Error listening on port");
+      logger.error(safeDiagnostic("server_listen_failed", err), "Error listening on port");
       process.exit(1);
     }
     logger.info({ port }, "Server listening");
@@ -58,7 +59,7 @@ async function start() {
 }
 
 start().catch(async (error) => {
-  logger.error({ error }, "Application initialization failed; no traffic accepted");
+  logger.error(safeDiagnostic("startup_failed", error), "Application initialization failed; no traffic accepted");
   await closeWorkspaceConnections();
   process.exitCode = 1;
 });

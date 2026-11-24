@@ -55,7 +55,7 @@ router.post(
     const parsed = CreateLaborEntryBody.safeParse(req.body);
     if (!parsed.success) {
       req.log.warn(
-        { errors: parsed.error.message },
+        { diagnostic: "request_validation_failed" },
         "Invalid labor entry body",
       );
       res.status(400).json({ error: parsed.error.message });
@@ -103,7 +103,7 @@ router.patch(
     const parsed = UpdateLaborEntryBody.safeParse(req.body);
     if (!parsed.success) {
       req.log.warn(
-        { errors: parsed.error.message },
+        { diagnostic: "request_validation_failed" },
         "Invalid labor entry update body",
       );
       res.status(400).json({ error: parsed.error.message });

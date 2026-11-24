@@ -234,7 +234,7 @@ try {
     .set("Host", owner.host)
     .set("Cookie", owner.cookie)
     .query({ to });
-  assert.equal(headers.headers["cache-control"], "no-store");
+  assert.equal(headers.headers["cache-control"], "no-store, no-cache, must-revalidate");
   await call(
     installer,
     "GET",

@@ -9,28 +9,22 @@ import { recoveryReadOnly } from "./middlewares/recovery";
 import { workspaceBoundary } from "./middlewares/workspace";
 import { workspaceEnvironment } from "@workspace/db/workspace";
 import { platform } from "./platform";
+import { apiSecurity } from "./middlewares/api-security";
+import { safeErrorLog, safeRequestLog, safeResponseLog } from "./lib/safe-logging";
+import { safeFinalErrorHandler } from "./middlewares/safe-error-handler";
 
 const app: Express = express();
 const customerLinkPath = /^\/(?:api\/public\/(?:jobs|quotes)|p|q)\/[^/]+/i;
 
+app.use(apiSecurity);
 app.use(
   pinoHttp({
     logger,
+    wrapSerializers: false,
     serializers: {
-      req(req) {
-        return {
-          id: req.id,
-          method: req.method,
-          url: req.url
-            ?.split("?")[0]
-            .replace(customerLinkPath, "/[customer-link]"),
-        };
-      },
-      res(res) {
-        return {
-          statusCode: res.statusCode,
-        };
-      },
+      req: safeRequestLog,
+      res: safeResponseLog,
+      err: safeErrorLog,
     },
   }),
 );
@@ -62,7 +56,7 @@ const defaultJson = express.json({ ...jsonOptions, limit: "1mb" });
 // existing limit everywhere else; the archive parser separately caps source bytes.
 const archiveJson = express.json({ ...jsonOptions, limit: "3mb" });
 app.use((req, res, next) =>
-  (req.method === "POST" && req.path === "/api/legacy-history/imports/preview"
+  (req.method === "POST" && ["/api/legacy-history/imports/preview", "/api/supplier-imports/preview"].includes(req.path)
     ? archiveJson
     : defaultJson)(req, res, next),
 );
@@ -88,4 +82,5 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
+app.use(safeFinalErrorHandler);
 export default app;

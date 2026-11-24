@@ -179,6 +179,7 @@ export default function PurchaseOrders() {
                   <button type="button" aria-pressed={selectedId === order.id} className="w-full space-y-1 p-3 text-left text-sm hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring aria-pressed:bg-muted" onClick={() => { announce(""); setSelectedId(order.id); }}>
                     <span className="flex flex-wrap items-center justify-between gap-1 font-semibold">{order.orderNumber}<Badge variant={order.status === "Received" ? "default" : "secondary"}>{order.status}</Badge></span>
                     <span className="block text-muted-foreground">{order.supplier} · {warehouseName(warehouses, order.warehouseId)}</span>
+                    {order.importOrigin&&<span className="block text-xs text-muted-foreground">Source PO {order.importOrigin.sourcePoNumber} · {order.importOrigin.action==="create"?"outstanding-only import":"linked source snapshot"}</span>}
                   </button>
                 </li>
               ))}
@@ -201,6 +202,7 @@ export default function PurchaseOrders() {
               </p>
             )}
             {selected.notes && <p className="whitespace-pre-wrap break-words rounded-md bg-muted/50 p-3 text-sm">{selected.notes}</p>}
+            {selected.importOrigin&&<aside aria-label="Imported source" className="space-y-1 rounded border p-3 text-sm"><p>Source PO <strong>{selected.importOrigin.sourcePoNumber}</strong> ({selected.importOrigin.sourceSystem}) → Works <strong>{selected.orderNumber}</strong></p><p>Source snapshot {selected.importOrigin.sourceSnapshotAt} · Cutover {selected.importOrigin.cutoverAt}</p><p>{selected.importOrigin.action==="create"?"This PO began with only outstanding source quantities. Earlier source receipts were not added to Works; the received quantities below show Works receipts after import.":"This existing PO was linked without changes. Its existing Works receipts were preserved."}</p></aside>}
             <div className="overflow-x-auto rounded-lg border">
               <table aria-label="Order lines" className="w-full text-left text-sm">
                 <thead className="bg-muted/50 text-xs text-muted-foreground"><tr>

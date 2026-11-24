@@ -24,6 +24,7 @@ import Commissions from "@/pages/commissions";
 import Invoices from "@/pages/invoices";
 import Customers from "@/pages/customers";
 import LegacyHistory from "@/pages/legacy-history";
+import Suppliers from "@/pages/suppliers";
 import CustomerDetail from "@/pages/customer-detail";
 import Materials from "@/pages/materials";
 import Inventory from "@/pages/inventory";
@@ -47,6 +48,7 @@ import IntegrationHealth from "@/pages/integration-health";
 import DemoOutbox from "@/pages/demo-outbox";
 import Messages from "@/pages/messages";
 import TextPreferences from "@/pages/text-preferences";
+import OpenPoImports from "@/pages/open-po-imports";
 import AIOperations from "@/pages/ai-operations";
 
 const queryClient = new QueryClient();
@@ -73,6 +75,7 @@ function AdminRouter() {
         <Route path="/customers/:key" component={CustomerDetail} />
         <Route path="/customers" component={Customers} />
         <Route path="/legacy-history" component={LegacyHistory} />
+        <Route path="/suppliers" component={Suppliers} />
         <Route path="/materials" component={Materials} />
         <Route path="/inventory" component={Inventory} />
         <Route path="/inventory/purchase-orders" component={PurchaseOrders} />
@@ -85,6 +88,7 @@ function AdminRouter() {
         <Route path="/demo-outbox" component={DemoOutbox} />
         <Route path="/communications" component={Messages} />
         <Route path="/text-preferences" component={TextPreferences} />
+        <Route path="/open-po-imports" component={OpenPoImports} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

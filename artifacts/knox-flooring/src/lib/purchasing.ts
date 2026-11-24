@@ -38,6 +38,7 @@ export interface PurchaseOrder {
   createdAt: string;
   updatedAt: string;
   lines: PurchaseOrderLine[];
+  importOrigin?:{sourcePoNumber:string;sourceSystem:string;action:"create"|"link";sourceSnapshotAt:string;cutoverAt:string};
 }
 
 export function pendingJobDelivery(order: PurchaseOrder) {
