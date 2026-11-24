@@ -7,6 +7,7 @@ import { domainRoute } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
 import { canUploadFile, filePurpose, getFile, getFileMetadata, isFilePurpose, isLegacyFilePath, isPortalPhoto, isUploaderPreview, maxFileBytes, safeFileHeaders, saveFile, storedFilePath, type FileDownload, type FilePurpose } from "../lib/file-store";
 import { ObjectStorageService } from "../lib/objectStorage";
+import { installerJobAccess, readInstallerJob, writeInstallerJob, type InstallerActor } from "../lib/installer-access";
 
 const router: IRouter = Router();
 export const publicMediaRouter: IRouter = Router();
@@ -46,7 +47,14 @@ router.post("/storage/files/:purpose", authorizeUpload, domainRoute(async (req, 
     const [record] = await db.select({ id: table.id }).from(table).where(eq(table.id, recordId));
     if (!record) throw new DomainError(404, "The record for this upload was not found.");
   }
-  const objectPath = await saveFile(purpose, req.body, req.auth!.userId, recordId, name);
+  // Keep the explicit assignment grant locked through the private object write.
+  // Role preview follows the same path as a normal installer session.
+  const objectPath = req.auth!.role === "installer"
+    ? await writeInstallerJob(req.auth!, recordId, async () => {
+      if (purpose !== "job-photo") throw new DomainError(403, "Installer uploads are private job photos only.");
+      return saveFile(purpose, req.body, req.auth!.userId, recordId, name);
+    })
+    : await saveFile(purpose, req.body, req.auth!.userId, recordId, name);
   res.status(201).json({ objectPath });
 }));
 
@@ -61,12 +69,14 @@ async function streamFile(res: Response, file: FileDownload, attachment = false)
   });
 }
 
-async function attachedToJob(path: string, jobId?: string) {
+async function attachedToJob(path: string, jobId?: string, installer?: InstallerActor) {
   const [photo] = await db.select({ id: jobPhotosTable.id }).from(jobPhotosTable)
-    .where(and(eq(jobPhotosTable.objectPath, path), jobId ? eq(jobPhotosTable.jobId, jobId) : undefined)).limit(1);
+    .where(and(eq(jobPhotosTable.objectPath, path), jobId ? eq(jobPhotosTable.jobId, jobId) : undefined,
+      installer ? sql`EXISTS (SELECT 1 FROM ${jobsTable} WHERE ${jobsTable.id} = ${jobPhotosTable.jobId} AND ${installerJobAccess(installer)})` : undefined)).limit(1);
   if (photo) return true;
   const [mirror] = await db.select({ id: microsoftFileMirrorsTable.id }).from(microsoftFileMirrorsTable).where(and(
     eq(microsoftFileMirrorsTable.sourceType, "photo"), eq(microsoftFileMirrorsTable.objectPath, path), jobId ? eq(microsoftFileMirrorsTable.jobId, jobId) : undefined,
+    installer ? sql`EXISTS (SELECT 1 FROM ${jobsTable} WHERE ${jobsTable.id} = ${microsoftFileMirrorsTable.jobId} AND ${installerJobAccess(installer)})` : undefined,
   )).limit(1);
   return !!mirror;
 }
@@ -123,6 +133,10 @@ router.get("/storage/objects/*path", domainRoute(async (req, res) => {
     if (!canReadFilePurpose(purpose, role)) throw new DomainError(404, "File not found.");
 
     const metadata = await getFileMetadata(path);
+    if (role === "installer" && metadata && (purpose === "job-photo" || purpose === "portal-photo")) {
+      // Uploader-preview ownership never substitutes for current job assignment.
+      await readInstallerJob(req.auth!, metadata.recordId, async () => undefined);
+    }
     const isPreview = metadata && canUploadFile(purpose, role) && isUploaderPreview(metadata, userId);
     if (!metadata || (!isPreview && !(await isAttachedFile(path, purpose, metadata.recordId)))) {
       throw new DomainError(404, "File not found.");
@@ -130,7 +144,7 @@ router.get("/storage/objects/*path", domainRoute(async (req, res) => {
     attachment = purpose === "lead-document" || purpose === "job-document";
   } else if (isLegacyFilePath(path)) {
     const canReadDocument = (role === "owner" || role === "sales") && await attachedToLead(path);
-    if (!(await attachedToJob(path)) && !canReadDocument && !(productImageReaders.includes(role) && await attachedToProduct(path)) && !(await isConfiguredLogo(path))) {
+    if (!(await attachedToJob(path, undefined, role === "installer" ? req.auth! : undefined)) && !canReadDocument && !(productImageReaders.includes(role) && await attachedToProduct(path)) && !(await isConfiguredLogo(path))) {
       throw new DomainError(404, "File not found.");
     }
     attachment = canReadDocument;

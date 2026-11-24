@@ -12,12 +12,16 @@ describe("workspace navigation", () => {
   it("does not send sales or installers into owner-only finance or crew configuration", () => {
     for (const role of ["sales", "installer"]) {
       const allowed = navItems.filter((item) => canAccess(item, role)).map((item) => item.href);
-      expect(allowed).toContain("/tasks");
+      if (role === "sales") expect(allowed).toContain("/tasks");
       expect(allowed).not.toContain("/calendar");
       expect(allowed).not.toContain("/schedule");
       expect(allowed).not.toContain("/invoices");
       expect(allowed).not.toContain("/settings");
     }
-    expect(createItems.filter((item) => canAccess(item, "installer")).map((item) => item.href)).toEqual(["/tasks?create=1"]);
+    const installerLinks = navItems.filter((item) => canAccess(item, "installer")).map((item) => item.href);
+    expect(installerLinks).toContain("/work-guides");
+    expect(installerLinks).toContain("/profile");
+    for (const legacy of ["/", "/jobs", "/pipeline", "/tasks"]) expect(installerLinks).not.toContain(legacy);
+    expect(createItems.filter((item) => canAccess(item, "installer"))).toEqual([]);
   });
 });

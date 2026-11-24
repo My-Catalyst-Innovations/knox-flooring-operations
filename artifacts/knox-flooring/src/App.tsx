@@ -1,4 +1,5 @@
 import { AppLayout } from "@/components/layout/AppLayout";
+import { PrivateWorkspace } from "@/components/layout/PrivateWorkspace";
 import { Switch, Route, Redirect, Router as WouterRouter } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -11,6 +12,7 @@ import LeadDetail from "@/pages/lead-detail";
 import Jobs from "@/pages/jobs";
 import JobDetail from "@/pages/job-detail";
 import WorkOrder from "@/pages/work-order";
+import WorkGuides from "@/pages/work-guides";
 import Pipeline from "@/pages/pipeline";
 import Estimator from "@/pages/estimator";
 import Proposals from "@/pages/proposals";
@@ -85,7 +87,7 @@ function AdminRouter() {
   );
 }
 
-function Router() {
+export function WorkspaceRouter() {
   const { user, loading } = useAuth();
   if (loading) return <div className="flex min-h-screen items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
   const hasAppAccess = Boolean(user);
@@ -105,8 +107,11 @@ function Router() {
       <Route path="/jobs/:id/work-order">
         {() => hasAppAccess ? <WorkOrder /> : <Redirect to="/welcome" />}
       </Route>
+      <Route path="/work-guides">
+        {() => hasAppAccess ? <WorkGuides /> : <Redirect to="/welcome" />}
+      </Route>
       <Route>
-        {() => (hasAppAccess ? <AdminRouter /> : <Redirect to="/welcome" />)}
+        {() => (hasAppAccess ? <PrivateWorkspace><AdminRouter /></PrivateWorkspace> : <Redirect to="/welcome" />)}
       </Route>
     </Switch>
   );
@@ -117,7 +122,7 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-          <AuthProvider><Router /></AuthProvider>
+          <AuthProvider><WorkspaceRouter /></AuthProvider>
         </WouterRouter>
         <Toaster />
       </TooltipProvider>

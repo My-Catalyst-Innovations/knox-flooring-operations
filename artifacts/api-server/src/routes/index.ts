@@ -16,6 +16,7 @@ import { signalWireInboundWebhook, signalWireStatusWebhook } from "./sms-webhook
 import { signalWireWebhookPath } from "../lib/comms";
 import measurementsRouter from "./measurements";
 import settingsRouter from "./settings";
+import companySetupRouter from "./company-setup";
 import tasksRouter from "./tasks";
 import googleCalendarRouter from "./google-calendar";
 import outlookCalendarRouter from "./outlook-calendar";
@@ -30,12 +31,15 @@ import quickBooksInventoryReconciliationRouter from "./quickbooks-inventory-reco
 import { emailWebhook } from "../lib/email-webhooks";
 import vendorBillsRouter from "./vendor-bills";
 import { enforceRoleAccess, requireAuth } from "../middlewares/auth";
+import installerAccessBoundary from "./installer-access";
+import taskAssignmentRouter from "./task-assignment";
 import demoRouter from "./demo";
 import aiEstimatesRouter from "./ai-estimates";
 import aiOperationsRouter from "./ai-operations";
 import integrationHealthRouter from "./integration-health";
 
 import customersRouter from "./customers";
+import customerImportsRouter from "./customer-imports";
 import schedulingRouter from "./scheduling";
 import inventoryOperationsRouter from "./inventory-operations";
 import inventoryBinsRouter from "./inventory-bins";
@@ -46,6 +50,7 @@ import supplierCatalogRouter from "./supplier-catalog";
 import estimateDraftsRouter from "./estimate-drafts";
 import jobOperationsRouter from "./job-operations";
 import jobAccountingRouter from "./job-accounting";
+import workGuidesRouter from "./work-guides";
 
 const router: IRouter = Router();
 
@@ -59,11 +64,15 @@ router.use(publicMediaRouter);
 router.use(publicRouter);
 router.use(requireAuth);
 router.use(enforceRoleAccess);
+router.use(installerAccessBoundary);
+router.use(taskAssignmentRouter);
+router.use(workGuidesRouter);
 router.use(demoRouter);
 router.use(aiEstimatesRouter);
 router.use(aiOperationsRouter);
 router.use(integrationHealthRouter);
 router.use(customersRouter);
+router.use(customerImportsRouter);
 router.use(schedulingRouter);
 router.use(inventoryOperationsRouter);
 router.use(inventoryBinsRouter);
@@ -88,6 +97,7 @@ router.use(productsRouter);
 router.use(communicationsRouter);
 router.use(measurementsRouter);
 router.use(settingsRouter);
+router.use(companySetupRouter);
 router.use(tasksRouter);
 router.use(googleCalendarRouter);
 router.use(outlookCalendarRouter);

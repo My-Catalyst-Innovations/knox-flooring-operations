@@ -7,7 +7,7 @@ import path from "node:path";
 
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
-const priorUi = "f95182adab46ee9dc2a651a8193c9891ab4d0de2";
+const priorUi = "340973db9ec4d9b832958588662970e32c4463b7";
 const gitArgs = ["-c", `safe.directory=${root.replaceAll("\\", "/").replace(/\/$/, "")}`];
 const clean = { ...process.env, CATALYST_ISOLATED_TEST_BUILD: "false", NODE_ENV: "production", PORT: "8080", BASE_PATH: "/" };
 const stamp = new Date().toISOString().replace(/[^0-9]/g, "");
