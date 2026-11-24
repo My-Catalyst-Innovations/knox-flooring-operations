@@ -1,3 +1,4 @@
+import { safeDiagnostic } from "./safe-logging";
 import type { Request, Response, RequestHandler } from "express";
 import { z } from "zod";
 import { DomainError } from "./operations-rules";
@@ -55,7 +56,7 @@ export function domainRoute(
           });
         return;
       }
-      req.log.error({ err: error }, "Domain request failed");
+      req.log.error(safeDiagnostic("domain_request_failed", error), "Domain request failed");
       res.status(500).json({
         error:
           "The change could not be completed. Your saved records have been preserved.",

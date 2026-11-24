@@ -1,3 +1,4 @@
+import { safeDiagnostic } from "./safe-logging";
 import { workspaceScopeKey } from "@workspace/db/workspace";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, lte, or, sql } from "drizzle-orm";
@@ -357,7 +358,7 @@ export async function processQuickBooksQueue() {
   for (const row of rows) {
     const started = await db.update(quickbooksSyncJobsTable).set({ status: "processing", startedAt: now, attempts: row.attempts + 1, updatedAt: now }).where(and(eq(quickbooksSyncJobsTable.id, row.id), inArray(quickbooksSyncJobsTable.status, ["approved", "retry"]))).returning(); if (!started.length) continue;
     try { await exportJob(row); const done = new Date().toISOString(); await db.update(quickbooksSyncJobsTable).set({ status: "completed", completedAt: done, lastError: null, updatedAt: done }).where(eq(quickbooksSyncJobsTable.id, row.id)); await audit("quickbooks.sync_completed", { entityType: row.entityType, entityId: row.localId }); }
-    catch (error) { const message = error instanceof Error ? error.message : String(error); const retryable = error instanceof GenericExportReviewRequired ? false : error instanceof QuickBooksRequestError ? error.status === 429 || error.status >= 500 : /429|timeout|temporar|network|fetch/i.test(message); const status = error instanceof GenericExportReviewRequired && error.approvalRequired ? "pending_approval" : retryable && row.attempts < 5 ? "retry" : "failed"; const delay = Math.min(60, 2 ** (row.attempts + 1)) * 60_000; await db.update(quickbooksSyncJobsTable).set({ status, lastError: message, nextAttemptAt: new Date(Date.now() + delay).toISOString(), updatedAt: new Date().toISOString() }).where(eq(quickbooksSyncJobsTable.id, row.id)); logger.error({ error, jobId: row.id }, "QuickBooks sync failed"); }
+    catch (error) { const message = error instanceof Error ? error.message : String(error); const retryable = error instanceof GenericExportReviewRequired ? false : error instanceof QuickBooksRequestError ? error.status === 429 || error.status >= 500 : /429|timeout|temporar|network|fetch/i.test(message); const status = error instanceof GenericExportReviewRequired && error.approvalRequired ? "pending_approval" : retryable && row.attempts < 5 ? "retry" : "failed"; const delay = Math.min(60, 2 ** (row.attempts + 1)) * 60_000; await db.update(quickbooksSyncJobsTable).set({ status, lastError: message, nextAttemptAt: new Date(Date.now() + delay).toISOString(), updatedAt: new Date().toISOString() }).where(eq(quickbooksSyncJobsTable.id, row.id)); logger.error(safeDiagnostic("qbo_sync_failed", error), "QuickBooks sync failed"); }
   }
 }
 
@@ -450,7 +451,7 @@ export function startQuickBooksWorker() {
   if (timers.has(key)) return;
   const timer = setInterval(() =>
     withWorkspaceConnection(() => Promise.all([processQuickBooksQueue(), processWebhookInbox(), pollChanges()]))
-      .catch((error) => logger.error({ error }, "QuickBooks worker failed")), 30_000);
+      .catch((error) => logger.error(safeDiagnostic("qbo_worker_failed", error), "QuickBooks worker failed")), 30_000);
   timers.set(key, timer);
   timer.unref();
 }

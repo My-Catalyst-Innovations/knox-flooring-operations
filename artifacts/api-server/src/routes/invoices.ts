@@ -53,7 +53,7 @@ router.get("/invoices", async (_req, res): Promise<void> => {
 router.post("/invoices", domainRoute(async (req, res) => {
   const parsed = CreateInvoiceBody.safeParse(req.body);
   if (!parsed.success) {
-    req.log.warn({ errors: parsed.error.message }, "Invalid invoice body");
+    req.log.warn({ diagnostic: "request_validation_failed" }, "Invalid invoice body");
     res.status(400).json({ error: parsed.error.message });
     return;
   }

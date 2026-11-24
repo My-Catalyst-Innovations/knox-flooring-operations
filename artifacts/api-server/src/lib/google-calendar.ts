@@ -1,3 +1,4 @@
+import { safeDiagnostic } from "./safe-logging";
 import { workspaceEnvironment } from "@workspace/db/workspace";
 import { logger } from "./logger";
 
@@ -150,7 +151,7 @@ async function calFetch(
   if (res.status === 204) return null;
   if (!res.ok) {
     const detail = await safeText(res);
-    logger.warn({ status: res.status, detail }, "Google Calendar API error");
+    logger.warn(safeDiagnostic("google_calendar_failed", { status: res.status }), "Google Calendar API error");
     throw new GoogleCalendarError(`Google Calendar error: ${detail}`, 502);
   }
   if (res.headers.get("content-length") === "0") return null;

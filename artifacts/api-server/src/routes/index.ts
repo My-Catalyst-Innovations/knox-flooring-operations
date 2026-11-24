@@ -26,7 +26,7 @@ import quickBooksProjectsRouter from "./quickbooks-projects";
 import publicRouter from "./public";
 import storageRouter, { publicMediaRouter } from "./storage";
 import authRouter from "./auth";
-import quickbooksRouter, { quickBooksWebhook } from "./quickbooks";
+import quickbooksRouter, { quickBooksOAuthCallback, quickBooksWebhook } from "./quickbooks";
 import quickBooksStockItemsRouter from "./quickbooks-stock-items";
 import quickBooksInventoryReconciliationRouter from "./quickbooks-inventory-reconciliation";
 import { emailWebhook } from "../lib/email-webhooks";
@@ -60,6 +60,7 @@ const router: IRouter = Router();
 
 router.use(healthRouter);
 router.post("/quickbooks/webhook", quickBooksWebhook);
+router.get("/quickbooks/callback", quickBooksOAuthCallback);
 router.post("/communications/email/webhook", emailWebhook);
 router.post(`${signalWireWebhookPath}/status/:id`, signalWireStatusWebhook);
 router.post(`${signalWireWebhookPath}/inbound`, signalWireInboundWebhook);

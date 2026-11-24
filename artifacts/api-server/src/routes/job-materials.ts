@@ -53,7 +53,7 @@ router.post("/jobs/:id/materials", domainRoute(async (req, res) => {
 
   const parsed = CreateJobMaterialBody.safeParse(req.body);
   if (!parsed.success) {
-    req.log.warn({ errors: parsed.error.message }, "Invalid job material body");
+    req.log.warn({ diagnostic: "request_validation_failed" }, "Invalid job material body");
     res.status(400).json({ error: parsed.error.message });
     return;
   }
@@ -95,7 +95,7 @@ router.patch(
     const parsed = UpdateJobMaterialBody.safeParse(req.body);
     if (!parsed.success) {
       req.log.warn(
-        { errors: parsed.error.message },
+        { diagnostic: "request_validation_failed" },
         "Invalid job material update body",
       );
       res.status(400).json({ error: parsed.error.message });

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { QuickBooksOAuthNotice } from "./QuickBooksOAuthNotice";
 import { customFetch } from "@workspace/api-client-react";
 import { AlertCircle, ArrowRight, CheckCircle2, CircleDollarSign, ExternalLink, Loader2, PlayCircle, RefreshCw, ShieldCheck, Unplug } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -139,6 +140,7 @@ export function QuickBooksSettings() {
   const unresolvedRevocation = ["revocation_pending", "revocation_unknown", "revocation_failed"].includes(status?.connection.readinessStatus ?? "");
 
   return <div className="space-y-4">
+    <QuickBooksOAuthNotice />
     <Card>
       <CardHeader><div className="flex items-start justify-between gap-4"><div><CardTitle className="flex items-center gap-2">QuickBooks Online {status?.connection.connected ? <CheckCircle2 className="h-5 w-5 text-emerald-600" /> : <AlertCircle className="h-5 w-5 text-amber-600" />}</CardTitle><CardDescription>Approval-based accounting synchronization. Knox remains the operational system; QuickBooks becomes the accounting authority.</CardDescription></div><Badge variant={status?.connection.connected ? "default" : "secondary"}>{status?.connection.status?.replaceAll("_", " ") ?? "Loading"}</Badge></div></CardHeader>
       <CardContent className="space-y-4">

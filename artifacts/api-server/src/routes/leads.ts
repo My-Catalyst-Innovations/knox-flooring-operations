@@ -31,7 +31,7 @@ router.post(
   domainRoute(async (req, res) => {
     const parsed = CreateLeadBody.safeParse(req.body);
     if (!parsed.success) {
-      req.log.warn({ errors: parsed.error.message }, "Invalid lead body");
+      req.log.warn({ diagnostic: "request_validation_failed" }, "Invalid lead body");
       res.status(400).json({ error: parsed.error.message });
       return;
     }

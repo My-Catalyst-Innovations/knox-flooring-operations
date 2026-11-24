@@ -48,7 +48,7 @@ router.get("/measurements", async (req, res): Promise<void> => {
 router.post("/measurements", async (req, res): Promise<void> => {
   const parsed = CreateMeasurementBody.safeParse(req.body);
   if (!parsed.success) {
-    req.log.warn({ errors: parsed.error.message }, "Invalid measurement body");
+    req.log.warn({ diagnostic: "request_validation_failed" }, "Invalid measurement body");
     res.status(400).json({ error: parsed.error.message });
     return;
   }
@@ -78,7 +78,7 @@ router.patch("/measurements/:id", async (req, res): Promise<void> => {
   const parsed = UpdateMeasurementBody.safeParse(req.body);
   if (!parsed.success) {
     req.log.warn(
-      { errors: parsed.error.message },
+      { diagnostic: "request_validation_failed" },
       "Invalid measurement update body",
     );
     res.status(400).json({ error: parsed.error.message });

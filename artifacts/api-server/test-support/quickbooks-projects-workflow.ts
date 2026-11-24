@@ -14,9 +14,12 @@ import {
   quickbooksEntityMappingsTable as mappings,
   quickbooksProjectLinksTable as links,
   quickbooksProjectReviewsTable as reviews,
+  usersTable,
+  sessionsTable,
 } from "@workspace/db";
 import router from "../src/routes/quickbooks-projects";
-import quickbooksRouter from "../src/routes/quickbooks";
+import quickbooksRouter, { quickBooksOAuthCallback } from "../src/routes/quickbooks";
+import { createSession, SESSION_COOKIE } from "../src/lib/auth";
 import {
   accountingScope,
   encryptSecret,
@@ -31,6 +34,8 @@ assert.ok(
   "Projects fixtures refuse every non-disposable database",
 );
 const marker = randomUUID();
+const callbackOwnerId = `projects-fixture-owner-${marker}`;
+let callbackSession: Awaited<ReturnType<typeof createSession>>;
 let connectionId = `projects-${marker}`;
 const jobIds = [
   `projects-a-${marker}`,
@@ -150,18 +155,19 @@ app.use(cookieParser());
 app.use((req, res, next) => {
   const role = req.get("x-fixture-role") === "sales" ? "sales" : "owner";
   req.auth = {
-    userId: "projects-fixture-owner",
+    userId: callbackOwnerId,
     email: "fixture@example.invalid",
     name: "Fixture owner",
     role,
     actualRole: role,
     previewRole: null,
-    csrfToken: "fixture",
+    csrfToken: callbackSession?.csrfToken ?? "fixture",
   };
   req.log = { error: () => {} } as any;
   next();
 });
 app.use(router);
+app.get("/quickbooks/callback", quickBooksOAuthCallback);
 app.use(quickbooksRouter);
 const path = (id = jobIds[0]) => `/quickbooks/projects/jobs/${id}`;
 const call = async (
@@ -182,6 +188,10 @@ assert.equal(
   "The preceding fixture must restore its QuickBooks connection before Projects tests",
 );
 try {
+  // The callback now independently validates the normal stored owner session;
+  // the focused Projects business router keeps its explicit fixture role stub.
+  await db.insert(usersTable).values({ id: callbackOwnerId, email: `${marker}@fixture.example.invalid`, passwordHash: "unused-no-password-login", name: "Fictional callback owner", role: "owner", active: true, createdAt, updatedAt: createdAt });
+  callbackSession = await createSession(callbackOwnerId);
   const [source] = await db
     .select()
     .from(jobsTable)
@@ -357,10 +367,13 @@ try {
     request(app)
       .get("/quickbooks/callback")
       .query({ state: signedState, code: "synthetic-code", realmId: "123" })
-      .set("Cookie", `qbo_oauth_state=${encodeURIComponent(signedState)}`);
+      .set("Cookie", `${SESSION_COOKIE}=${callbackSession.token}; qbo_oauth_state=${encodeURIComponent(signedState)}`);
   assert.equal((await callback()).status, 302);
   assert.equal(tokenExchanges, 1);
-  assert.equal((await callback()).status, 400);
+  const repeatedCallback=await callback();
+  assert.equal(repeatedCallback.status, 302);
+  assert.equal(repeatedCallback.headers.location, "/settings?quickbooks=invalid");
+  assert.equal(repeatedCallback.text, "");
   assert.equal(tokenExchanges, 1);
   const [reconnected] = await db.select().from(connections);
   connectionId = reconnected.id;
@@ -491,14 +504,16 @@ try {
     })
     .set(
       "Cookie",
-      `qbo_oauth_state=${encodeURIComponent(`${reducedState}tampered`)}`,
+      `${SESSION_COOKIE}=${callbackSession.token}; qbo_oauth_state=${encodeURIComponent(`${reducedState}tampered`)}`,
     );
-  assert.equal(tampered.status, 400);
+  assert.equal(tampered.status, 302);
+  assert.equal(tampered.headers.location, "/settings?quickbooks=invalid");
+  assert.equal(tampered.text, "");
   assert.equal(tokenExchanges, 1);
   const reduced = await request(app)
     .get("/quickbooks/callback")
     .query({ state: reducedState, code: "synthetic-code", realmId: "123" })
-    .set("Cookie", `qbo_oauth_state=${encodeURIComponent(reducedState)}`);
+    .set("Cookie", `${SESSION_COOKIE}=${callbackSession.token}; qbo_oauth_state=${encodeURIComponent(reducedState)}`);
   assert.equal(reduced.status, 302);
   assert.equal(tokenExchanges, 2);
   const [reducedConnection] = await db.select().from(connections);
@@ -525,6 +540,8 @@ try {
   console.log("True Projects PostgreSQL/router/GraphQL simulation passed");
 } finally {
   globalThis.fetch = originalFetch;
+  await db.delete(sessionsTable).where(eq(sessionsTable.userId, callbackOwnerId));
+  await db.delete(usersTable).where(eq(usersTable.id, callbackOwnerId));
   await db.delete(links).where(inArray(links.jobId, jobIds));
   await db.delete(reviews).where(inArray(reviews.jobId, jobIds));
   await db.delete(mappings).where(inArray(mappings.localId, jobIds));

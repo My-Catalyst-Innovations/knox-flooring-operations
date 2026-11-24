@@ -3,6 +3,7 @@ import { seedDatabase } from "./lib/seed";
 import { bootstrapOwner } from "./routes/auth";
 import { readFile } from "node:fs/promises";
 import { seedKnoxvilleInventory } from "./lib/seed-knoxville-inventory";
+import { safeDiagnostic } from "./lib/safe-logging";
 
 async function seedEmptyDemo() {
   if (
@@ -93,9 +94,7 @@ async function seedEmptyDemo() {
 
 seedEmptyDemo()
   .catch((error) => {
-    console.error(
-      error instanceof Error ? error.message : "Demo initialization failed",
-    );
+    console.error(JSON.stringify(safeDiagnostic("demo_initialization_failed", error)));
     process.exitCode = 1;
   })
   .finally(() => pool.end());

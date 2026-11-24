@@ -1,3 +1,4 @@
+import { safeDiagnostic } from "./safe-logging";
 import { workspaceEnvironment, workspaceScopeKey } from "@workspace/db/workspace";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -269,7 +270,7 @@ export function startAutoSync(): void {
         "Measure Square auto-sync ran",
       );
     } catch (err) {
-      logger.warn({ err }, "Measure Square auto-sync failed");
+      logger.warn(safeDiagnostic("measure_square_sync_failed", err), "Measure Square auto-sync failed");
     } finally {
       running = false;
     }

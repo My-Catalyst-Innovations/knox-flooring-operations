@@ -22,7 +22,7 @@ router.get("/salespeople", async (_req, res): Promise<void> => {
 router.post("/salespeople", async (req, res): Promise<void> => {
   const parsed = CreateSalespersonBody.safeParse(req.body);
   if (!parsed.success) {
-    req.log.warn({ errors: parsed.error.message }, "Invalid salesperson body");
+    req.log.warn({ diagnostic: "request_validation_failed" }, "Invalid salesperson body");
     res.status(400).json({ error: parsed.error.message });
     return;
   }

@@ -2,6 +2,7 @@ import { parseArgs } from "node:util";
 import { assertMigrationsApplied, closeWorkspaceConnections, pool } from "@workspace/db";
 import { inWorkspace, workspaceConfigs } from "@workspace/db/workspace";
 import { prepareWorkspaceOwner } from "./routes/staff";
+import { workspaceProvisionDiagnostic } from "./lib/safe-logging";
 
 try {
   if (process.env.READ_ONLY_RECOVERY === "true") throw new Error("Workspace setup is unavailable in recovery mode.");
@@ -23,8 +24,7 @@ try {
   if (result.adopted) console.log("Existing company bound to the workspace address.");
   else console.log(JSON.stringify({ invitationUrl: result.url, expiresAt: result.expiresAt }));
 } catch (error) {
-  const message = error instanceof Error ? error.message : "Unknown failure";
-  console.error(message.replace(/postgres(?:ql)?:\/\/\S+/gi, "[database connection]"));
+  console.error(JSON.stringify(workspaceProvisionDiagnostic(error)));
   process.exitCode = 1;
 } finally {
   await closeWorkspaceConnections();
