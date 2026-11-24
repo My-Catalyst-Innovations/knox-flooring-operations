@@ -8,6 +8,9 @@ export function recoveryReadOnly(req: Request, res: Response, next: NextFunction
   res.setHeader("X-Catalyst-Mode", "read-only-recovery");
   const read = req.method === "GET" || req.method === "HEAD";
   const root = req.path.split("/").filter(Boolean)[0];
-  if ((read && (req.path === "/healthz" || authReads.has(req.path) || readable.has(root))) || (req.method === "POST" && ["/auth/login", "/auth/logout"].includes(req.path))) { next(); return; }
+  // A preference lookup may retain unreconciled signed STOP evidence. Block the
+  // entire prefix, including GET/HEAD, even if generic readable routes expand.
+  const preferenceReconciliation = /^\/sms-preferences(?:\/|$)/i.test(req.path);
+  if ((!preferenceReconciliation && read && (req.path === "/healthz" || authReads.has(req.path) || readable.has(root))) || (req.method === "POST" && ["/auth/login", "/auth/logout"].includes(req.path))) { next(); return; }
   res.status(503).json({ code: "READ_ONLY_RECOVERY", error: "Catalyst Works is in read-only recovery. Records are available to view; changes and integrations are paused." });
 }

@@ -559,6 +559,24 @@ try {
   checks.push(
     "retained STOP without any preference row and after sender/project changes blocks lookup shortcuts and dispatch before provider calls",
   );
+  const recoveryRecipient = "+15005550040";
+  await context(0,()=>pool.query("INSERT INTO communications(id,channel,direction,status,from_address,to_address,subject,body,provider_message_id,created_at) VALUES('recovery-retained-stop','sms','inbound','received',$1,'+15005550009','SMS opt-out pending provider timestamp','STOP','signalwire:22222222-2222-2222-2222-222222222222:recovery-old-stop','2026-11-23T10:00:00Z')",[recoveryRecipient]));
+  const recoverySnapshot=()=>context(0,async()=>({
+    preferences:(await pool.query("SELECT to_jsonb(t)::text row FROM sms_recipient_preferences t WHERE recipient=$1",[recoveryRecipient])).rows,
+    events:(await pool.query("SELECT to_jsonb(t)::text row FROM sms_preference_events t WHERE recipient=$1",[recoveryRecipient])).rows,
+    source:(await pool.query("SELECT to_jsonb(t)::text row FROM communications t WHERE id='recovery-retained-stop'")).rows,
+  }));
+  const recoveryBefore=await recoverySnapshot();assert.deepEqual(recoveryBefore.preferences,[]);assert.deepEqual(recoveryBefore.events,[]);
+  const oldRecovery=process.env.READ_ONLY_RECOVERY,sendsBeforeRecovery=providerSends,lookupsBeforeRecovery=providerLookups;
+  process.env.READ_ONLY_RECOVERY="true";
+  try{
+    for(const path of ["/sms-preferences/recipient","/SMS-PREFERENCES/recipient","/sms-preferences/recipient/"]){
+      const refused=await call(owner,"GET",`${path}?to=${encodeURIComponent(recoveryRecipient)}`,undefined,503);
+      assert.equal(refused.code,"READ_ONLY_RECOVERY");
+    }
+  }finally{if(oldRecovery===undefined)delete process.env.READ_ONLY_RECOVERY;else process.env.READ_ONLY_RECOVERY=oldRecovery;}
+  assert.deepEqual(await recoverySnapshot(),recoveryBefore);assert.equal(providerSends,sendsBeforeRecovery);assert.equal(providerLookups,lookupsBeforeRecovery);
+  checks.push("read-only recovery refuses case/trailing/query preference GETs without reconciling a ledger, changing source rows or calling providers");
   // Direct helper authorization also rechecks current persisted staff role.
   await context(0, async () => {
     await db
