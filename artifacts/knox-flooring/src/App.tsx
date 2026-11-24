@@ -48,6 +48,7 @@ import IntegrationHealth from "@/pages/integration-health";
 import DemoOutbox from "@/pages/demo-outbox";
 import Messages from "@/pages/messages";
 import TextPreferences from "@/pages/text-preferences";
+import OpenPoImports from "@/pages/open-po-imports";
 import AIOperations from "@/pages/ai-operations";
 
 const queryClient = new QueryClient();
@@ -87,6 +88,7 @@ function AdminRouter() {
         <Route path="/demo-outbox" component={DemoOutbox} />
         <Route path="/communications" component={Messages} />
         <Route path="/text-preferences" component={TextPreferences} />
+        <Route path="/open-po-imports" component={OpenPoImports} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

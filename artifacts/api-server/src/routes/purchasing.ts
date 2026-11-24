@@ -12,6 +12,8 @@ import {
   purchaseReceiptsTable,
   purchaseReceiptLinesTable,
   warehouseBinsTable,
+  openPoImportRecordsTable,
+  openPoImportBatchesTable,
 } from "@workspace/db";
 import { requireRole } from "../middlewares/auth";
 import { domainRoute, id, parse, revision } from "../lib/domain-http";
@@ -130,6 +132,7 @@ async function presentOrders(reader: Reader, orders: Order[]) {
     group.push(presentLine(line, received));
     byOrder.set(line.orderId, group);
   }
+  const origins=orders.length?await reader.select({orderId:openPoImportRecordsTable.orderId,sourcePoNumber:openPoImportRecordsTable.sourcePoNumber,sourceSystem:openPoImportRecordsTable.sourceSystem,action:openPoImportRecordsTable.action,sourceSnapshotAt:openPoImportBatchesTable.sourceSnapshotAt,cutoverAt:openPoImportBatchesTable.cutoverAt}).from(openPoImportRecordsTable).innerJoin(openPoImportBatchesTable,eq(openPoImportBatchesTable.id,openPoImportRecordsTable.batchId)).where(inArray(openPoImportRecordsTable.orderId,orders.map(order=>order.id))):[];
   return orders.map(
     ({
       number,
@@ -140,6 +143,7 @@ async function presentOrders(reader: Reader, orders: Order[]) {
       ...order,
       orderNumber: formatOrderNumber(number),
       lines: byOrder.get(order.id) ?? [],
+      ...(origins.find(origin=>origin.orderId===order.id)?{importOrigin:origins.find(origin=>origin.orderId===order.id)}:{}),
     }),
   );
 }
