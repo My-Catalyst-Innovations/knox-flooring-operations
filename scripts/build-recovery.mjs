@@ -7,7 +7,6 @@ import path from "node:path";
 
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
-const priorUi = "340973db9ec4d9b832958588662970e32c4463b7";
 const gitArgs = ["-c", `safe.directory=${root.replaceAll("\\", "/").replace(/\/$/, "")}`];
 const clean = { ...process.env, CATALYST_ISOLATED_TEST_BUILD: "false", NODE_ENV: "production", PORT: "8080", BASE_PATH: "/" };
 const stamp = new Date().toISOString().replace(/[^0-9]/g, "");
@@ -15,16 +14,19 @@ const output = path.join(root, ".cache", "catalyst-recovery", stamp);
 const stage = path.join(output, "source");
 await mkdir(output, { recursive: true }); await mkdir(stage);
 const resolveGit = async (...args) => (await execute("git", [...gitArgs, ...args], { cwd: root, windowsHide: true })).stdout.trim();
-if (await resolveGit("rev-parse", priorUi) !== priorUi) throw new Error("The pinned previous UI commit is unavailable.");
+// Client-side recipient controls must remain present in recovery. Package the
+// exact reviewed UI with its matching backend instead of an older permissive UI.
+const recoveryUiCommit = await resolveGit("rev-parse", "HEAD");
+if (!/^[a-f0-9]{40}$/.test(recoveryUiCommit)) throw new Error("The reviewed recovery UI commit is unavailable.");
 await execute(process.execPath, ["artifacts/api-server/build.mjs"], { cwd: root, env: clean, windowsHide: true });
 const excluded = new Set(["node_modules", "dist", "dist-test", "test-results", "playwright-report", ".cache", "out-tsc"]);
 const filter = filename => !excluded.has(path.basename(filename)) && !path.basename(filename).endsWith(".tsbuildinfo");
 for (const folder of ["lib", "scripts", "artifacts/api-server", "artifacts/catalyst-platform", "artifacts/knox-ad", "artifacts/mockup-sandbox"]) await cp(path.join(root, folder), path.join(stage, folder), { recursive: true, filter });
 for (const file of ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", "tsconfig.json", "tsconfig.base.json"]) await copyFile(path.join(root, file), path.join(stage, file));
-const uiTar = path.join(output, "prior-ui.tar");
-await execute("git", [...gitArgs, "archive", "--format=tar", `--output=${uiTar}`, priorUi, "artifacts/knox-flooring"], { cwd: root, windowsHide: true });
+const uiTar = path.join(output, "recovery-ui.tar");
+await execute("git", [...gitArgs, "archive", "--format=tar", `--output=${uiTar}`, recoveryUiCommit, "artifacts/knox-flooring"], { cwd: root, windowsHide: true });
 await execute("tar", ["-xf", uiTar, "-C", stage], { windowsHide: true });
-// Keep the reviewed dependency lock; only the UI sources/assets come from the prior commit.
+// Keep the reviewed dependency lock and UI sources from the same release.
 await copyFile(path.join(root, "artifacts/knox-flooring/package.json"), path.join(stage, "artifacts/knox-flooring/package.json"));
 const uiDirectory = path.join(stage, "artifacts/knox-flooring");
 const moduleLinks = [];
@@ -58,10 +60,10 @@ async function inventory(folder) {
 }
 await inventory(stage); files.sort((a, b) => a.path.localeCompare(b.path));
 const migrationIds = (await readdir(path.join(stage, "lib/db/migrations"))).filter(file => /^\d{4}_[a-z0-9_]+\.sql$/.test(file)).sort().map(file => file.slice(0, -4));
-const manifest = { createdAt: new Date().toISOString(), mode: "read-only-recovery", pinnedUiCommit: priorUi, backendGitHead: await resolveGit("rev-parse", "HEAD"), backendHasWorkingChanges: Boolean(await resolveGit("status", "--porcelain")), sourceTreeSha256: createHash("sha256").update(JSON.stringify(files)).digest("hex"), schemaVersion: migrationIds.at(-1), migrationIds, entrypoint: "artifacts/api-server/dist/recovery.mjs", nativeAuthentication: "Production argon2 dependency; Linux image authentication still requires staging verification", files };
+const manifest = { createdAt: new Date().toISOString(), mode: "read-only-recovery", pinnedUiCommit: recoveryUiCommit, backendGitHead: await resolveGit("rev-parse", "HEAD"), backendHasWorkingChanges: Boolean(await resolveGit("status", "--porcelain")), sourceTreeSha256: createHash("sha256").update(JSON.stringify(files)).digest("hex"), schemaVersion: migrationIds.at(-1), migrationIds, entrypoint: "artifacts/api-server/dist/recovery.mjs", nativeAuthentication: "Production argon2 dependency; Linux image authentication still requires staging verification", files };
 await writeFile(path.join(stage, "recovery-manifest.json"), JSON.stringify(manifest, null, 2));
 const archive = path.join(output, "catalyst-read-only-recovery.tar.gz");
 await execute("tar", ["-czf", archive, "-C", stage, "."], { windowsHide: true });
 const digest = createHash("sha256").update(await readFile(archive)).digest("hex");
 await writeFile(archive + ".sha256", `${digest}  catalyst-read-only-recovery.tar.gz\n`);
-console.log(JSON.stringify({ archive, sha256: digest, manifest: path.join(stage, "recovery-manifest.json"), pinnedUiCommit: priorUi, schemaVersion: manifest.schemaVersion }, null, 2));
+console.log(JSON.stringify({ archive, sha256: digest, manifest: path.join(stage, "recovery-manifest.json"), pinnedUiCommit: recoveryUiCommit, schemaVersion: manifest.schemaVersion }, null, 2));
