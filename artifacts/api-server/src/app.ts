@@ -56,7 +56,7 @@ const defaultJson = express.json({ ...jsonOptions, limit: "1mb" });
 // existing limit everywhere else; the archive parser separately caps source bytes.
 const archiveJson = express.json({ ...jsonOptions, limit: "3mb" });
 app.use((req, res, next) =>
-  (req.method === "POST" && ["/api/legacy-history/imports/preview", "/api/supplier-imports/preview"].includes(req.path)
+  (req.method === "POST" && ["/api/legacy-history/imports/preview", "/api/supplier-imports/preview", "/api/active-job-imports/preview"].includes(req.path)
     ? archiveJson
     : defaultJson)(req, res, next),
 );

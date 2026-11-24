@@ -1,3 +1,5 @@
+import { forecastReportJobs } from "@/lib/costing";
+import { UnreconciledReportNotice } from "@/components/jobs/UnreconciledReportNotice";
 import { useMemo } from "react";
 import { useStore } from "@/hooks/use-store";
 import { Card } from "@/components/ui/card";
@@ -27,7 +29,7 @@ import {
 } from "lucide-react";
 import { stageIndex } from "@/lib/stages";
 import { computeCosting, fmtMoney } from "@/lib/costing";
-import { recordedJobDate, businessDate } from "@/lib/reporting";
+import { recordedJobDate, businessDate, reportingDate } from "@/lib/reporting";
 
 const CREWS = ["Crew A", "Crew B", "Crew C", "Crew D"];
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -191,14 +193,12 @@ export function DashboardCharts() {
     }
     const offset = (iso?: string): number => {
       if (!iso) return -1;
-      const dt = new Date(iso);
-      if (Number.isNaN(dt.getTime())) return -1;
-      return (
-        (now.getFullYear() - dt.getFullYear()) * 12 +
-        (now.getMonth() - dt.getMonth())
-      );
+      const day = reportingDate(iso), today = businessDate(now);
+      if (!day) return -1;
+      return (Number(today.slice(0, 4)) - Number(day.slice(0, 4))) * 12 +
+        (Number(today.slice(5, 7)) - Number(day.slice(5, 7)));
     };
-    jobs.forEach((j) => {
+    forecastReportJobs(jobs).forEach((j) => {
       const rev = j.estRevenue;
       if (stageIndex(j.status) >= APPROVED_IDX) {
         const o = offset(recordedJobDate(j, "sold") ?? undefined);
@@ -244,14 +244,14 @@ export function DashboardCharts() {
       string,
       { revenue: number; cost: number; profit: number }
     > = {};
-    jobs
+    forecastReportJobs(jobs)
       .filter((j) => stageIndex(j.status) >= APPROVED_IDX)
       .forEach((j) => {
         const t = j.flooringType;
         if (!profByType[t]) profByType[t] = { revenue: 0, cost: 0, profit: 0 };
         profByType[t].revenue += j.estRevenue;
-        profByType[t].cost += j.materialEstimate + j.laborEstimate;
-        profByType[t].profit += j.estRevenue - j.materialEstimate - j.laborEstimate;
+        profByType[t].cost += j.materialEstimate + j.laborEstimate + j.forecastOtherCost;
+        profByType[t].profit += j.estGrossProfit;
       });
     const profitData = Object.entries(profByType)
       .map(([name, v]) => ({
@@ -270,7 +270,7 @@ export function DashboardCharts() {
 
     /* ---- Revenue mix (donut) ---- */
     const mixByType: Record<string, number> = {};
-    jobs
+    forecastReportJobs(jobs)
       .filter((j) => stageIndex(j.status) >= APPROVED_IDX)
       .forEach((j) => {
         mixByType[j.flooringType] =
@@ -297,7 +297,7 @@ export function DashboardCharts() {
     ).length;
     const crewUtil = totalActiveCrewed;
     const weekData = WEEKDAYS.map((day) => ({ name: day, value: 0 }));
-    jobs.forEach((j) => {
+    forecastReportJobs(jobs).forEach((j) => {
       if (!j.estStartDate) return;
       if (["Completed", "Invoiced"].includes(j.status)) return;
       const today = businessDate();
@@ -332,6 +332,7 @@ export function DashboardCharts() {
 
   return (
     <div className="space-y-4">
+      <UnreconciledReportNotice jobs={jobs} />
       <div className="flex items-center gap-2">
         <h2 className="text-lg font-semibold tracking-tight">Business Analytics</h2>
       </div>

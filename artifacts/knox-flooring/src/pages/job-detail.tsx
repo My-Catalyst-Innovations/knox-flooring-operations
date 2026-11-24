@@ -48,6 +48,7 @@ import { RoomsScopeEditor } from "@/components/jobs/RoomsScopeEditor";
 import { MaterialsNeeded } from "@/components/jobs/MaterialsNeeded";
 import { MeasurementsPanel } from "@/components/measurements/measurements-panel";
 import { JobActuals } from "@/components/jobs/JobActuals";
+import { JobMigrationCutover } from "@/components/jobs/JobMigrationCutover";
 import { JobUpdates } from "@/components/jobs/JobUpdates";
 import { JobInstallationAction } from "@/components/jobs/JobInstallationAction";
 import { JobCompletionCommitment } from "@/components/jobs/JobCompletionCommitment";
@@ -58,7 +59,7 @@ import {
   jobCostingGaps,
   computeCommission,
   commissionRateFor,
-  fmtMoney,
+  fmtMoney, fmtPercent, moneyDifference,
 } from "@/lib/costing";
 import { useToast } from "@/hooks/use-toast";
 import { useState } from "react";
@@ -352,7 +353,8 @@ export default function JobDetail() {
             </CardContent>
           </Card>
 
-          {user?.role !== "installer" && (
+          {user?.role !== "installer" && <JobMigrationCutover key={job.id} job={job} />}
+          {user?.role !== "installer" && !job.migrationCutover && (
             <>
               {" "}
               <Card>
@@ -404,10 +406,10 @@ export default function JobDetail() {
                         estimate:
                           !job.estimateSnapshot && costing.estCost === 0
                             ? "—"
-                            : `${costing.estMarginPct.toFixed(1)}%`,
-                        actual: `${costing.actualMarginPct.toFixed(1)}%`,
+                            : fmtPercent(costing.estMarginPct),
+                        actual: fmtPercent(costing.actualMarginPct),
                         variance:
-                          costing.actualMarginPct - costing.estMarginPct,
+                          moneyDifference(costing.actualMarginPct, costing.estMarginPct),
                         better: true,
                         showActual: costing.hasActualProfit,
                         suffix: "pts",
@@ -508,18 +510,18 @@ export default function JobDetail() {
                           <td className="px-4 py-2.5 text-right">
                             {!job.estimateSnapshot && costing.estCost === 0
                               ? "—"
-                              : `${costing.estMarginPct.toFixed(1)}%`}
+                              : fmtPercent(costing.estMarginPct)}
                           </td>
                           <td className="px-4 py-2.5 text-right">
                             {costing.hasActualProfit
-                              ? `${costing.actualMarginPct.toFixed(1)}%`
+                              ? fmtPercent(costing.actualMarginPct)
                               : "—"}
                           </td>
                           <td className="px-4 py-2.5 text-right">
                             {costing.hasActualProfit ? (
                               <VarianceTag
                                 value={
-                                  costing.actualMarginPct - costing.estMarginPct
+                                  moneyDifference(costing.actualMarginPct, costing.estMarginPct)
                                 }
                                 higherIsBetter
                                 suffix="pts"
@@ -551,7 +553,7 @@ export default function JobDetail() {
               </Card>
             </>
           )}
-          {user?.role === "owner" && (
+          {user?.role === "owner" && !job.migrationCutover && (
             <>
               {" "}
               <Card>
@@ -839,9 +841,9 @@ function CostRow({
   higherIsBetter,
 }: {
   label: string;
-  est: number;
-  actual: number;
-  variance: number;
+  est: number | null;
+  actual: number | null;
+  variance: number | null;
   hasActuals: boolean;
   higherIsBetter: boolean;
 }) {
@@ -868,10 +870,11 @@ function VarianceTag({
   higherIsBetter,
   suffix,
 }: {
-  value: number;
+  value: number | null;
   higherIsBetter: boolean;
   suffix?: string;
 }) {
+  if (value === null) return <span>Unreconciled</span>;
   const isZero = Math.abs(value) < 0.5;
   const isGood = higherIsBetter ? value >= 0 : value <= 0;
   const color = isZero

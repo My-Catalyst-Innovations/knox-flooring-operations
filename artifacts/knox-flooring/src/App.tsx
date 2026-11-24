@@ -11,6 +11,7 @@ import Leads from "@/pages/leads";
 import LeadDetail from "@/pages/lead-detail";
 import Jobs from "@/pages/jobs";
 import JobDetail from "@/pages/job-detail";
+import ActiveJobImports from "@/pages/active-job-imports";
 import WorkOrder from "@/pages/work-order";
 import WorkGuides from "@/pages/work-guides";
 import Pipeline from "@/pages/pipeline";
@@ -62,6 +63,7 @@ function AdminRouter() {
         <Route path="/leads/:id" component={LeadDetail} />
         <Route path="/jobs" component={Jobs} />
         <Route path="/jobs/:id" component={JobDetail} />
+        <Route path="/active-job-imports" component={ActiveJobImports} />
         <Route path="/pipeline" component={Pipeline} />
         <Route path="/estimator" component={Estimator} />
         <Route path="/ai-operations" component={AIOperations} />

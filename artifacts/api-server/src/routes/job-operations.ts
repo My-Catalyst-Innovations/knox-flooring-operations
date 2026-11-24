@@ -29,6 +29,7 @@ import {
 } from "../lib/operations-rules";
 import { audit } from "../lib/auth";
 import { reportMaterialUsage } from "../lib/report-material-usage";
+import { jobMigrationCutover } from "../lib/job-cutover";
 import { stagnantInventory } from "../lib/stagnant-inventory";
 import {
   completionTimeliness,
@@ -345,21 +346,7 @@ router.get(
       postedCounts,
     ] = await Promise.all([
       db
-        .select({
-          id: jobsTable.id,
-          jobNumber: jobsTable.jobNumber,
-          customerName: jobsTable.customerName,
-          status: jobsTable.status,
-          estRevenue: jobsTable.estRevenue,
-          soldAt: jobsTable.soldAt,
-          completedAt: jobsTable.completedAt,
-          stageHistory: jobsTable.stageHistory,
-          estStartDate: jobsTable.estStartDate,
-          estCompletionDate: jobsTable.estCompletionDate,
-          committedCompletionDate: jobsTable.committedCompletionDate,
-          committedCompletionRecordedAt:
-            jobsTable.committedCompletionRecordedAt,
-        })
+        .select()
         .from(jobsTable),
       db
         .select({
@@ -452,8 +439,11 @@ router.get(
         return null;
       }
     };
+    const cutoverRows=await Promise.all(jobs.map(async job=>[job.id,await jobMigrationCutover(db,job)] as const));
+    const cutoverByJob=new Map(cutoverRows);
+    const revenueFor=(job:typeof jobs[number])=>{const cutover=cutoverByJob.get(job.id);return cutover?(cutover.forecastReportsEligible?cutover.financial.fullJobRevenueCents!/100:null):job.estRevenue;};
     const sold = jobs.filter((j) =>
-      withinPeriod(eventDate(j, "sold"), from, to),
+      withinPeriod(recordedBoundary(eventDate(j, "sold")), from, to),
     );
     const completedRecords = jobs
       .filter((job) => ["Completed", "Invoiced"].includes(job.status))
@@ -530,9 +520,10 @@ router.get(
       from,
       to,
       timezone: "America/New_York",
-      soldRevenue: sold.reduce((sum, j) => sum + j.estRevenue, 0),
+      soldRevenue: sold.reduce((sum, j) => sum + (revenueFor(j)??0), 0),
       jobsSold: sold.length,
-      completedRevenue: completed.reduce((sum, j) => sum + j.estRevenue, 0),
+      completedRevenue: completed.reduce((sum, j) => sum + (revenueFor(j)??0), 0),
+      migrationCutoverExclusions:{unknownSoldFinancials:sold.filter(job=>revenueFor(job)===null).length,unknownCompletedFinancials:completed.filter(job=>revenueFor(job)===null).length,unknownFullJobActuals:cutoverRows.filter(([,state])=>!!state).length,remainingBillingScopeExcludedFromFullJobRevenue:true},
       invoicedRevenue: billed.reduce((sum, i) => sum + i.total, 0),
       outstanding: invoices
         .filter((i) => ["Sent", "Partial", "Overdue"].includes(i.status))

@@ -1,3 +1,5 @@
+import { commissionEligible, forecastReportJobs } from "@/lib/costing";
+import { UnreconciledReportNotice } from "@/components/jobs/UnreconciledReportNotice";
 import { useMemo, useState } from "react";
 import { useUrlState } from "@/hooks/use-url-state";
 import { recordedJobDate, inReportingPeriod } from "@/lib/reporting";
@@ -149,36 +151,36 @@ export default function SalesPerformance() {
     return salespeople
       .map((rep) => {
         const repJobs = filteredJobs.filter((j) => j.salespersonId === rep.id);
-        const soldJobs = repJobs.filter(
+        const soldJobs = forecastReportJobs(repJobs).filter(
           (j) => stageIndex(j.status) >= APPROVED_IDX,
         );
         const proposalCohort = proposals.filter((proposal) => proposal.salespersonId === rep.id && inReportingPeriod(proposal.sentAt, range, customStart, customEnd));
         const proposalsSent = proposalCohort.length;
         const approvals = proposalCohort.filter((proposal) => proposal.status === "Accepted").length;
-        const closedJobs = jobs.filter((job) => job.salespersonId === rep.id && COMPLETED_STATUSES.includes(job.status) && inReportingPeriod(recordedJobDate(job, "completed"), range, customStart, customEnd));
+        const closedJobs = forecastReportJobs(jobs).filter((job) => job.salespersonId === rep.id && COMPLETED_STATUSES.includes(job.status) && inReportingPeriod(recordedJobDate(job, "completed"), range, customStart, customEnd));
         const totalRevenue = soldJobs.reduce(
-          (acc, j) => acc + (j.estRevenue || 0),
+          (acc, j) => acc + j.estRevenue,
           0,
         );
         const closedRevenue = closedJobs.reduce(
-          (acc, j) => acc + (j.estRevenue || 0),
+          (acc, j) => acc + j.estRevenue,
           0,
         );
         const avgMargin =
           soldJobs.length > 0
             ? soldJobs.reduce(
-                (acc, j) => acc + computeCosting(j).effectiveMarginPct,
+                (acc, j) => acc + j.grossMarginPct,
                 0,
               ) / soldJobs.length
             : 0;
-        const commission = soldJobs.reduce(
-          (acc, j) => acc + computeCommission(j, rep, settings),
+        const commission = soldJobs.filter(commissionEligible).reduce(
+          (acc, j) => acc + (computeCommission(j, rep, settings) ?? 0),
           0,
         );
         return {
           rep,
           totalJobs: repJobs.length,
-          soldJobs: soldJobs.length,
+          soldJobs: repJobs.filter((job) => stageIndex(job.status) >= APPROVED_IDX).length,
           proposalsSent,
           approvals,
           winRate: proposalsSent > 0 ? (approvals / proposalsSent) * 100 : 0,
@@ -298,6 +300,8 @@ export default function SalesPerformance() {
   if (failedQuery) return <DataBoundary query={failedQuery} name="sales records"><span /></DataBoundary>;
   return (
     <div className="space-y-6">
+      <UnreconciledReportNotice jobs={jobs} />
+      <UnreconciledReportNotice jobs={jobs} kind="commission" />
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-foreground">

@@ -283,10 +283,12 @@ export async function updateJobWithReadiness(
     .for("update");
   if (!current) throw new DomainError(404, "Job not found");
   assertRevision(current.revision, expected);
+  await assertCutoverJobEdit(tx, current, updates);
   const now = new Date().toISOString();
   const statusChanged =
     updates.status !== undefined && updates.status !== current.status;
   if (statusChanged) {
+    await assertCutoverOperationalTransition(tx, current, updates.status!);
     const readiness = await jobReadiness(tx, jobId, updates.status!, updates);
     if (
       readiness.blockers.length &&
@@ -347,3 +349,4 @@ export async function updateJobWithReadiness(
     .returning();
   return job;
 }
+import { assertCutoverJobEdit, assertCutoverOperationalTransition } from "./job-cutover";

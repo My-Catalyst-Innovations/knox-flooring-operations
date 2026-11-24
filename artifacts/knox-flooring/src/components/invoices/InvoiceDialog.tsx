@@ -24,6 +24,8 @@ import {
 import { Plus, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { invoiceSubtotal } from "@workspace/domain";
+import { fmtMoney } from "@/lib/costing";
+import { isDefinitiveInvoiceRejection } from "@/lib/active-job-import";
 import type {
   Invoice,
   InvoiceLineItem,
@@ -50,6 +52,7 @@ function addDaysISO(days: number) {
 }
 
 function defaultLineItems(job: Job): InvoiceLineItem[] {
+  if (job.migrationCutover || job.estRevenue === null) return [];
   return [{ id: uid(), description: `${job.flooringType} installation — contract amount`, category: "Labor", quantity: 1, unitPrice: job.estRevenue }];
 }
 
@@ -92,8 +95,11 @@ export function InvoiceDialog({
   const [depositAmount, setDepositAmount] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [remainingConfirmed, setRemainingConfirmed] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
+  const attempt = useRef<{ key: string; payload: Record<string, unknown> } | null>(null);
   const unsaved = useUnsavedForm(open, { jobId, status, issueDate, dueDate, notes, lineItems, depositAmount });
-  const close = (nextOpen: boolean) => { if (saving || (!nextOpen && !unsaved.confirmDiscard())) return; onOpenChange(nextOpen); };
+  const close = (nextOpen: boolean) => { if (saving || uncertain || (!nextOpen && !unsaved.confirmDiscard())) return; onOpenChange(nextOpen); };
 
   useEffect(() => {
     if (!open) { initialized.current = null; return; }
@@ -104,19 +110,25 @@ export function InvoiceDialog({
     const initialJobId = invoice?.jobId ?? presetJobId ?? (customerJobIds?.length === 1 ? customerJobIds[0] : "");
     const job = jobs.find((item) => item.id === initialJobId);
     const initial = { jobId: initialJobId, status: invoice?.status ?? "Draft" as InvoiceStatus, issueDate: invoice?.issueDate || todayISO(), dueDate: invoice?.dueDate || addDaysISO(30), notes: invoice?.notes ?? "", lineItems: invoice ? invoice.lineItems.map((item) => ({ ...item })) : job ? defaultLineItems(job) : [], depositAmount: invoice?.depositAmount || 0 };
-    setJobId(initial.jobId); setStatus(initial.status); setIssueDate(initial.issueDate); setDueDate(initial.dueDate); setNotes(initial.notes); setLineItems(initial.lineItems); setDepositAmount(initial.depositAmount); setSaveError(""); unsaved.reset(initial);
+    setJobId(initial.jobId); setStatus(initial.status); setIssueDate(initial.issueDate); setDueDate(initial.dueDate); setNotes(initial.notes); setLineItems(initial.lineItems); setDepositAmount(initial.depositAmount); setSaveError(""); setRemainingConfirmed(false); unsaved.reset(initial);
   }, [open, invoice?.id, presetJobId, contextKey, contextLoading, queryState?.jobs.isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectedJob = jobs.find((j) => j.id === jobId);
+  const imported = !!selectedJob?.migrationCutover;
+  const billing = selectedJob?.migrationCutover?.billing;
+  const importedEditable = !imported || (!invoice || invoice.status === "Draft" && !!invoice.invoiceFinancialFingerprint && invoice.paidAmount === 0 && invoice.depositAmount === 0 && invoice.refundedAmount === 0);
+  const billingAvailable = !imported || !!billing?.current && billing.remainingCents !== null;
   const subtotal = invoiceSubtotal(lineItems);
   const total = Math.max(0, Math.max(0, subtotal - (invoice?.discountAmount || 0)) + (invoice?.taxAmount || 0));
   const balance = Math.max(0, total - depositAmount - (invoice?.paidAmount || 0));
 
   const handleJobChange = (value: string) => {
     setJobId(value);
+    setRemainingConfirmed(false);
     if (!isEdit) {
       const job = jobs.find((j) => j.id === value);
       if (job) setLineItems(defaultLineItems(job));
+      if (job?.migrationCutover) { setStatus("Draft"); setDepositAmount(0); }
     }
   };
 
@@ -144,6 +156,7 @@ export function InvoiceDialog({
       setSaveError("Select a job.");
       return;
     }
+    if (imported && !uncertain && (!billingAvailable || !importedEditable || !remainingConfirmed || depositAmount !== 0 || status !== "Draft")) { setSaveError("Review current remaining billing permission and explicitly confirm unpaid remaining-work lines. Imported invoices start as Draft without legacy payment or deposit credits."); return; }
     const cleaned = lineItems.filter((li) => li.description.trim() !== "");
     if (cleaned.length === 0) {
       setSaveError("Add at least one line item with a description.");
@@ -152,6 +165,7 @@ export function InvoiceDialog({
     if (cleaned.some((line) => !Number.isFinite(line.quantity) || line.quantity <= 0 || !Number.isFinite(line.unitPrice) || line.unitPrice < 0)) { setSaveError("Every line needs a positive quantity and a non-negative unit price."); return; }
     if (!issueDate || !dueDate || dueDate < issueDate) { setSaveError("Choose an issue date and a due date on or after it."); return; }
     if (!Number.isFinite(depositAmount) || depositAmount < 0 || depositAmount > total) { setSaveError("Deposit credit must be between zero and the invoice total."); return; }
+    if (imported && !uncertain && Math.round(total * 100) > billing!.remainingCents! + (invoice ? Math.round(invoice.total * 100) : 0)) { setSaveError("The gross invoice exceeds the reviewed remaining ceiling. Payments and deposits cannot reduce its consumption."); return; }
     setSaving(true);
     try {
       if (invoice) {
@@ -163,10 +177,11 @@ export function InvoiceDialog({
           issueDate,
           dueDate,
           notes,
+          ...(imported ? { expectedCutoverRevision: selectedJob.migrationCutover!.revision, expectedInvoiceFingerprint: invoice.invoiceFinancialFingerprint } : {}),
         });
         toast({ title: "Invoice updated" });
       } else {
-        await addInvoice({
+        const payload = {
           jobId: selectedJob.id,
           jobNumber: selectedJob.jobNumber,
           customerName: selectedJob.customerName,
@@ -176,12 +191,19 @@ export function InvoiceDialog({
           issueDate,
           dueDate,
           notes,
-        });
+          ...(imported ? { requestKey: attempt.current?.key ?? crypto.randomUUID(), expectedCutoverRevision: selectedJob.migrationCutover!.revision } : {}),
+        };
+        if (imported && !attempt.current) attempt.current = { key: payload.requestKey!, payload };
+        await addInvoice((imported ? attempt.current!.payload : payload) as Parameters<typeof addInvoice>[0]);
         toast({ title: "Invoice created" });
       }
+      attempt.current = null; setUncertain(false);
       onOpenChange(false);
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : "Could not save the invoice. Your changes are still here.");
+      if (imported && !invoice && attempt.current) {
+        if (isDefinitiveInvoiceRejection(error)) { attempt.current = null; setUncertain(false); setRemainingConfirmed(false); setSaveError(`This request was rejected; no new invoice was saved by this attempt. ${error instanceof Error ? error.message : "Review the current billing permission."} Reload the job and invoices, correct the input, and review the remaining-work lines again.`); }
+        else { setUncertain(true); setSaveError(error instanceof Error ? error.message : "The create result could not be confirmed."); }
+      } else setSaveError(error instanceof Error ? error.message : "Could not save the invoice. Your changes are still here.");
     } finally {
       setSaving(false);
     }
@@ -197,7 +219,8 @@ export function InvoiceDialog({
           <DialogDescription>Review the customer’s selling prices. Recorded payments are kept separately.</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <fieldset disabled={saving || uncertain || !importedEditable} className="space-y-4" onChange={(event) => { if (imported && !(event.target instanceof HTMLInputElement && event.target.name === "remaining-work-confirmation")) setRemainingConfirmed(false); }}>
+          {imported && <div className="space-y-2 rounded border bg-muted/30 p-3 text-sm"><p>Imported job: enter only explicitly reviewed remaining work. No full-contract lines are prefilled. Full-job forecast and legacy unpaid invoices are separate.</p><p>Available gross ceiling: {fmtMoney(billing?.current && billing.remainingCents !== null ? billing.remainingCents / 100 : null)}. Drafts consume this ceiling; voids and refunds do not replenish it.</p>{!billingAvailable && <p role="alert">The owner must complete current billing cutover review on the job before creating or editing invoices.</p>}{!importedEditable && <p role="alert">This imported invoice is no longer an untouched Draft. Financial edits require review outside this form.</p>}<label className="flex gap-2"><input name="remaining-work-confirmation" type="checkbox" checked={remainingConfirmed} onChange={(event) => setRemainingConfirmed(event.target.checked)} />I reviewed these exact lines as remaining work after all legacy invoices, including unpaid invoices.</label></div>}
           {!isEdit && contextLabel && <p className="text-sm text-muted-foreground">For {contextLabel}. {customerJobIds?.length === 0 ? "Create a job for this customer before invoicing." : "Review the job and contract amount below."}</p>}
           {contextLoading && <p role="status">Loading the selected customer or job…</p>}
           <div className="grid sm:grid-cols-2 gap-4">
@@ -206,7 +229,7 @@ export function InvoiceDialog({
               <Select
                 value={jobId}
                 onValueChange={handleJobChange}
-                disabled={isEdit || Boolean(presetJobId)}
+                disabled={isEdit || Boolean(presetJobId) || uncertain}
               >
                 <SelectTrigger aria-label="Job">
                   <SelectValue placeholder="Select a job" />
@@ -224,6 +247,7 @@ export function InvoiceDialog({
               <Label>Status</Label>
               <Select
                 value={status}
+                disabled={imported}
                 onValueChange={(v: InvoiceStatus) => setStatus(v)}
               >
                 <SelectTrigger aria-label="Status">
@@ -343,6 +367,7 @@ export function InvoiceDialog({
                 <Label htmlFor="invoice-deposit">Deposit / Credit ($)</Label>
                 <Input
                   id="invoice-deposit"
+                  disabled={imported}
                   type="number"
                   min={0}
                   step="0.01"
@@ -398,15 +423,17 @@ export function InvoiceDialog({
               rows={2}
             />
           </div>
-        </div>
+        </fieldset>
 
         {saveError && <p role="alert" className="text-sm text-destructive">{saveError}</p>}
+        {uncertain && <p role="alert">The create result is uncertain. Inputs are frozen; retry this exact request to recover the same draft. Do not create another invoice or assume delivery failed.</p>}
+        {imported && <Button type="button" variant="outline" disabled={saving} onClick={async () => { setSaving(true); try { await Promise.all([queryState?.jobs.refetch(), queryState?.invoices.refetch()]); setRemainingConfirmed(false); } catch { setSaveError("Current records could not load. Keep this saved request and retry the refresh."); } finally { setSaving(false); } }}>Reload job and saved invoices</Button>}
         <DialogFooter>
-          <Button variant="outline" disabled={saving} onClick={() => close(false)}>
+          <Button variant="outline" disabled={saving || uncertain} onClick={() => close(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={saving}>
-            {saving ? "Saving…" : isEdit ? "Save Changes" : "Create Invoice"}
+          <Button onClick={handleSave} disabled={saving || !uncertain && (!importedEditable || imported && (!remainingConfirmed || !billingAvailable))}>
+            {saving ? "Saving…" : uncertain ? "Retry exact invoice request" : isEdit ? "Save Changes" : "Create Invoice"}
           </Button>
         </DialogFooter>
       </DialogContent>

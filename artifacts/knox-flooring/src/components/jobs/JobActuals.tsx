@@ -91,7 +91,7 @@ export function JobActuals({
   const entries = laborQuery.data ?? [];
   const usage = usageQuery.data ?? [];
   const products = productsQuery.data ?? [];
-  const canEditEstimates = user?.role !== "installer";
+  const canEditEstimates = user?.role !== "installer" && !job.migrationCutover;
   const canUseStock = user?.role === "owner" || user?.role === "operations";
   const [dialog, setDialog] = useState<"labor" | "usage" | "estimate" | null>(
     null,
@@ -294,9 +294,9 @@ export function JobActuals({
               {usageQuery.error ? "Unavailable" : currency(totalCost)}{" "}
               <span className="text-sm font-normal text-muted-foreground">
                 /{" "}
-                {job.materialEstimate > 0
+                {job.materialEstimate !== null && job.materialEstimate > 0
                   ? currency(job.materialEstimate) + " estimated"
-                  : "estimate not set"}
+                  : job.migrationCutover ? "full-job forecast reviewed separately" : "estimate not set"}
               </span>
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
@@ -766,7 +766,7 @@ export function JobActuals({
                   min="0"
                   step="0.01"
                   required
-                  value={estimate.materialEstimate}
+                  value={estimate.materialEstimate ?? ""}
                   onChange={(e) =>
                     setEstimate({
                       ...estimate,

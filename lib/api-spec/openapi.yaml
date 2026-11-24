@@ -3385,27 +3385,36 @@ components:
           $ref: "#/components/schemas/MaterialStatusBadge"
         laborEstimate:
           type: number
+          nullable: true
         estLaborHours:
           type: number
         materialEstimate:
           type: number
+          nullable: true
         estRevenue:
           type: number
+          nullable: true
         estGrossProfit:
           type: number
+          nullable: true
         grossMarginPct:
           type: number
+          nullable: true
         actualRevenue:
           type: number
+          nullable: true
         actualLaborCost:
           type: number
+          nullable: true
         actualMaterialCost:
           type: number
+          nullable: true
         trackedMaterialCost:
           type: number
           description: Net cost of material usage and returns recorded on this job. Present when material entries exist.
         actualAddOnCost:
           type: number
+          nullable: true
         notes:
           type: string
         priorityLevel:

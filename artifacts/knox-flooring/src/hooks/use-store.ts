@@ -363,7 +363,7 @@ export function useStore() {
       | "paidAt"
       | "createdAt"
       | "updatedAt"
-    >,
+    > & { requestKey?: string; expectedCutoverRevision?: number },
   ): Promise<Invoice> => {
     const created = await createInvoiceMutation.mutateAsync({
       data: data as InvoiceInput,
@@ -374,7 +374,7 @@ export function useStore() {
 
   const updateInvoice = async (
     id: string,
-    updates: Partial<Invoice>,
+    updates: Partial<Invoice> & { expectedCutoverRevision?: number; expectedInvoiceFingerprint?: string },
   ): Promise<void> => {
     await updateInvoiceMutation.mutateAsync({
       id,

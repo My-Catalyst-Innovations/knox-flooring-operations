@@ -21,6 +21,7 @@ import { nextDocumentNumber } from "../lib/conversions";
 import { ensureCustomer, validateCustomerLinks } from "../lib/estimate-service";
 import { deleteUnreferencedJob } from "../lib/job-deletion";
 import { reviewedLaborCostCentsSql } from "../lib/quickbooks-job-cost";
+import { jobCutoverMoneyKeys, jobMigrationCutover } from "../lib/job-cutover";
 
 const router: IRouter = Router();
 
@@ -53,10 +54,14 @@ function generateShareToken(): string {
   return randomBytes(12).toString("hex");
 }
 
-router.get("/jobs", async (_req, res): Promise<void> => {
+function preserveJobNulls(job: typeof jobsTable.$inferSelect) {
+  return { ...stripNulls(job), ...Object.fromEntries(jobCutoverMoneyKeys.map(key => [key,job[key]])) };
+}
+router.get("/jobs", domainRoute(async (_req, res): Promise<void> => {
   const jobs = await selectJobsWithMaterialCost();
-  res.json(ListJobsResponse.parse(jobs.map(stripNulls)).map((job,index)=>({...job,trackedLaborCost:jobs[index].trackedLaborCost,trackedExpenseCost:jobs[index].trackedExpenseCost,unpricedLaborCount:jobs[index].unpricedLaborCount})));
-});
+  const parsed=ListJobsResponse.parse(jobs.map(preserveJobNulls));
+  res.json(await Promise.all(parsed.map(async(job,index)=>({...job,trackedLaborCost:jobs[index].trackedLaborCost,trackedExpenseCost:jobs[index].trackedExpenseCost,unpricedLaborCount:jobs[index].unpricedLaborCount,migrationCutover:await jobMigrationCutover(db,jobs[index])}))));
+}));
 
 router.post(
   "/jobs",
@@ -108,7 +113,7 @@ router.post(
   }),
 );
 
-router.get("/jobs/:id", async (req, res): Promise<void> => {
+router.get("/jobs/:id", domainRoute(async (req, res): Promise<void> => {
   const params = GetJobParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -122,8 +127,8 @@ router.get("/jobs/:id", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Job not found" });
     return;
   }
-  res.json({...GetJobResponse.parse(stripNulls(job)),trackedLaborCost:job.trackedLaborCost,trackedExpenseCost:job.trackedExpenseCost,unpricedLaborCount:job.unpricedLaborCount});
-});
+  res.json({...GetJobResponse.parse(preserveJobNulls(job)),trackedLaborCost:job.trackedLaborCost,trackedExpenseCost:job.trackedExpenseCost,unpricedLaborCount:job.unpricedLaborCount,migrationCutover:await jobMigrationCutover(db,job)});
+}));
 
 router.patch(
   "/jobs/:id",
@@ -178,8 +183,9 @@ router.patch(
         revision,
       );
     });
-    await queueQuickBooksReview("project", job.id, "update", stripNulls(job));
-    res.json(UpdateJobResponse.parse(stripNulls(job)));
+    const migrationCutover=await jobMigrationCutover(db,job);
+    if(!migrationCutover)await queueQuickBooksReview("project", job.id, "update", stripNulls(job));
+    res.json({...UpdateJobResponse.parse(preserveJobNulls(job)),migrationCutover});
   }),
 );
 
