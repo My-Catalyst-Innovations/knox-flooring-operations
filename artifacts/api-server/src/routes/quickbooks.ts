@@ -5,7 +5,7 @@ import { z } from "zod";
 import { db, invoicesTable, jobsTable, materialsTable, productsTable, proposalsTable, quickbooksAccountingMappingsTable, quickbooksConflictsTable, quickbooksConnectionsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable } from "@workspace/db";
 import { workspaceEnvironment } from "@workspace/db/workspace";
 import { audit, getSession, SESSION_COOKIE } from "../lib/auth";
-import { accountingScope, projectsScope, grantedQuickBooksScopes, quickBooksOAuthRequestedScopes, quickBooksOAuthConnectionLifecycle, quickBooksConnectionLifecycle, consumeQuickBooksOAuthState, createQuickBooksOAuthState, encryptSecret, getConnection, qboQuery, qboRequest, quickBooksProjectReadiness, replaceQuickBooksConnection, validQuickBooksOAuthState, assertQuickBooksRevocationResolved, disconnectQuickBooks } from "../lib/quickbooks";
+import { accountingScope, projectsScope, grantedQuickBooksScopes, quickBooksOAuthRequestedScopes, quickBooksOAuthConnectionLifecycle, quickBooksConnectionLifecycle, consumeQuickBooksOAuthState, createQuickBooksOAuthState, encryptSecret, getConnection, qboQuery, qboRequest, quickBooksProjectReadiness, replaceQuickBooksConnection, validQuickBooksOAuthState, assertQuickBooksRevocationResolved, disconnectQuickBooks, quickBooksRevocationRetryAvailable } from "../lib/quickbooks";
 import { projectsCapability } from "../lib/quickbooks-projects";
 import { customerReconciliationMatches } from "../lib/quickbooks-reconciliation";
 import { loadQuickBooksCatalogEntity, quickBooksCatalogEntities } from "../lib/quickbooks-catalog";
@@ -28,7 +28,7 @@ import { assertCutoverInvoiceSubmission } from "../lib/job-cutover-invoices";
 const router: IRouter = Router();
 const configured = () => Boolean(workspaceEnvironment().QUICKBOOKS_CLIENT_ID && workspaceEnvironment().QUICKBOOKS_CLIENT_SECRET && workspaceEnvironment().QUICKBOOKS_REDIRECT_URI && workspaceEnvironment().QUICKBOOKS_ENCRYPTION_KEY);
 const demoAvailable = () => workspaceEnvironment().DEMO_MODE === "true";
-const publicConnection = (c: Awaited<ReturnType<typeof getConnection>>) => c ? ({ connected: c.status === "connected", status: c.status, realmId: c.realmId, companyName: c.companyName, environment: c.environment, readinessStatus: c.readinessStatus, lastSyncAt: c.lastSyncAt, lastCdcAt: c.lastCdcAt, refreshTokenExpiresAt: c.refreshTokenExpiresAt }) : ({ connected: false, status: configured() ? "not_connected" : "not_configured", readinessStatus: "configuration_required" });
+const publicConnection = (c: Awaited<ReturnType<typeof getConnection>>) => c ? ({ connected: c.status === "connected", status: c.status, realmId: c.realmId, companyName: c.companyName, environment: c.environment, readinessStatus: c.readinessStatus, revocationRetryAvailable: quickBooksRevocationRetryAvailable(c), lastSyncAt: c.lastSyncAt, lastCdcAt: c.lastCdcAt, refreshTokenExpiresAt: c.refreshTokenExpiresAt }) : ({ connected: false, status: configured() ? "not_connected" : "not_configured", readinessStatus: "configuration_required", revocationRetryAvailable: false });
 
 router.get("/quickbooks/status", async (_req, res) => {
   const connection=await getConnection();const capability=await projectsCapability(connection);

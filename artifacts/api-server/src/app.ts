@@ -12,6 +12,7 @@ import { platform } from "./platform";
 import { apiSecurity } from "./middlewares/api-security";
 import { safeErrorLog, safeRequestLog, safeResponseLog } from "./lib/safe-logging";
 import { safeFinalErrorHandler } from "./middlewares/safe-error-handler";
+import { productPublicRouter } from "./routes/product-public";
 
 const app: Express = express();
 const customerLinkPath = /^\/(?:api\/public\/(?:jobs|quotes)|p|q)\/[^/]+/i;
@@ -31,6 +32,7 @@ app.use(
 app.set("trust proxy", 1);
 app.use("/api/platform", platform.router);
 app.use(workspaceBoundary);
+app.use(productPublicRouter());
 app.use((req, res, next) => {
   if (customerLinkPath.test(req.path)) {
     res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });

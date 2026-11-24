@@ -91,6 +91,14 @@ it("blocks both beginning and completing OAuth while the old saved grant is unre
   await request(app).get("/quickbooks/callback").set("Cookie", `qbo_oauth_state=${encodeURIComponent(signed)}`).query({ state: signed, code: "unused-code", realmId: "123" }).expect(302).expect("Location", "/settings?quickbooks=blocked");
   expect(fetch).not.toHaveBeenCalled();
 });
+it.each([undefined, "legacy_disconnected", "reconciliation_required"])("blocks OAuth and stale replacement for an unrecorded legacy revocation (%s)", async readinessStatus => {
+  state.company = { id: "legacy-stopped", status: "disconnected", readinessStatus };
+  await request(app).get("/quickbooks/connect").expect(409);
+  const signed = createQuickBooksOAuthState("owner", "csrf");
+  await request(app).get("/quickbooks/callback").set("Cookie", `qbo_oauth_state=${encodeURIComponent(signed)}`).query({ state: signed, code: "unused-legacy-code", realmId: "123" }).expect(302).expect("Location", "/settings?quickbooks=blocked");
+  expect(state.company.id).toBe("legacy-stopped"); expect(state.company.status).toBe("disconnected");
+  expect(fetch).not.toHaveBeenCalled(); expect(state.consume).not.toHaveBeenCalled();
+});
 
 it("refuses a stale pre-disconnect consent callback after confirmed revocation, while fresh consent still connects", async () => {
   state.company = { id: "original", status: "connected", readinessStatus: "ready" };

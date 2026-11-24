@@ -14,13 +14,14 @@ import { QuickBooksInvoiceReview } from "./QuickBooksInvoiceReview";
 import { QuickBooksStockReconciliation } from "./QuickBooksStockReconciliation";
 import { QuickBooksProjectsCapability } from "./QuickBooksProjectsCapability";
 import { useOperation } from "@/lib/operations";
+import { quickBooksAuthorizationDestination } from "@/lib/quickbooks-entry";
 
 type Status = {
   configured: boolean;
   demoAvailable: boolean;
   projects?: { verified: boolean; readiness: string; legacySubcustomersPreserved: boolean; detail: string };
   demoCompany?: { name: string; environment: string; lastFour: string } | null;
-  connection: { connected: boolean; status: string; companyName?: string; realmId?: string; environment?: string; readinessStatus: string; lastSyncAt?: string };
+  connection: { connected: boolean; status: string; companyName?: string; realmId?: string; environment?: string; readinessStatus: string; lastSyncAt?: string; revocationRetryAvailable?: boolean };
 };
 type QueueItem = {
   id: string;
@@ -85,8 +86,11 @@ export function QuickBooksSettings() {
     }
   };
   const connect = async () => {
+    if (!status?.configured || unresolvedRevocation) throw new Error("Resolve the saved grant's revocation before reconnecting.");
     const result = await customFetch<{ authorizationUrl: string }>("/api/quickbooks/connect", { responseType: "json" });
-    window.location.assign(result.authorizationUrl);
+    const destination = quickBooksAuthorizationDestination(result.authorizationUrl);
+    if (!destination) throw new Error("QuickBooks returned an unexpected authorization destination.");
+    window.location.assign(destination);
   };
   const disconnect = async (retryRevocation = false) => {
     setBusy("disconnect");
@@ -137,7 +141,9 @@ export function QuickBooksSettings() {
   </label>;
   const pendingDemo = demoQueue.filter((item) => item.status === "demo_pending");
   const completedDemo = demoQueue.filter((item) => item.status === "demo_completed");
-  const unresolvedRevocation = ["revocation_pending", "revocation_unknown", "revocation_failed"].includes(status?.connection.readinessStatus ?? "");
+  const markedUnresolvedRevocation = ["revocation_pending", "revocation_unknown", "revocation_failed"].includes(status?.connection.readinessStatus ?? "");
+  const unresolvedRevocation = markedUnresolvedRevocation || status?.connection.status === "disconnected" && status.connection.readinessStatus !== "revocation_confirmed";
+  const retryAvailable = status?.connection.revocationRetryAvailable ?? markedUnresolvedRevocation;
 
   return <div className="space-y-4">
     <QuickBooksOAuthNotice />
@@ -148,8 +154,9 @@ export function QuickBooksSettings() {
         {!status?.configured && <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">A real connection requires an Intuit developer app and a QuickBooks Online company.{status?.demoAvailable && " The interactive demo below works without either account."}</div>}
         {status?.connection.connected && <div className="grid gap-2 text-sm sm:grid-cols-2"><div><span className="text-muted-foreground">Company:</span> {status.connection.companyName || status.connection.realmId}</div><div><span className="text-muted-foreground">Environment:</span> {status.connection.environment}</div><div><span className="text-muted-foreground">Readiness:</span> {status.connection.readinessStatus.replaceAll("_", " ")}</div><div><span className="text-muted-foreground">Last import:</span> {status.connection.lastSyncAt ? new Date(status.connection.lastSyncAt).toLocaleString() : "Not yet"}</div></div>}
         {unresolvedRevocation && <div role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">Works has stopped using this connection. Intuit has not confirmed that access was revoked. Retry revocation of this same saved grant before reconnecting. If a request is still pending, wait briefly before trying again.</div>}
+        {unresolvedRevocation && !retryAvailable && <p role="status" className="text-sm">The retained grant cannot currently be retried safely. Keep new authorization paused and ask your implementation contact to review the saved state. A missing outcome is not confirmed revocation.</p>}
         {status?.connection.readinessStatus === "revocation_confirmed" && <p role="status" className="text-sm text-muted-foreground">Intuit confirmed revocation. Existing accounting history has been preserved.</p>}
-        <div className="flex flex-wrap gap-2"><Button onClick={() => run("connect", connect, "Opening QuickBooks")} disabled={!status?.configured || unresolvedRevocation || busy !== ""}>{busy === "connect" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}{status?.connection.connected ? "Reconnect" : "Connect a real company"}</Button>{status?.connection.connected && <Button variant="outline" disabled={busy !== ""} onClick={() => run("reconcile", reconcile, "QuickBooks lists imported for reconciliation")}>{busy === "reconcile" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}Import & reconcile</Button>}{(status?.connection.connected || status?.connection.status === "reconnect_required" || unresolvedRevocation) && <Button variant="outline" disabled={busy !== ""} onClick={() => void disconnect(unresolvedRevocation)}><Unplug className="mr-2 h-4 w-4" />{unresolvedRevocation ? "Retry revocation" : "Disconnect"}</Button>}</div>
+        <div className="flex flex-wrap gap-2"><Button onClick={() => run("connect", connect, "Opening QuickBooks")} disabled={!status?.configured || unresolvedRevocation || busy !== ""}>{busy === "connect" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}{status?.connection.connected ? "Reconnect" : "Connect a real company"}</Button>{status?.connection.connected && <Button variant="outline" disabled={busy !== ""} onClick={() => run("reconcile", reconcile, "QuickBooks lists imported for reconciliation")}>{busy === "reconcile" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}Import & reconcile</Button>}{(status?.connection.connected || status?.connection.status === "reconnect_required" || unresolvedRevocation) && <Button variant="outline" disabled={busy !== "" || unresolvedRevocation && !retryAvailable} onClick={() => void disconnect(unresolvedRevocation)}><Unplug className="mr-2 h-4 w-4" />{unresolvedRevocation ? "Retry revocation" : "Disconnect"}</Button>}</div>
       </CardContent>
     </Card>
 

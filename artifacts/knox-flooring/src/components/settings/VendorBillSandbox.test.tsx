@@ -201,9 +201,7 @@ it("records a local supplier bill review without selecting a QuickBooks vendor",
   expect(
     await screen.findByText("Reviewed in Catalyst Works"),
   ).toBeInTheDocument();
-  expect(screen.getByRole("status")).toHaveTextContent(
-    "Supplier bill review recorded.",
-  );
+  expect(screen.getByText("Supplier bill review recorded.")).toHaveAttribute("role", "status");
   expect(
     screen.queryByText(/Simulated bill|Verified sandbox bill/),
   ).not.toBeInTheDocument();
