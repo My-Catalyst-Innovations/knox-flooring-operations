@@ -138,7 +138,7 @@ export function VendorBillLineIntake({ onApply }: { onApply(lines: VendorBillLin
                 </tr></thead>
                 <tbody className="divide-y">
                   {preview.rows.map(({ rowNumber, line, amountCents }, index) => <tr key={rowNumber}>
-                    <td className="p-2 tabular-nums">{documentPreview ? `Page ${documentPreview.sources[index].page}, row ${documentPreview.sources[index].row}` : rowNumber}</td>
+                    <td className="p-2 tabular-nums">{documentPreview ? `Page ${documentPreview.sources[index].page}, row ${documentPreview.sources[index].row}${documentPreview.sources[index].endRow === undefined ? "" : `-${documentPreview.sources[index].endRow}`}` : rowNumber}</td>
                     {billLineFields.map(([field]) => <td key={field} className="p-2 [overflow-wrap:anywhere]">{line[field]}</td>)}
                     <td className="p-2 tabular-nums">{billIntakeDollars(amountCents)}</td>
                   </tr>)}
