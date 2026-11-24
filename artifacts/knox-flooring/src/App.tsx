@@ -24,6 +24,7 @@ import Commissions from "@/pages/commissions";
 import Invoices from "@/pages/invoices";
 import Customers from "@/pages/customers";
 import LegacyHistory from "@/pages/legacy-history";
+import Suppliers from "@/pages/suppliers";
 import CustomerDetail from "@/pages/customer-detail";
 import Materials from "@/pages/materials";
 import Inventory from "@/pages/inventory";
@@ -73,6 +74,7 @@ function AdminRouter() {
         <Route path="/customers/:key" component={CustomerDetail} />
         <Route path="/customers" component={Customers} />
         <Route path="/legacy-history" component={LegacyHistory} />
+        <Route path="/suppliers" component={Suppliers} />
         <Route path="/materials" component={Materials} />
         <Route path="/inventory" component={Inventory} />
         <Route path="/inventory/purchase-orders" component={PurchaseOrders} />
