@@ -28,3 +28,4 @@ export * from "./microsoft-files";
 export * from "./job-accounting";
 export * from "./customer-imports";
 export * from "./legacy-history";
+export * from "./sms-preferences";
