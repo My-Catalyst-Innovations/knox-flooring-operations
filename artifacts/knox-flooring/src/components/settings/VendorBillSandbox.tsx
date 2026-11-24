@@ -13,6 +13,7 @@ import { billLineFields, billLineLimit, validBillTotal, validateBillLine, type V
 import { VendorBillLineIntake } from "./VendorBillLineIntake";
 import type { SandboxAccount } from "./SandboxStockItems";
 import { inventorySelect } from "@/lib/purchasing";
+import { BillReceiptCoverage } from "./BillReceiptCoverage";
 
 type Mode = "review" | "simulated" | "sandbox" | "production";
 const productCodeLabels = {
@@ -215,6 +216,7 @@ export function VendorBillSandbox({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [coverageId, setCoverageId] = useState<string>();
   const [confirmation, setConfirmation] = useState<{
     id: string;
     fingerprint: string;
@@ -224,6 +226,7 @@ export function VendorBillSandbox({
   const chargeAccounts = accounts.filter((account) => account.Active === true && ["Expense", "Other Expense", "Cost of Goods Sold"].includes(account.AccountType ?? ""));
 
   useEffect(() => {
+    setCoverageId(undefined);
     let disposed = false;
     operation<Bill[]>(historyPath)
       .then((rows) => {
@@ -674,6 +677,8 @@ export function VendorBillSandbox({
                       Processing supplier bill.
                     </p>
                   )}
+                  {mode !== "simulated" && <Button className="mt-2" type="button" size="sm" variant="outline" onClick={() => setCoverageId(current => current === bill.id ? undefined : bill.id)}>Review receipts and original file</Button>}
+                  {coverageId === bill.id && <BillReceiptCoverage billId={bill.id} onClose={() => setCoverageId(undefined)} />}
                 </li>
               );
             })}

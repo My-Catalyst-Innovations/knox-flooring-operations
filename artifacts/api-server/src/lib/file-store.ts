@@ -5,11 +5,13 @@ import type { AppRole } from "@workspace/db";
 import { ObjectStorageService } from "./objectStorage";
 import { DomainError } from "./operations-rules";
 import { legacyOriginalKind } from "./legacy-history-files";
+import { vendorBillOriginalKind } from "./vendor-bill-original";
 
 export const fileRoles = {
   "job-photo": ["owner", "sales", "operations", "installer"],
   "job-document": ["owner", "sales", "operations"],
   "legacy-document": ["owner"],
+  "vendor-bill-document": ["owner"],
   "portal-photo": ["owner", "sales", "operations", "installer"],
   "lead-document": ["owner", "sales"],
   "product-image": ["owner", "operations"],
@@ -68,6 +70,7 @@ export function publishedLogoUrl(value: string | null | undefined): string | nul
 }
 
 export function uploadContentType(purpose: FilePurpose, bytes: Buffer): string {
+  if (purpose === "vendor-bill-document") { vendorBillOriginalKind(bytes); return "application/octet-stream"; }
   if (purpose === "legacy-document") { legacyOriginalKind(bytes); return "application/octet-stream"; }
   if (purpose === "lead-document" || purpose === "job-document") return "application/octet-stream";
   if (bytes.length >= 4 && bytes.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) return "image/jpeg";

@@ -32,6 +32,8 @@ import quickBooksStockItemsRouter from "./quickbooks-stock-items";
 import quickBooksInventoryReconciliationRouter from "./quickbooks-inventory-reconciliation";
 import { emailWebhook } from "../lib/email-webhooks";
 import vendorBillsRouter from "./vendor-bills";
+import billReceiptCoverageRouter from "./bill-receipt-coverage";
+import inventoryAccountingCasesRouter from "./inventory-accounting-cases";
 import { enforceRoleAccess, requireAuth } from "../middlewares/auth";
 import installerAccessBoundary from "./installer-access";
 import taskAssignmentRouter from "./task-assignment";
@@ -121,5 +123,7 @@ router.use(quickBooksProjectsRouter);
 router.use(quickBooksStockItemsRouter);
 router.use(quickBooksInventoryReconciliationRouter);
 router.use(vendorBillsRouter);
+router.use(billReceiptCoverageRouter);
+router.use(inventoryAccountingCasesRouter);
 
 export default router;

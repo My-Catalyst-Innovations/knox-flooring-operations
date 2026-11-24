@@ -184,6 +184,12 @@ async function prepare(input: VendorBillInput, context: Context) {
         expectedUnitCost: price.unitCost,
         priceEffectiveOn: price.effectiveOn,
         priceSource: price.source,
+        sourceIdentity: {
+          version: 1, binding: "original_preparation",
+          product: { id: row.product.id, sku: row.product.sku, unit: row.product.unit, revision: row.product.revision },
+          alias: { ...row.alias }, price: { ...price },
+          originalCompany: context.mode === "sandbox" || context.mode === "production" ? { connectionId: context.connectionId, realmId: context.realmId, environment: context.mode } : null,
+        },
         ...(codeType === "supplier_sku" ? {} : {
           sourceCode: { type: codeType, value: line.supplierSku },
         }),
