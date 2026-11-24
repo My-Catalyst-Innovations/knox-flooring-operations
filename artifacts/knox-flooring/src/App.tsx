@@ -46,6 +46,7 @@ import { Loader2 } from "lucide-react";
 import IntegrationHealth from "@/pages/integration-health";
 import DemoOutbox from "@/pages/demo-outbox";
 import Messages from "@/pages/messages";
+import TextPreferences from "@/pages/text-preferences";
 import AIOperations from "@/pages/ai-operations";
 
 const queryClient = new QueryClient();
@@ -83,6 +84,7 @@ function AdminRouter() {
         <Route path="/integration-health" component={IntegrationHealth} />
         <Route path="/demo-outbox" component={DemoOutbox} />
         <Route path="/communications" component={Messages} />
+        <Route path="/text-preferences" component={TextPreferences} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

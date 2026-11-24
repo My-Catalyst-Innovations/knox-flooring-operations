@@ -35,7 +35,7 @@ import {
   type CommunicationOutcome,
 } from "../lib/communication-outcome";
 import { emailRecipientSuppressed } from "../lib/email-webhooks";
-import { smsRecipientSuppressed } from "../lib/sms-consent";
+import { authorizeSmsDispatch, currentSmsSenderBinding, recheckSmsDispatch } from "../lib/sms-preferences";
 import { customerKey } from "../lib/customer-key";
 import { domainRoute, parse } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
@@ -65,12 +65,13 @@ function presentCommunication(row: CommunicationRow) {
   return stripNulls(row);
 }
 
-router.get("/communications/sms/status", (_req, res) => {
+router.get("/communications/sms/status", (req, res) => {
   const capability = smsDeliveryCapability();
   const readOnly = process.env.READ_ONLY_RECOVERY === "true";
   res.set("Cache-Control", "no-store").json({
     ...capability,
-    serverSendAvailable: capability.serverSendAvailable && !readOnly,
+    ...(req.auth?.previewRole?{mode:"capture",readiness:"role_preview",detail:"Role preview captures texts and cannot submit to a provider."}:{}),
+    serverSendAvailable: capability.serverSendAvailable && !readOnly && !req.auth?.previewRole,
     ...(readOnly ? { readiness: "recovery_read_only", detail: "Company texting is unavailable in read-only recovery." } : {}),
   });
 });
@@ -146,7 +147,7 @@ function messageFields(req: Request, channel: CommunicationChannel) {
       "Enter a message within the channel’s length limit.",
     );
   const { leadId, customerName, customerKey: explicitCustomerKey } = input;
-  const capture = !canSendCommunication(channel, recipient);
+  const capture = (channel==="sms"&&!!req.auth?.previewRole) || !canSendCommunication(channel, recipient);
   const requestKey = input.idempotencyKey;
   if (requestKey !== undefined && !/^[a-zA-Z0-9._:-]{8,128}$/.test(requestKey))
     throw new DomainError(400, "Invalid send request identifier.");
@@ -250,6 +251,11 @@ function submit(channel: CommunicationChannel) {
           createdBy: req.auth!.userId,
           createdAt: now,
         });
+      if (!capture && channel === "sms") {
+        const permission = await authorizeSmsDispatch(tx,fields.toAddress,currentSmsSenderBinding(texting));
+        const [authorized] = await tx.update(communicationsTable).set(permission).where(eq(communicationsTable.id,id)).returning();
+        return authorized;
+      }
       return first;
     });
     if (!claimed) {
@@ -275,20 +281,13 @@ function submit(channel: CommunicationChannel) {
     }
     let outcome: CommunicationOutcome;
     try {
+      if (channel === "sms") await recheckSmsDispatch(claimed);
       if (
         channel === "email" &&
         (await emailRecipientSuppressed(fields.toAddress))
       )
         throw new CommsError(
           "This address is suppressed after an email delivery failure or spam report. Verify a different address before sending.",
-          409,
-        );
-      if (
-        texting?.from &&
-        (await smsRecipientSuppressed(texting.from, fields.toAddress))
-      )
-        throw new CommsError(
-          "This phone number has opted out of texts from this sender. Use another contact channel until they reply START or UNSTOP.",
           409,
         );
       if (channel === "email" && fields.emailProvider === "outlook") {

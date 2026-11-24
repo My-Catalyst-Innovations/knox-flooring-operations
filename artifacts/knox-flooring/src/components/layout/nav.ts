@@ -40,6 +40,7 @@ export const utilityItems: NavItem[] = [
   { name: "Work guides", href: "/work-guides", icon: ClipboardList, keywords: "training warehouse receiving bin installer saved evidence", roles: ["owner", "operations", "installer"] },
   { name: "My profile", href: "/profile", icon: Contact, keywords: "account personal name phone job title" },
   { name: "Messages", href: "/communications", icon: Send, keywords: "texts sms replies email inbox unassigned", roles: ["owner", "sales"] },
+  { name: "Text preferences", href: "/text-preferences", icon: Send, keywords: "sms text opt out consent permission evidence stop", roles: ["owner", "sales", "operations"] },
   { name: "Settings", href: "/settings", icon: Settings, keywords: "config company preferences", roles: ["owner"] },
   { name: "Integrations", href: "/integration-health", icon: Activity, keywords: "health connections quickbooks calendar", roles: ["owner", "operations"] },
   { name: "Demo messages", href: "/demo-outbox", icon: Send, keywords: "outbox email sms preview", roles: ["owner", "sales"] },

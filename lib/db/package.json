@@ -17,7 +17,8 @@
     "test": "node --test scripts/migration-runner.test.mjs scripts/customer-import-postgres.test.mjs scripts/legacy-history-schema.test.mjs scripts/legacy-history-postgres.test.mjs",
     "test:legacy-history": "node --test scripts/legacy-history-schema.test.mjs scripts/legacy-history-postgres.test.mjs",
     "test:customer-import": "node --test scripts/customer-import-postgres.test.mjs",
-    "test:release": "node --test scripts/release-workflows.test.mjs",
+    "test:release": "node --test scripts/release-workflows.test.mjs && node --test scripts/sms-preferences-workflow.test.mjs",
+    "test:sms-preferences": "node --test scripts/sms-preferences-workflow.test.mjs",
     "rehearse:backup": "node scripts/rehearse-backup.mjs"
   },
   "dependencies": {
