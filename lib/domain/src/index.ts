@@ -4,3 +4,4 @@ export * from "./catalog-import";
 export { invoiceLineAmount, invoiceSubtotal } from "./invoice-totals";
 export * from "./supplier-unit-conversion";
 export * from "./customer-import";
+export * from "./legacy-history";

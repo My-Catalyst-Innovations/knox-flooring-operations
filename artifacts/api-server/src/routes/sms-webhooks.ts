@@ -20,6 +20,7 @@ import {
   verifiedSignalWireForm,
 } from "../lib/signalwire-callback";
 import { smsConsentCommand, smsConsentSubject } from "../lib/sms-consent";
+import { recordInboundSmsPreference } from "../lib/sms-preferences";
 
 const messages = communicationsTable;
 const startsWithSignalWireProject = (account: string) =>
@@ -161,6 +162,11 @@ export const signalWireInboundWebhook = domainRoute(async (req, res) => {
     return;
   }
   const media = Number(event.NumMedia);
+  const preferenceCommand = smsConsentCommand(event.Body);
+  if (preferenceCommand) {
+    await recordInboundSmsPreference({to:event.From,sender:event.To,
+      providerMessageId:signalWireMessageKey(account,event.MessageSid),command:preferenceCommand});
+  }
   if (event.Body.trim() || media > 0) {
     const candidates = await db
       .selectDistinctOn([messages.leadId, messages.customerKey], {

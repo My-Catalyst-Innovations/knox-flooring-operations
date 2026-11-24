@@ -183,6 +183,20 @@
       "when": 1795475481787,
       "tag": "0025_customer_import_review",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1795479572008,
+      "tag": "0026_legacy_history_archive",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1795481094094,
+      "tag": "0027_sms_consent_preferences",
+      "breakpoints": true
     }
   ]
 }

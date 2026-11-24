@@ -42,8 +42,8 @@ export function requireOwner(req: Request, res: Response, next: NextFunction) {
 
 const ROLE_PREFIXES: Record<AppRole, string[]> = {
   owner: ["/"],
-  sales: ["/work-guides", "/workspace-brand", "/customers", "/estimate-drafts", "/demo", "/ai", "/leads", "/measurements", "/products", "/proposals", "/salespeople", "/communications", "/tasks", "/jobs", "/settings", "/storage"],
-  operations: ["/work-guides", "/workspace-brand", "/crews", "/bookings", "/callbacks", "/inventory", "/demo", "/ai", "/jobs", "/photos", "/job-materials", "/labor-entries", "/material-usage", "/materials", "/products", "/tasks", "/measurements", "/google-calendar", "/integrations", "/storage"],
+  sales: ["/sms-preferences", "/work-guides", "/workspace-brand", "/customers", "/estimate-drafts", "/demo", "/ai", "/leads", "/measurements", "/products", "/proposals", "/salespeople", "/communications", "/tasks", "/jobs", "/settings", "/storage"],
+  operations: ["/sms-preferences", "/work-guides", "/workspace-brand", "/crews", "/bookings", "/callbacks", "/inventory", "/demo", "/ai", "/jobs", "/photos", "/job-materials", "/labor-entries", "/material-usage", "/materials", "/products", "/tasks", "/measurements", "/google-calendar", "/integrations", "/storage"],
   installer: ["/work-guides", "/workspace-brand", "/demo", "/jobs", "/photos", "/labor-entries", "/material-usage", "/tasks", "/storage", "/integrations"],
 };
 

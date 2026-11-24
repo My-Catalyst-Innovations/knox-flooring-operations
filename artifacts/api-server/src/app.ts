@@ -21,7 +21,9 @@ app.use(
         return {
           id: req.id,
           method: req.method,
-          url: req.url?.split("?")[0].replace(customerLinkPath, "/[customer-link]"),
+          url: req.url
+            ?.split("?")[0]
+            .replace(customerLinkPath, "/[customer-link]"),
         };
       },
       res(res) {
@@ -41,12 +43,29 @@ app.use((req, res, next) => {
   }
   next();
 });
-app.use(cors((_req, done) => done(null, { origin: workspaceEnvironment().APP_BASE_URL || true, credentials: true })));
-app.use(express.json({
-  limit: "1mb",
+app.use(
+  cors((_req, done) =>
+    done(null, {
+      origin: workspaceEnvironment().APP_BASE_URL || true,
+      credentials: true,
+    }),
+  ),
+);
+const jsonOptions = {
   type: ["application/json", "application/cloudevents-batch+json"],
-  verify: (req, _res, buffer) => { (req as express.Request).rawBody = Buffer.from(buffer); },
-}));
+  verify: (req: express.Request, _res: express.Response, buffer: Buffer) => {
+    req.rawBody = Buffer.from(buffer);
+  },
+};
+const defaultJson = express.json({ ...jsonOptions, limit: "1mb" });
+// A <=1 MiB UTF-8 CSV can approach 2 MiB after JSON quote escaping. Retain the
+// existing limit everywhere else; the archive parser separately caps source bytes.
+const archiveJson = express.json({ ...jsonOptions, limit: "3mb" });
+app.use((req, res, next) =>
+  (req.method === "POST" && req.path === "/api/legacy-history/imports/preview"
+    ? archiveJson
+    : defaultJson)(req, res, next),
+);
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 

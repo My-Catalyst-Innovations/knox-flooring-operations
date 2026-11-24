@@ -4,10 +4,12 @@ import { Readable } from "node:stream";
 import type { AppRole } from "@workspace/db";
 import { ObjectStorageService } from "./objectStorage";
 import { DomainError } from "./operations-rules";
+import { legacyOriginalKind } from "./legacy-history-files";
 
 export const fileRoles = {
   "job-photo": ["owner", "sales", "operations", "installer"],
   "job-document": ["owner", "sales", "operations"],
+  "legacy-document": ["owner"],
   "portal-photo": ["owner", "sales", "operations", "installer"],
   "lead-document": ["owner", "sales"],
   "product-image": ["owner", "operations"],
@@ -66,6 +68,7 @@ export function publishedLogoUrl(value: string | null | undefined): string | nul
 }
 
 export function uploadContentType(purpose: FilePurpose, bytes: Buffer): string {
+  if (purpose === "legacy-document") { legacyOriginalKind(bytes); return "application/octet-stream"; }
   if (purpose === "lead-document" || purpose === "job-document") return "application/octet-stream";
   if (bytes.length >= 4 && bytes.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) return "image/jpeg";
   if (bytes.length >= 24 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";

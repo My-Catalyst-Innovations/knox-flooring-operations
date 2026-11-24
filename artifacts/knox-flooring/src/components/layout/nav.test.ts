@@ -24,4 +24,10 @@ describe("workspace navigation", () => {
     for (const legacy of ["/", "/jobs", "/pipeline", "/tasks"]) expect(installerLinks).not.toContain(legacy);
     expect(createItems.filter((item) => canAccess(item, "installer"))).toEqual([]);
   });
+  it("makes text preference lookup available only to office roles",()=>{
+    const item=navItems.find(item=>item.href==="/text-preferences")!;
+    expect(item).toBeDefined();
+    for(const role of ["owner","sales","operations"])expect(canAccess(item,role)).toBe(true);
+    expect(canAccess(item,"installer")).toBe(false);
+  });
 });

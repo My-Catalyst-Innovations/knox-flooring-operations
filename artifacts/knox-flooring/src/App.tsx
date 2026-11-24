@@ -23,6 +23,7 @@ import SalesPerformance from "@/pages/sales-performance";
 import Commissions from "@/pages/commissions";
 import Invoices from "@/pages/invoices";
 import Customers from "@/pages/customers";
+import LegacyHistory from "@/pages/legacy-history";
 import CustomerDetail from "@/pages/customer-detail";
 import Materials from "@/pages/materials";
 import Inventory from "@/pages/inventory";
@@ -45,6 +46,7 @@ import { Loader2 } from "lucide-react";
 import IntegrationHealth from "@/pages/integration-health";
 import DemoOutbox from "@/pages/demo-outbox";
 import Messages from "@/pages/messages";
+import TextPreferences from "@/pages/text-preferences";
 import AIOperations from "@/pages/ai-operations";
 
 const queryClient = new QueryClient();
@@ -70,6 +72,7 @@ function AdminRouter() {
         <Route path="/invoices" component={Invoices} />
         <Route path="/customers/:key" component={CustomerDetail} />
         <Route path="/customers" component={Customers} />
+        <Route path="/legacy-history" component={LegacyHistory} />
         <Route path="/materials" component={Materials} />
         <Route path="/inventory" component={Inventory} />
         <Route path="/inventory/purchase-orders" component={PurchaseOrders} />
@@ -81,6 +84,7 @@ function AdminRouter() {
         <Route path="/integration-health" component={IntegrationHealth} />
         <Route path="/demo-outbox" component={DemoOutbox} />
         <Route path="/communications" component={Messages} />
+        <Route path="/text-preferences" component={TextPreferences} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

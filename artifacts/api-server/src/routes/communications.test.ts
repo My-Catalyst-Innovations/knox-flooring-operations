@@ -14,6 +14,18 @@ const state = vi.hoisted(() => ({
   capture: vi.fn(),
   outlookSend: vi.fn(),
   outlookCapability: vi.fn(),
+  authorizeSms: vi.fn(),
+  recheckSms: vi.fn(),
+  inboundPreference: vi.fn(),
+}));
+
+// This suite isolates message/provider mechanics. The real durable permission
+// ledger and signed STOP/START races are covered by the PostgreSQL workflow.
+vi.mock("../lib/sms-preferences",()=>({
+  currentSmsSenderBinding:()=>({fingerprint:"synthetic-binding"}),
+  authorizeSmsDispatch:state.authorizeSms,
+  recheckSmsDispatch:state.recheckSms,
+  recordInboundSmsPreference:state.inboundPreference,
 }));
 
 vi.mock("../lib/outlook-calendar", () => ({
@@ -209,6 +221,9 @@ beforeEach(() => {
   fetch.mockReset();
   state.outlookSend.mockReset();
   state.outlookCapability.mockReset();
+  state.authorizeSms.mockReset().mockResolvedValue({});
+  state.recheckSms.mockReset().mockResolvedValue(undefined);
+  state.inboundPreference.mockReset().mockResolvedValue(undefined);
   state.outlookCapability.mockResolvedValue({
     connected: false,
     mailboxEmail: null,
@@ -681,105 +696,31 @@ it("rejects signed outbound receipts on the inbound URL before saving a reply or
   expect(state.inbound.size).toBe(1);
 });
 
-it("orders consent by the authenticated message record and blocks future sends while opt-out is active", async () => {
+it("records signed STOP before a timestamp lookup and never treats START as permission", async () => {
   signalWire();
   const path = `${hook}/inbound`;
-  const oldest = {
-    AccountSid: project,
-    MessageSid: sid,
-    From: to,
-    To: from,
-    Body: "  stop  ",
-    NumMedia: "0",
-  };
-  const restored = {
-    ...oldest,
-    MessageSid: "1a059168-ead0-41af-9d1f-343dae832527",
-    Body: "UNSTOP",
-  };
-  const revoked = {
-    ...oldest,
-    MessageSid: "2a059168-ead0-41af-9d1f-343dae832527",
-    Body: "REVOKE",
-  };
-  const retryStart = {
-    ...oldest,
-    MessageSid: "3a059168-ead0-41af-9d1f-343dae832527",
-    Body: "START",
-  };
-  function verified(event: typeof oldest, date: string) {
-    return {
-      account_sid: project,
-      sid: event.MessageSid,
-      from: event.From,
-      to: event.To,
-      body: event.Body,
-      date_created: date,
-      direction: "inbound",
-    };
-  }
-  const timeline = new Map([
-    [oldest.MessageSid, verified(oldest, "Mon, 16 Nov 2026 13:00:00 +0000")],
-    [
-      restored.MessageSid,
-      verified(restored, "Mon, 16 Nov 2026 13:01:00 +0000"),
-    ],
-    [revoked.MessageSid, verified(revoked, "Mon, 16 Nov 2026 13:02:00 +0000")],
-  ]);
-  fetch.mockImplementation(async (target, options) => {
-    if (options?.method === "POST") {
-      const destination = (options.body as URLSearchParams).get("To");
-      return Response.json({
-        account_sid: project,
-        sid,
-        from,
-        to: destination,
-        status: "queued",
-      });
+  let suppressed = false;
+  state.inboundPreference.mockImplementation(async input => { if (input.command === "stop") suppressed = true; });
+  state.recheckSms.mockImplementation(async row => {
+    if (row.toAddress === to && suppressed) {
+      const { DomainError } = await import("../lib/operations-rules");
+      throw new DomainError(409, "This recipient has opted out; owner review is required.");
     }
-    const result = timeline.get(String(target).split("/").at(-1)!);
-    return result ? Response.json(result) : new Response(null, { status: 503 });
   });
-
-  await postCallback(path, restored).expect(200);
-  await postCallback(path, oldest).expect(200);
-  const send = (idempotencyKey: string, recipient = to) =>
-    request(app)
-      .post("/communications/sms")
-      .send({ to: recipient, body: "Arrival update", idempotencyKey });
-  expect((await send("sms-consent-before").expect(201)).body.status).toBe(
-    "queued",
-  );
-  await postCallback(path, revoked).expect(200);
-  await postCallback(path, revoked).expect(200);
-  expect(
-    fetch.mock.calls.filter(([target]) =>
-      String(target).endsWith(revoked.MessageSid),
-    ),
-  ).toHaveLength(1);
-  const blocked = await send("sms-consent-blocked").expect(201);
-  expect(blocked.body).toMatchObject({
-    status: "failed",
-    errorMessage: expect.stringContaining("opted out"),
+  const stop = { AccountSid: project, MessageSid: sid, From: to, To: from, Body: "STOP", NumMedia: "0" };
+  const start = { ...stop, MessageSid: "1a059168-ead0-41af-9d1f-343dae832527", Body: "START" };
+  fetch.mockImplementation(async (target, options) => {
+    if (options?.method === "POST") return Response.json({ account_sid: project, sid, from, to: (options.body as URLSearchParams).get("To"), status: "queued" });
+    if (String(target).endsWith(start.MessageSid)) return Response.json({ account_sid: project, sid: start.MessageSid, from: to, to: from, body: "START", direction: "inbound", date_created: "Mon, 16 Nov 2026 13:03:00 +0000" });
+    return new Response(null, { status: 503 });
   });
-  expect(
-    (await send("sms-different-recipient", "+18655550133").expect(201)).body
-      .status,
-  ).toBe("queued");
-
-  await postCallback(path, retryStart).expect(503);
-  expect((await send("sms-consent-unverified").expect(201)).body.status).toBe(
-    "failed",
-  );
-  timeline.set(
-    retryStart.MessageSid,
-    verified(retryStart, "Mon, 16 Nov 2026 13:03:00 +0000"),
-  );
-  await postCallback(path, retryStart).expect(200);
-  expect((await send("sms-consent-resumed").expect(201)).body.status).toBe(
-    "queued",
-  );
-  expect(
-    fetch.mock.calls.filter(([, options]) => options?.method === "POST"),
-  ).toHaveLength(3);
+  await postCallback(path, stop).expect(503);
+  expect(state.inboundPreference).toHaveBeenCalledWith(expect.objectContaining({ to, sender: from, command: "stop" }));
+  expect(state.inboundPreference.mock.invocationCallOrder[0]).toBeLessThan(fetch.mock.invocationCallOrder[0]);
+  const send = (idempotencyKey: string, recipient = to) => request(app).post("/communications/sms").send({ to: recipient, body: "Arrival update", idempotencyKey });
+  expect((await send("pending-stop-blocked").expect(201)).body.status).toBe("failed");
+  await postCallback(path, start).expect(200);
+  expect((await send("start-still-blocked").expect(201)).body.status).toBe("failed");
+  expect((await send("other-recipient-safe", "+18655550133").expect(201)).body.status).toBe("queued");
+  expect(fetch.mock.calls.filter(([,options])=>options?.method==="POST")).toHaveLength(1);
 });

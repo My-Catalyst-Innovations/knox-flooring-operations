@@ -2,7 +2,7 @@ name: Catalyst Works Linux verification
 
 on:
   push:
-    branches: [codex/catalyst-works, codex/knoxville-supplier-preview, codex/warehouse-release-20261123, codex/works-live-completion-20261123, codex/works-accounting-completion-20261123, codex/works-sms-delivery-gates-20261123, codex/works-client-onboarding-20261123, codex/works-operational-guides-20261123, codex/works-customer-migration-20261123, codex/works-installer-access-20261123, codex/works-invoice-code-mapping-20261123, codex/works-client-readiness-20261123]
+    branches: [codex/catalyst-works, codex/knoxville-supplier-preview, codex/warehouse-release-20261123, codex/works-live-completion-20261123, codex/works-accounting-completion-20261123, codex/works-sms-delivery-gates-20261123, codex/works-client-onboarding-20261123, codex/works-operational-guides-20261123, codex/works-customer-migration-20261123, codex/works-installer-access-20261123, codex/works-invoice-code-mapping-20261123, codex/works-client-readiness-20261123, codex/works-legacy-history-20261123, codex/works-sms-consent-20261123, codex/works-history-sms-20261123]
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.ref == 'refs/heads/codex/catalyst-works' || github.ref == 'refs/heads/codex/knoxville-supplier-preview' || github.ref == 'refs/heads/codex/warehouse-release-20261123' || github.ref == 'refs/heads/codex/works-live-completion-20261123' || github.ref == 'refs/heads/codex/works-accounting-completion-20261123' || github.ref == 'refs/heads/codex/works-sms-delivery-gates-20261123' || github.ref == 'refs/heads/codex/works-client-onboarding-20261123' || github.ref == 'refs/heads/codex/works-operational-guides-20261123' || github.ref == 'refs/heads/codex/works-customer-migration-20261123' || github.ref == 'refs/heads/codex/works-installer-access-20261123' || github.ref == 'refs/heads/codex/works-invoice-code-mapping-20261123' || github.ref == 'refs/heads/codex/works-client-readiness-20261123'
+    if: github.ref == 'refs/heads/codex/catalyst-works' || github.ref == 'refs/heads/codex/knoxville-supplier-preview' || github.ref == 'refs/heads/codex/warehouse-release-20261123' || github.ref == 'refs/heads/codex/works-live-completion-20261123' || github.ref == 'refs/heads/codex/works-accounting-completion-20261123' || github.ref == 'refs/heads/codex/works-sms-delivery-gates-20261123' || github.ref == 'refs/heads/codex/works-client-onboarding-20261123' || github.ref == 'refs/heads/codex/works-operational-guides-20261123' || github.ref == 'refs/heads/codex/works-customer-migration-20261123' || github.ref == 'refs/heads/codex/works-installer-access-20261123' || github.ref == 'refs/heads/codex/works-invoice-code-mapping-20261123' || github.ref == 'refs/heads/codex/works-client-readiness-20261123' || github.ref == 'refs/heads/codex/works-legacy-history-20261123' || github.ref == 'refs/heads/codex/works-sms-consent-20261123' || github.ref == 'refs/heads/codex/works-history-sms-20261123'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
@@ -119,16 +119,21 @@ jobs:
             catalyst-works-ci:release
           node scripts/ci-image-smoke.mjs
           docker stop catalyst-ci-release
-      - name: Package the previous UI with the compatible recovery backend
+      - name: Package the verified UI with the compatible recovery backend
         run: |
           node scripts/build-recovery.mjs > "$RUNNER_TEMP/recovery.json"
           node --input-type=module <<'NODE'
           import { readFileSync, appendFileSync } from 'node:fs';
+          import assert from 'node:assert/strict';
           import path from 'node:path';
           const result = JSON.parse(readFileSync(path.join(process.env.RUNNER_TEMP, 'recovery.json'), 'utf8'));
+          const manifest = JSON.parse(readFileSync(result.manifest, 'utf8'));
+          assert.equal(manifest.backendGitHead, process.env.GITHUB_SHA);
+          assert.equal(manifest.pinnedUiCommit, manifest.backendGitHead);
+          assert.equal(manifest.backendHasWorkingChanges, false);
           appendFileSync(process.env.GITHUB_ENV, `RECOVERY_SOURCE=${path.dirname(result.manifest)}\n`);
           appendFileSync(process.env.GITHUB_ENV, `RECOVERY_ARCHIVE=${result.archive}\n`);
-          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Recovery source archive SHA-256: \`${result.sha256}\`\n\nPinned prior UI: \`${result.pinnedUiCommit}\`\n\nSchema: \`${result.schemaVersion}\`\n\n`);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Recovery source archive SHA-256: \`${result.sha256}\`\n\nVerified UI: \`${result.pinnedUiCommit}\`\n\nSchema: \`${result.schemaVersion}\`\n\n`);
           NODE
       - name: Build the compatible recovery container
         run: docker build --tag catalyst-works-ci:recovery "$RECOVERY_SOURCE"
