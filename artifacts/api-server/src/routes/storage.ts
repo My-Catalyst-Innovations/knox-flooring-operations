@@ -9,6 +9,9 @@ import { canUploadFile, filePurpose, getFile, getFileMetadata, isFilePurpose, is
 import { ObjectStorageService } from "../lib/objectStorage";
 import { installerJobAccess, readInstallerJob, writeInstallerJob, type InstallerActor } from "../lib/installer-access";
 import { validateLegacyOriginal } from "../lib/legacy-history-files";
+import { validateVendorBillOriginal } from "../lib/vendor-bill-original";
+import { billForOriginal } from "../lib/vendor-bill-documents";
+import { assertCoverageOwner } from "../lib/bill-coverage-owner";
 
 const router: IRouter = Router();
 export const publicMediaRouter: IRouter = Router();
@@ -33,7 +36,7 @@ function authorizeUpload(req: Request, res: Response, next: NextFunction) {
 router.post("/storage/files/:purpose", authorizeUpload, domainRoute(async (req, res) => {
   const purpose = req.params.purpose as FilePurpose;
   const recordId = req.query.recordId ?? "";
-  const needsRecord = purpose === "job-photo" || purpose === "portal-photo" || purpose === "job-document" || purpose === "lead-document" || purpose === "legacy-document";
+  const needsRecord = purpose === "job-photo" || purpose === "portal-photo" || purpose === "job-document" || purpose === "lead-document" || purpose === "legacy-document" || purpose === "vendor-bill-document";
   if (typeof recordId !== "string" || (needsRecord ? !/^[a-zA-Z0-9_-]{1,128}$/.test(recordId) : recordId !== "")) {
     throw new DomainError(400, "Select the record for this upload.");
   }
@@ -43,7 +46,12 @@ router.post("/storage/files/:purpose", authorizeUpload, domainRoute(async (req, 
   catch { throw new DomainError(400, "Choose a file with a valid name."); }
   if (!name || name.length > 255) throw new DomainError(400, "Choose a file with a name up to 255 characters.");
 
-  if (purpose === "legacy-document") {
+  if (purpose === "vendor-bill-document") {
+    if(req.auth!.actualRole!=="owner"||req.auth!.previewRole) throw new DomainError(403,"Exit role preview to retain supplier bill originals.");
+    validateVendorBillOriginal(name,req.body);
+    const objectPath = await db.transaction(async tx => { await billForOriginal(tx,recordId,true); await assertCoverageOwner(tx,req.auth!.userId); return saveFile(purpose,req.body,req.auth!.userId,recordId,name); });
+    res.status(201).json({objectPath}); return;
+  } else if (purpose === "legacy-document") {
     if(req.auth!.actualRole!=="owner"||req.auth!.previewRole) throw new DomainError(403,"Exit role preview and use an owner account to retain original history files.");
     const [record]=await db.select({id:legacyArchiveRecordsTable.id}).from(legacyArchiveRecordsTable).innerJoin(legacyArchiveBatchesTable,and(eq(legacyArchiveBatchesTable.id,legacyArchiveRecordsTable.batchId),eq(legacyArchiveBatchesTable.status,"committed"))).where(eq(legacyArchiveRecordsTable.id,recordId));
     if(!record) throw new DomainError(404,"Committed archived record not found in this company.");
@@ -113,6 +121,7 @@ function canReadFilePurpose(purpose: FilePurpose, role: AppRole) {
 
 async function isAttachedFile(path: string, purpose: FilePurpose, recordId: string) {
   switch (purpose) {
+    case "vendor-bill-document": return false;
     case "legacy-document": return false; // Only the hash-verified archive claim endpoint can download originals.
     case "job-document": {
       const [document] = await db.select({ id: jobDocumentsTable.id }).from(jobDocumentsTable).where(and(eq(jobDocumentsTable.jobId, recordId), eq(jobDocumentsTable.objectPath, path))).limit(1);
@@ -137,7 +146,7 @@ router.get("/storage/objects/*path", domainRoute(async (req, res) => {
   const purpose = filePurpose(path);
   let attachment = false;
   if (purpose) {
-    if (purpose === "legacy-document") throw new DomainError(404,"Download originals through their private archived-record claim.");
+    if (purpose === "legacy-document" || purpose === "vendor-bill-document") throw new DomainError(404,"Download originals through their authenticated immutable record claim.");
     if (!canReadFilePurpose(purpose, role)) throw new DomainError(404, "File not found.");
 
     const metadata = await getFileMetadata(path);

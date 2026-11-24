@@ -16,6 +16,7 @@ import {
   purchaseQuantity as quantity,
 } from "@/lib/purchasing";
 import { businessDate } from "@/lib/reporting";
+import { InventoryAccountingCases } from "./InventoryAccountingCases";
 
 const path = "/quickbooks/stock-reconciliation";
 const selectClass = `mt-1 ${inventorySelect}`;
@@ -624,6 +625,7 @@ export function QuickBooksStockReconciliation({
   const [search, setSearch] = useState("");
   const [limit, setLimit] = useState(readPageSize);
   const [reviewing, setReviewing] = useState<string>();
+  const [accountingReview, setAccountingReview] = useState<string>();
   const pending = useRef(false);
 
   const load = async () => {
@@ -672,7 +674,7 @@ export function QuickBooksStockReconciliation({
         <Button
           type="button"
           variant="outline"
-          disabled={busy || Boolean(selected)}
+          disabled={busy || Boolean(selected) || Boolean(accountingReview)}
           onClick={() => void load()}
         >
           {busy
@@ -780,12 +782,13 @@ export function QuickBooksStockReconciliation({
                               size="sm"
                               className="ml-auto block"
                               aria-label={`Review returned stock for ${row.sku}`}
-                              disabled={Boolean(selected)}
+                              disabled={Boolean(selected) || Boolean(accountingReview)}
                               onClick={() => setReviewing(row.productId)}
                             >
                               Review return
                             </Button>
                           )}
+                          <Button type="button" variant="ghost" size="sm" className="ml-auto block" disabled={Boolean(selected) || Boolean(accountingReview)} onClick={() => setAccountingReview(row.productId)} aria-label={`Accounting cases for ${row.sku}`}>Accounting cases</Button>
                         </td>
                       </tr>
                     ))}
@@ -811,6 +814,7 @@ export function QuickBooksStockReconciliation({
                 onClose={() => setReviewing(undefined)}
               />
             )}
+            {accountingReview && <div className="space-y-2"><Button type="button" variant="outline" onClick={() => setAccountingReview(undefined)}>Close accounting cases</Button><InventoryAccountingCases key={accountingReview} productId={accountingReview} /></div>}
           </>
         )}
       </CardContent>

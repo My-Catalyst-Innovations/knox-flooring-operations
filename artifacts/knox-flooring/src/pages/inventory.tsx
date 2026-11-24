@@ -11,6 +11,7 @@ import { StockActivity } from "@/components/inventory/StockActivity";
 import { SupplierImportDialog } from "@/components/inventory/SupplierImportDialog";
 import { CatalogImportDialog } from "@/components/inventory/CatalogImportDialog";
 import { WarehouseSetup } from "@/components/inventory/WarehouseSetup";
+import { InventoryAccountingCases } from "@/components/settings/InventoryAccountingCases";
 import { PRODUCT_CATEGORIES, marginPct, stockStatus, stockStatusClass, productImageSrc } from "@/lib/inventory";
 import { useOperation, currency, quantity } from "@/lib/operations";
 import { inventoryRoles, unassignedLocation, warehouseName, type Warehouse, type WarehouseStockSummary } from "@/lib/warehouse-inventory";
@@ -45,6 +46,7 @@ export default function Inventory() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
   const [activity, setActivity] = useState<Product | null>(null);
+  const [accountingProduct, setAccountingProduct] = useState<Product | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Product | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -84,7 +86,7 @@ export default function Inventory() {
   }, [products, category, search, state, filter, sortKey, sortDir, warehouseFilter, selectedLocation, stockByProduct, stock.isError, crosswalk.data, crosswalk.isError]);
   const edit = (p: Product | null) => { setEditing(p); setDialogOpen(true); };
   const mutate = async (action: () => Promise<unknown>) => { setBusy(true); setError(""); try { await action(); } catch (e) { setError(e instanceof Error ? e.message : "Unable to update the product."); } finally { setBusy(false); } };
-  const actions = (p: Product) => <div className="flex flex-wrap gap-1"><Button size="sm" variant="outline" onClick={() => setActivity(p)}>Stock activity</Button>{canWrite && <><Button variant="ghost" size="icon" aria-label={`Edit ${p.name}`} onClick={() => edit(p)}><Pencil className="h-4 w-4" /></Button><Button disabled={busy} variant="ghost" size="icon" aria-label={`${p.active ? "Archive" : "Restore"} ${p.name}`} onClick={() => mutate(() => updateProduct(p.id, { active: !p.active }))}>{p.active ? <Archive className="h-4 w-4" /> : <ArchiveRestore className="h-4 w-4" />}</Button>{user?.role === "owner" && !p.active && <Button variant="ghost" size="icon" aria-label={`Delete ${p.name}`} onClick={() => setDeleteTarget(p)}><Trash2 className="h-4 w-4" /></Button>}</>}</div>;
+  const actions = (p: Product) => <div className="flex flex-wrap gap-1"><Button size="sm" variant="outline" onClick={() => setActivity(p)}>Stock activity</Button>{user?.role === "owner" && !user.previewRole && (!user.actualRole || user.actualRole === "owner") && <Button size="sm" variant="outline" onClick={() => setAccountingProduct(p)}>Accounting cases</Button>}{canWrite && <><Button variant="ghost" size="icon" aria-label={`Edit ${p.name}`} onClick={() => edit(p)}><Pencil className="h-4 w-4" /></Button><Button disabled={busy} variant="ghost" size="icon" aria-label={`${p.active ? "Archive" : "Restore"} ${p.name}`} onClick={() => mutate(() => updateProduct(p.id, { active: !p.active }))}>{p.active ? <Archive className="h-4 w-4" /> : <ArchiveRestore className="h-4 w-4" />}</Button>{user?.role === "owner" && !p.active && <Button variant="ghost" size="icon" aria-label={`Delete ${p.name}`} onClick={() => setDeleteTarget(p)}><Trash2 className="h-4 w-4" /></Button>}</>}</div>;
   const thumbnail = (p: Product) => p.imageUrl ? <img src={productImageSrc(p.imageUrl)} alt={`${p.name} product photograph`} className="h-14 w-14 shrink-0 rounded-lg border object-cover" /> : <div className="flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-lg border bg-muted text-muted-foreground"><Package className="h-4 w-4" /><span className="mt-1 text-[10px]">No image</span></div>;
   const stockNumbers = (p: Product) => {
     const summary = stockByProduct.get(p.id);
@@ -149,6 +151,7 @@ export default function Inventory() {
     </>}
     <ProductDialog open={dialogOpen} onOpenChange={setDialogOpen} product={editing} />
     {activity && <StockActivity product={activity} onClose={() => setActivity(null)} />}
+    <Dialog open={Boolean(accountingProduct)} onOpenChange={(open) => { if (!open) setAccountingProduct(null); }}><DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto"><DialogHeader><DialogTitle>Inventory accounting cases</DialogTitle><DialogDescription>{accountingProduct?.name} · Review source evidence and retain accounting follow-up.</DialogDescription></DialogHeader>{accountingProduct && <InventoryAccountingCases productId={accountingProduct.id} />}</DialogContent></Dialog>
     <Dialog open={!!deleteTarget} onOpenChange={v => !v && !busy && setDeleteTarget(null)}><DialogContent><DialogHeader><DialogTitle>Delete archived product?</DialogTitle><DialogDescription>{deleteTarget?.name} can only be deleted if it has no business history. Archived records remain available for historical documents.</DialogDescription></DialogHeader><div className="flex justify-end gap-2"><Button variant="outline" disabled={busy} onClick={() => setDeleteTarget(null)}>Cancel</Button><Button variant="destructive" disabled={busy} onClick={() => mutate(async () => { if (deleteTarget) await deleteProduct(deleteTarget.id); setDeleteTarget(null); })}>{busy ? "Deleting…" : "Delete product"}</Button></div>{error && <p role="alert" className="text-sm text-destructive">{error}</p>}</DialogContent></Dialog>
   </div>;
 }

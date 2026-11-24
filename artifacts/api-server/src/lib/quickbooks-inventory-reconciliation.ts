@@ -369,7 +369,7 @@ const remoteAdjustment = adjustmentDocument.extend({
   ]),
 });
 
-function matchesAdjustment(expected: AdjustmentDocument, value: unknown) {
+export function matchesAdjustment(expected: AdjustmentDocument, value: unknown) {
   const parsed = remoteAdjustment.safeParse(value);
   if (!parsed.success) return undefined;
   const { Id, ...actual } = parsed.data;

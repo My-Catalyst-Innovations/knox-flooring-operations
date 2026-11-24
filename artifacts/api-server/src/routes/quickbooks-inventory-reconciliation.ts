@@ -48,6 +48,8 @@ import {
   type PreparedBill,
 } from "../lib/vendor-bill";
 import { requireOwner } from "../middlewares/auth";
+import { assertCoverageOwner } from "../lib/bill-coverage-owner";
+import { assertNoAccountingCaseClaim } from "../lib/inventory-accounting-cases";
 
 const router = Router();
 const base = "/quickbooks/stock-reconciliation";
@@ -804,7 +806,10 @@ router.post(
       );
     const now = new Date().toISOString();
     const claimed = await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(1959031411)`);
       await lockStockProduct(tx, choice.productId);
+      await assertCoverageOwner(tx, req.auth!.userId);
+      await assertNoAccountingCaseClaim(tx, choice.productId, choice.returnId, company.realmId, company.environment);
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${key}))`);
       const [initial] = await tx
         .select()
@@ -897,7 +902,10 @@ router.post(
           },
           markSubmitting: async () =>
             db.transaction(async (tx) => {
+              await tx.execute(sql`select pg_advisory_xact_lock(1959031411)`);
               await lockStockProduct(tx, choice.productId);
+              await assertCoverageOwner(tx, req.auth!.userId);
+              await assertNoAccountingCaseClaim(tx, choice.productId, choice.returnId, company.realmId, company.environment);
               const [latest] = await localBalances(
                 company,
                 tx,
