@@ -656,7 +656,8 @@ try {
   );
   assert.match(raw.headers["content-disposition"], /^attachment/);
   assert.match(raw.headers["content-type"], /^application\/octet-stream/);
-  assert.equal(raw.headers["cache-control"], "private, no-store");
+  assert.equal(raw.headers["cache-control"], "no-store, no-cache, must-revalidate");
+  assert.equal(raw.headers["referrer-policy"], "no-referrer");
   checks.push(
     "original BOM/CRLF bytes and SHA-256 are preserved in an authenticated forced attachment",
   );
