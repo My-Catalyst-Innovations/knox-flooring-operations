@@ -17,6 +17,7 @@ export const schemaMigrationIds = [
   "0025_customer_import_review",
   "0026_legacy_history_archive",
   "0027_sms_consent_preferences",
+  "0028_supplier_contact_import",
 ] as const;
 
 export async function assertMigrationsApplied(client: { query: (text: string) => Promise<{ rows: Array<{ id: string }> }> }) {
