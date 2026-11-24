@@ -2,12 +2,13 @@ import { workspaceEnvironment } from "@workspace/db/workspace";
 import { raw, Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import { pipeline } from "node:stream/promises";
 import { and, eq, sql } from "drizzle-orm";
-import { db, jobPhotosTable, jobDocumentsTable, microsoftFileMirrorsTable, jobsTable, leadsTable, productsTable, settingsTable, type AppRole } from "@workspace/db";
+import { db, jobPhotosTable, jobDocumentsTable, microsoftFileMirrorsTable, jobsTable, leadsTable, productsTable, settingsTable, legacyArchiveRecordsTable, legacyArchiveBatchesTable, type AppRole } from "@workspace/db";
 import { domainRoute } from "../lib/domain-http";
 import { DomainError } from "../lib/operations-rules";
 import { canUploadFile, filePurpose, getFile, getFileMetadata, isFilePurpose, isLegacyFilePath, isPortalPhoto, isUploaderPreview, maxFileBytes, safeFileHeaders, saveFile, storedFilePath, type FileDownload, type FilePurpose } from "../lib/file-store";
 import { ObjectStorageService } from "../lib/objectStorage";
 import { installerJobAccess, readInstallerJob, writeInstallerJob, type InstallerActor } from "../lib/installer-access";
+import { validateLegacyOriginal } from "../lib/legacy-history-files";
 
 const router: IRouter = Router();
 export const publicMediaRouter: IRouter = Router();
@@ -32,7 +33,7 @@ function authorizeUpload(req: Request, res: Response, next: NextFunction) {
 router.post("/storage/files/:purpose", authorizeUpload, domainRoute(async (req, res) => {
   const purpose = req.params.purpose as FilePurpose;
   const recordId = req.query.recordId ?? "";
-  const needsRecord = purpose === "job-photo" || purpose === "portal-photo" || purpose === "job-document" || purpose === "lead-document";
+  const needsRecord = purpose === "job-photo" || purpose === "portal-photo" || purpose === "job-document" || purpose === "lead-document" || purpose === "legacy-document";
   if (typeof recordId !== "string" || (needsRecord ? !/^[a-zA-Z0-9_-]{1,128}$/.test(recordId) : recordId !== "")) {
     throw new DomainError(400, "Select the record for this upload.");
   }
@@ -42,7 +43,12 @@ router.post("/storage/files/:purpose", authorizeUpload, domainRoute(async (req, 
   catch { throw new DomainError(400, "Choose a file with a valid name."); }
   if (!name || name.length > 255) throw new DomainError(400, "Choose a file with a name up to 255 characters.");
 
-  if (needsRecord) {
+  if (purpose === "legacy-document") {
+    if(req.auth!.actualRole!=="owner"||req.auth!.previewRole) throw new DomainError(403,"Exit role preview and use an owner account to retain original history files.");
+    const [record]=await db.select({id:legacyArchiveRecordsTable.id}).from(legacyArchiveRecordsTable).innerJoin(legacyArchiveBatchesTable,and(eq(legacyArchiveBatchesTable.id,legacyArchiveRecordsTable.batchId),eq(legacyArchiveBatchesTable.status,"committed"))).where(eq(legacyArchiveRecordsTable.id,recordId));
+    if(!record) throw new DomainError(404,"Committed archived record not found in this company.");
+    validateLegacyOriginal(name,req.body);
+  } else if (needsRecord) {
     const table = purpose === "lead-document" ? leadsTable : jobsTable;
     const [record] = await db.select({ id: table.id }).from(table).where(eq(table.id, recordId));
     if (!record) throw new DomainError(404, "The record for this upload was not found.");
@@ -107,6 +113,7 @@ function canReadFilePurpose(purpose: FilePurpose, role: AppRole) {
 
 async function isAttachedFile(path: string, purpose: FilePurpose, recordId: string) {
   switch (purpose) {
+    case "legacy-document": return false; // Only the hash-verified archive claim endpoint can download originals.
     case "job-document": {
       const [document] = await db.select({ id: jobDocumentsTable.id }).from(jobDocumentsTable).where(and(eq(jobDocumentsTable.jobId, recordId), eq(jobDocumentsTable.objectPath, path))).limit(1);
       return !!document;
@@ -130,6 +137,7 @@ router.get("/storage/objects/*path", domainRoute(async (req, res) => {
   const purpose = filePurpose(path);
   let attachment = false;
   if (purpose) {
+    if (purpose === "legacy-document") throw new DomainError(404,"Download originals through their private archived-record claim.");
     if (!canReadFilePurpose(purpose, role)) throw new DomainError(404, "File not found.");
 
     const metadata = await getFileMetadata(path);

@@ -60,6 +60,15 @@ describe("bounded read-only legacy CSV contract", () => {
     expect(result.rows[0].errors.join(" ")).toMatch(/date/);
     expect(result.rows[1].errors.join(" ")).toMatch(/field count/);
   });
+  it("only approves calendar years and leap dates that PostgreSQL can retain", () => {
+    const result = parseLegacyArchiveCsv(
+      "source_id,type,title,occurred_on\n1,job,No calendar year zero,0000-01-01\n2,job,Invalid leap day,2025-02-29\n3,job,Real leap day,2024-02-29\n4,job,First calendar year,0001-01-01",
+    );
+    expect(result.rows[0].errors.join(" ")).toMatch(/date/);
+    expect(result.rows[1].errors.join(" ")).toMatch(/date/);
+    expect(result.rows[2].errors).toEqual([]);
+    expect(result.rows[3].errors).toEqual([]);
+  });
   it("enforces UTF8 bytes, record count, null and quote boundaries", () => {
     expect(() =>
       parseLegacyArchiveCsv(

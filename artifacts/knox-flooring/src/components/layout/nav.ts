@@ -36,6 +36,7 @@ export const navGroups: NavGroup[] = [
   ] },
 ];
 export const utilityItems: NavItem[] = [
+  { name: "History archive", href: "/legacy-history", icon: ClipboardList, keywords: "legacy historical read-only source imports original files", roles: ["owner"] },
   { name: "Work guides", href: "/work-guides", icon: ClipboardList, keywords: "training warehouse receiving bin installer saved evidence", roles: ["owner", "operations", "installer"] },
   { name: "My profile", href: "/profile", icon: Contact, keywords: "account personal name phone job title" },
   { name: "Messages", href: "/communications", icon: Send, keywords: "texts sms replies email inbox unassigned", roles: ["owner", "sales"] },

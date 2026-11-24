@@ -40,6 +40,7 @@ import integrationHealthRouter from "./integration-health";
 
 import customersRouter from "./customers";
 import customerImportsRouter from "./customer-imports";
+import legacyHistoryRouter from "./legacy-history";
 import schedulingRouter from "./scheduling";
 import inventoryOperationsRouter from "./inventory-operations";
 import inventoryBinsRouter from "./inventory-bins";
@@ -73,6 +74,7 @@ router.use(aiOperationsRouter);
 router.use(integrationHealthRouter);
 router.use(customersRouter);
 router.use(customerImportsRouter);
+router.use(legacyHistoryRouter);
 router.use(schedulingRouter);
 router.use(inventoryOperationsRouter);
 router.use(inventoryBinsRouter);
