@@ -3,6 +3,7 @@ import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { InstallerNavigation } from "@/components/layout/InstallerNavigation";
 import { useAuth } from "@/contexts/auth";
 import { useQueryControls, useUrlState } from "@/hooks/use-url-state";
 import { operation, useOperation } from "@/lib/operations";
@@ -144,6 +145,7 @@ export default function WorkGuides() {
   const controls = useQueryControls();
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
+  const installer = user?.role === "installer";
   const jobs = useOperation<{
     jobs: GuideJob[];
     hasMore: boolean;
@@ -152,10 +154,9 @@ export default function WorkGuides() {
     `/work-guides/jobs${query ? `?q=${encodeURIComponent(query)}` : ""}`,
     roles,
   );
-  const detailPath = `/work-guides/jobs/${encodeURIComponent(jobId)}${orderId ? `?order=${encodeURIComponent(orderId)}` : ""}`;
+  const detailPath = `/work-guides/jobs/${encodeURIComponent(jobId)}${orderId && !installer ? `?order=${encodeURIComponent(orderId)}` : ""}`;
   const detail = useOperation<WorkGuide>(detailPath, jobId ? roles : []);
   const data = detail.isError ? undefined : detail.data;
-  const installer = user?.role === "installer";
   if (!user || !roles.includes(user.role))
     return (
       <main className="mx-auto max-w-2xl p-6">
@@ -171,21 +172,23 @@ export default function WorkGuides() {
   }
   return (
     <main className="mx-auto min-h-screen max-w-4xl space-y-6 p-4 sm:p-8">
-      <nav
-        aria-label="Guide navigation"
-        className="flex flex-wrap items-center justify-between gap-3"
-      >
-        {!installer ? (
-          <Button asChild variant="outline">
-            <Link href="/">Back to workspace</Link>
+      {installer ? (
+        <InstallerNavigation />
+      ) : (
+        <nav
+          aria-label="Guide navigation"
+          className="flex flex-wrap items-center justify-between gap-3"
+        >
+          {
+            <Button asChild variant="outline">
+              <Link href="/">Back to workspace</Link>
+            </Button>
+          }
+          <Button variant="ghost" onClick={() => void logout()}>
+            Sign out
           </Button>
-        ) : (
-          <span className="text-sm">Signed in as {user.name}</span>
-        )}
-        <Button variant="ghost" onClick={() => void logout()}>
-          Sign out
-        </Button>
-      </nav>
+        </nav>
+      )}
       <header className="space-y-2">
         <h1 className="text-2xl font-semibold">Work guides</h1>
         <p>

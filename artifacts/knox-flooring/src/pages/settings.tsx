@@ -207,7 +207,7 @@ export default function Settings() {
       <Card>
         <CardHeader>
           <CardTitle>Owner Password</CardTitle>
-          <CardDescription>Change the demo owner password without changing any business or accounting data.</CardDescription>
+          <CardDescription>Change your account password.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-4 md:grid-cols-3">
