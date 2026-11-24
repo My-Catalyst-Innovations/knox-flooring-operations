@@ -15,6 +15,7 @@ export const schemaMigrationIds = [
   "0023_microsoft_selected_files",
   "0024_job_accounting_projects",
   "0025_customer_import_review",
+  "0026_legacy_history_archive",
 ] as const;
 
 export async function assertMigrationsApplied(client: { query: (text: string) => Promise<{ rows: Array<{ id: string }> }> }) {
