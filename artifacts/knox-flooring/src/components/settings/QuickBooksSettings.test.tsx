@@ -34,6 +34,28 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
+it("blocks new OAuth for a legacy stopped grant and offers only an available explicit retry", async () => {
+  const original = state.fetch.getMockImplementation()!;
+  state.fetch.mockImplementation(async (path: string, options?: unknown) => {
+    if (path === "/api/quickbooks/status") return { configured: true, demoAvailable: false, connection: { connected: false, status: "disconnected", readinessStatus: "disconnected", revocationRetryAvailable: true } };
+    if (path === "/api/quickbooks/disconnect") return { revocation: "not_requested", message: "No confirmed outcome is recorded." };
+    return original(path, options);
+  });
+  render(<QuickBooksSettings />);
+  const connect = await screen.findByRole("button", { name: "Connect a real company" }); expect(connect).toBeDisabled();
+  const retry = screen.getByRole("button", { name: "Retry revocation" }); expect(retry).toBeEnabled(); fireEvent.click(retry);
+  await waitFor(() => expect(state.fetch).toHaveBeenCalledWith("/api/quickbooks/disconnect", { method: "POST", body: JSON.stringify({ retryRevocation: true }), responseType: "json" }));
+  expect(state.fetch.mock.calls.some(([path]) => path === "/api/quickbooks/connect")).toBe(false);
+});
+
+it("does not claim retry is available for an erased or unavailable stopped grant", async () => {
+  const original = state.fetch.getMockImplementation()!;
+  state.fetch.mockImplementation(async (path: string, options?: unknown) => path === "/api/quickbooks/status" ? { configured: true, demoAvailable: false, connection: { connected: false, status: "disconnected", readinessStatus: "disconnected", revocationRetryAvailable: false } } : original(path, options));
+  render(<QuickBooksSettings />); expect(await screen.findByRole("button", { name: "Connect a real company" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Retry revocation" })).toBeDisabled();
+  expect(screen.getByText(/retained grant cannot currently be retried safely/)).toBeInTheDocument();
+  expect(state.fetch.mock.calls.some(([path]) => path === "/api/quickbooks/disconnect")).toBe(false);
+});
+
 it("keeps sandbox accounting-review invoices out of generic approval", async () => {
   render(<QuickBooksSettings />);
   expect(await screen.findByText("Dedicated invoice accounting review")).toBeVisible();

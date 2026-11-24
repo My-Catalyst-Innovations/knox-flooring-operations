@@ -161,6 +161,8 @@ router.post(
       if (!source || !target || source.mergedIntoId || target.mergedIntoId)
         throw new DomainError(409, "Both customers must be active.");
       assertRevision(source.revision, data.revision);
+      const importedInvoices=await tx.execute(sql`SELECT 1 FROM invoices i JOIN job_cutovers c ON c.job_id=i.job_id WHERE i.customer_id=${source.id} LIMIT 1`);
+      if(importedInvoices.rows.length)throw new DomainError(409,"This customer has imported-job invoice attribution and retained billing consumption. Merging cannot move that history or release capacity; review it with the owner before choosing a separate supported correction.");
       // Only relationship IDs change; signed documents retain their historical recipient snapshots.
       await tx
         .update(jobsTable)

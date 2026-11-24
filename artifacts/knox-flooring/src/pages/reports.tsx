@@ -1,9 +1,11 @@
+import { forecastReportJobs } from "@/lib/costing";
+import { UnreconciledReportNotice } from "@/components/jobs/UnreconciledReportNotice";
 import { useStore } from "@/hooks/use-store";
 import { DataBoundary } from "@/components/layout/DataBoundary";
 import { useOperation } from "@/lib/operations";
 import type { OperationalMetrics } from "@workspace/api-client-react";
 import { useUrlState } from "@/hooks/use-url-state";
-import { recordedJobDate, businessDate } from "@/lib/reporting";
+import { recordedJobDate, businessDate, reportingDate } from "@/lib/reporting";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,21 +40,23 @@ export default function Reports() {
   const to = Number.isFinite(toDate.getTime()) ? toDate.toISOString().slice(0, 10) : through;
   const metrics = useOperation<OperationalMetrics>(`/metrics?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, ["owner"]);
   const callbacks = useOperation<Array<{ id: string; jobId: string; createdAt: string }>>("/callbacks", ["owner"]);
-  const inPeriod = (value: string | null | undefined) => Boolean(value && Number.isFinite(Date.parse(value)) && businessDate(new Date(value)) >= from && businessDate(new Date(value)) <= through);
+  const inPeriod = (value: string | null | undefined) => Boolean(reportingDate(value) && reportingDate(value)! >= from && reportingDate(value)! <= through);
   const completed = jobs.filter((job) => ["Completed", "Invoiced"].includes(job.status) && inPeriod(recordedJobDate(job, "completed")));
-  const city = sumBy(completed, (job) => job.city, (job) => job.estRevenue);
-  const flooring = sumBy(completed, (job) => job.flooringType, (job) => job.estRevenue);
-  const crewProfit = sumBy(completed, (job) => job.crewAssigned, (job) => job.estRevenue - job.laborEstimate - job.materialEstimate);
-  const margins = sumBy(completed, (job) => job.flooringType, (job) => job.estRevenue).map((item) => {
-    const cost = completed.filter((job) => job.flooringType === item.name).reduce((sum, job) => sum + job.laborEstimate + job.materialEstimate, 0);
+  const financialJobs = forecastReportJobs(completed);
+  const city = sumBy(financialJobs, (job) => job.city, (job) => job.estRevenue);
+  const flooring = sumBy(financialJobs, (job) => job.flooringType, (job) => job.estRevenue);
+  const crewProfit = sumBy(financialJobs, (job) => job.crewAssigned, (job) => job.estGrossProfit);
+  const margins = sumBy(financialJobs, (job) => job.flooringType, (job) => job.estRevenue).map((item) => {
+    const cost = financialJobs.filter((job) => job.flooringType === item.name).reduce((sum, job) => sum + job.laborEstimate + job.materialEstimate + job.forecastOtherCost, 0);
     return { name: item.name, value: item.value ? (item.value - cost) / item.value * 100 : 0 };
   });
-  const monthly = sumBy(completed, (job) => businessDate(new Date(recordedJobDate(job, "completed")!)).slice(0, 7), () => 1).sort((a, b) => a.name.localeCompare(b.name));
+  const monthly = sumBy(completed, (job) => reportingDate(recordedJobDate(job, "completed"))!.slice(0, 7), () => 1).sort((a, b) => a.name.localeCompare(b.name));
   const callbackCrew = sumBy((callbacks.data ?? []).filter((callback) => inPeriod(callback.createdAt)), (callback) => jobs.find((job) => job.id === callback.jobId)?.crewAssigned ?? "Unassigned", () => 1);
   const suppliers = sumBy(materials.filter((material) => ["Delayed", "Damaged", "Missing Items"].includes(material.status)), (material) => material.supplier, () => 1);
   const summary = metrics.data;
   if (queryState.jobs.isLoading || queryState.jobs.error) return <DataBoundary query={queryState.jobs} name="report records"><span /></DataBoundary>;
   return <div className="space-y-6"><div className="flex flex-col justify-between gap-4 xl:flex-row xl:items-end"><div><h1 className="text-3xl font-semibold tracking-tight">Reports</h1><p className="mt-2 text-sm text-muted-foreground">Recorded sales, completed work, invoicing, and crew capacity.</p></div><div className="flex flex-wrap items-end gap-3"><div className="space-y-1"><Label htmlFor="report-from" className="text-xs">From</Label><Input id="report-from" type="date" value={from} onChange={(event) => setFrom(event.target.value)} className="w-40 bg-white" /></div><div className="space-y-1"><Label htmlFor="report-through" className="text-xs">Through</Label><Input id="report-through" type="date" value={through} onChange={(event) => setThrough(event.target.value)} className="w-40 bg-white" /></div></div></div>
+    <UnreconciledReportNotice jobs={jobs} />
     {metrics.isLoading && <p role="status" className="rounded-lg border bg-white p-4 text-sm">Loading period totals…</p>}
     {metrics.isError && <div role="alert" className="rounded-lg border border-destructive/30 bg-white p-4 text-sm"><p>{metrics.error instanceof Error ? metrics.error.message : "Unable to load report totals."}</p><Button className="mt-3" variant="outline" onClick={() => void metrics.refetch()}>Retry</Button></div>}
     {summary && <><div className="grid grid-cols-2 gap-3 xl:grid-cols-4">{[{ label: "Sold value (estimated)", value: money(summary.soldRevenue), note: `${summary.jobsSold} recorded approvals` }, { label: "Completed value (estimated)", value: money(summary.completedRevenue), note: "By recorded completion date" }, { label: "Invoiced", value: money(summary.invoicedRevenue), note: "By invoice issue date" }, { label: "Outstanding balance", value: money(summary.outstanding), note: "Current open invoices, all dates" }].map((item) => <Card key={item.label}><CardContent className="p-4"><p className="text-sm text-muted-foreground">{item.label}</p><p className="mt-3 text-2xl font-semibold tabular-nums">{item.value}</p><p className="mt-2 text-xs text-muted-foreground">{item.note}</p></CardContent></Card>)}</div>

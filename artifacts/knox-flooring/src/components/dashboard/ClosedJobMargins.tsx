@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { computeCosting, jobCostingGaps } from "@/lib/costing";
+import { actualProfitEligible, computeCosting, fmtPercent, jobCostingGaps } from "@/lib/costing";
 import { recordedJobDate } from "@/lib/reporting";
 import type { Job, Proposal } from "@/lib/types";
 
@@ -22,7 +22,7 @@ export function ClosedJobMargins({
     acceptedByJob.set(jobId, prior);
   }
   const recorded = jobs.filter(
-    (job) => Number.isFinite(job.actualRevenue) && job.actualRevenue > 0,
+    actualProfitEligible,
   );
   return (
     <Card>
@@ -86,7 +86,7 @@ export function ClosedJobMargins({
                       {quotedMargin}
                     </td>
                     <td className="text-right tabular-nums">
-                      <span>{percent(current.actualMarginPct)}</span>
+                      <span>{fmtPercent(current.actualMarginPct)}</span>
                       {gaps.length > 0 && (
                         <span className="block text-xs text-muted-foreground">
                           Provisional · {gaps.join(", ")}
@@ -103,8 +103,8 @@ export function ClosedJobMargins({
         )}
         {recorded.length < jobs.length && (
           <p className="text-xs text-muted-foreground">
-            {jobs.length - recorded.length} closed jobs are missing a recorded
-            revenue amount.
+            {jobs.length - recorded.length} closed jobs have unreconciled full-job
+            revenue or costs and are excluded from recorded margin.
           </p>
         )}
         {recorded.length > 0 && (

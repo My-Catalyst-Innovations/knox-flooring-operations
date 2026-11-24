@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link, useLocation } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
+import { quickBooksEntryPaths, quickBooksSignInPath, welcomeContinuation, type QuickBooksEntryIntent } from "@workspace/domain";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
@@ -13,6 +14,8 @@ import { operation } from "@/lib/operations";
 export default function Welcome() {
   const { login, enterDemo, forgot, reset, acceptInvitation } = useAuth();
   const [, setLocation] = useLocation();
+  const continuation = welcomeContinuation(useSearch());
+  const continuationIntent = (Object.entries(quickBooksEntryPaths).find(([, path]) => path === continuation)?.[0] ?? null) as QuickBooksEntryIntent | null;
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -38,7 +41,7 @@ export default function Welcome() {
 
   const showSignIn = () => {
     setInviteToken(null); setResetToken(null); setPassword(""); setConfirmPassword("");
-    setLocation("/welcome", { replace: true });
+    setLocation(continuationIntent ? quickBooksSignInPath(continuationIntent) : "/welcome", { replace: true });
   };
 
   const enter = async () => {
@@ -58,7 +61,7 @@ export default function Welcome() {
         setMessage("Password updated. Sign in with your new password.");
         showSignIn();
       } else {
-        await login(email, password); setLocation("/");
+        await login(email, password); setLocation(continuation);
       }
     } catch (error) { setError(error instanceof Error ? error.message : "Sign in failed"); }
     finally { setBusy(false); }

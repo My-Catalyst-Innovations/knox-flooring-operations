@@ -134,6 +134,18 @@ const installer = {
   actualRole: "installer",
   previewRole: null,
 };
+it.each([
+  ["/integrations/quickbooks/launch", "QuickBooks in Catalyst Works"],
+  ["/integrations/quickbooks/connect", "Connect QuickBooks"],
+  ["/integrations/quickbooks/reconnect", "Reconnect QuickBooks"],
+  ["/integrations/quickbooks/disconnect", "Disconnect QuickBooks"],
+  ["/help/quickbooks", "QuickBooks connection help"],
+])("keeps the public %s entry outside the private office store", async (path, title) => {
+  state.user = null;
+  open(path);
+  expect(await screen.findByRole("heading", { name: title })).toBeVisible();
+  expect(state.officeLayout).not.toHaveBeenCalled(); expect(state.store).not.toHaveBeenCalled(); expect(state.queries).toEqual([]); expect(state.operation).not.toHaveBeenCalled();
+});
 function open(path: string) {
   const location = memoryLocation({ path, record: true });
   render(

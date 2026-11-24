@@ -49,4 +49,40 @@ describe("supplier invoice document extraction", () => {
     expect(() => previewBillDocument([page({ words: [...source, word("Part after total", 12, 100)] })])).toThrow("does not align");
     expect(() => previewBillDocument([page({ words: source.filter((item) => item.text !== "Box") })])).toThrow("does not align");
   });
+
+  const wrappedPage = (extra: InvoiceWord[] = [], overrides: Partial<InvoicePage> = {}): InvoicePage => ({
+    page: 1, ocr: false,
+    words: [
+      word("Code", 12, 50), word("Product", 98, 50), word("Qty", 330, 50), word("Unit", 390, 50), word("Each USD", 450, 50), word("Total USD", 550, 50),
+      word("MOCK-KFC-0001", 12, 70), word("Philadelphia Commercial Indwell Aged Barrel", 98, 70), word("2", 330, 70), word("Box", 390, 70), word("49.925", 450, 70), word("99.85", 550, 70),
+      ...extra,
+      word("Total USD 99.85", 450, 160),
+    ], ...overrides,
+  });
+
+  it("accepts common code/product/each/currency headers and long values within their actual column", () => {
+    const result = previewBillDocument([wrappedPage([word("Oak", 98, 84)])]);
+    expect(result.preview.rows).toHaveLength(1);
+    expect(result.preview.rows[0].line.supplierSku).toBe("MOCK-KFC-0001");
+    expect(result.preview.totalCents).toBe(9985n);
+    expect(result.sources).toEqual([{ page: 1, row: 2, endRow: 3 }]);
+  });
+
+  it.each([
+    ["missing-code item", [word("Next product", 98, 84), word("2", 330, 84), word("Box", 390, 84), word("10", 450, 84)]],
+    ["financial annotation", [word("USD 10", 98, 84)]],
+    ["numeric-only continuation", [word("00073", 98, 84)]],
+    ["outside description", [word("Missing item", 12, 84)]],
+    ["distant description", [word("Oak", 98, 120)]],
+    ["fifth continuation", [84, 98, 112, 126, 140].map((y) => word("Oak", 98, y))],
+  ])("refuses %s rather than dropping a potentially billable row", (_name, extra) => {
+    expect(() => previewBillDocument([wrappedPage(extra)])).toThrow("does not align");
+  });
+
+  it("refuses uncertain scanned continuations, unknown currency headers and item text after totals", () => {
+    expect(() => previewBillDocument([wrappedPage([word("Oak", 98, 84, 60)], { ocr: true })])).toThrow("does not align");
+    const source = wrappedPage().words;
+    expect(() => previewBillDocument([wrappedPage([], { words: source.map((item) => item.text === "Each USD" ? { ...item, text: "Each EUR" } : item) })])).toThrow("readable table");
+    expect(() => previewBillDocument([wrappedPage([], { words: [...source, word("Oak", 98, 174)] })])).toThrow("does not align");
+  });
 });

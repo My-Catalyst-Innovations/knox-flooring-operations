@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { computeCosting, fmtMoney, jobCostingGaps } from "@/lib/costing";
+import { computeCosting, fmtMoney, fmtPercent, jobCostingGaps } from "@/lib/costing";
 import type { Job } from "@/lib/types";
 
 interface Props {
@@ -62,7 +62,7 @@ export function JobCostingDialog({ open, onOpenChange, job }: Props) {
   const gaps = jobCostingGaps(previewJob);
 
   const handleSave = async () => {
-    if (saving) return;
+    if (saving || job.migrationCutover) return;
     setError("");
     if (
       ![
@@ -97,12 +97,14 @@ export function JobCostingDialog({ open, onOpenChange, job }: Props) {
   };
 
   const prefillFromEstimate = () => {
+    if (job.migrationCutover) return;
     setActualRevenue(job.estRevenue || 0);
     if (job.trackedLaborCost === undefined || job.trackedLaborCost === null) setActualLaborCost(job.laborEstimate || 0);
     if (job.trackedMaterialCost === undefined) setActualMaterialCost(job.materialEstimate || 0);
     setActualAddOnCost(0);
   };
 
+  if (job.migrationCutover) return <Dialog open={open} onOpenChange={close}><DialogContent><DialogHeader><DialogTitle>Legacy actuals are unreconciled</DialogTitle><DialogDescription>Use this job’s cutover review for full-job forecast and remaining billing permissions. Works-recorded costs stay separate; they cannot establish historical revenue or profit.</DialogDescription></DialogHeader><Button onClick={() => close(false)}>Close</Button></DialogContent></Dialog>;
   return (
     <Dialog open={open} onOpenChange={close}>
       <DialogContent className="max-w-lg">
@@ -159,7 +161,7 @@ export function JobCostingDialog({ open, onOpenChange, job }: Props) {
               <div
                 className={
                   "font-semibold " +
-                  (actualProfit >= 0 ? "text-primary" : "text-destructive")
+                  (actualProfit !== null && actualProfit >= 0 ? "text-primary" : "text-destructive")
                 }
               >
                 {showProfit ? fmtMoney(actualProfit) : "—"}
@@ -168,7 +170,7 @@ export function JobCostingDialog({ open, onOpenChange, job }: Props) {
             <div>
               <div className="text-xs text-muted-foreground">Margin</div>
               <div className="font-semibold">
-                {showProfit ? `${actualMargin.toFixed(1)}%` : "—"}
+                {showProfit ? fmtPercent(actualMargin) : "—"}
               </div>
             </div>
           </div>

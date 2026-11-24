@@ -11,16 +11,21 @@ export type InvoiceWord = {
 export type InvoicePage = { page: number; words: InvoiceWord[]; ocr: boolean };
 type Field = keyof VendorBillLine | "amount" | "description" | "lineNumber";
 type Column = InvoiceWord & { field: Field };
-type ExtractedLine = { line: VendorBillLine; page: number; row: number; sourceAmount?: string };
+type ExtractedLine = { line: VendorBillLine; page: number; row: number; endRow?: number; sourceAmount?: string };
 
 const headings: Record<string, Field> = {
   "supplier sku": "supplierSku", "vendor sku": "supplierSku", sku: "supplierSku", "part number": "supplierSku",
   "part #": "supplierSku", "item number": "supplierSku", "item #": "supplierSku", "item code": "supplierSku",
+  code: "supplierSku", "product code": "supplierSku", "product id": "supplierSku", "part id": "supplierSku",
+  "manufacturer part number": "supplierSku", "internal sku": "supplierSku",
   unit: "unit", uom: "unit", "u/m": "unit", "purchase unit": "unit",
   qty: "quantity", quantity: "quantity",
   "unit price": "unitCost", "unit cost": "unitCost", "billed unit cost": "unitCost", "price per unit": "unitCost",
+  each: "unitCost",
   amount: "amount", extension: "amount", extended: "amount", "extended price": "amount", "line total": "amount",
+  total: "amount",
   description: "description", "item description": "description", "product description": "description",
+  product: "description",
   line: "lineNumber", "line #": "lineNumber", "#": "lineNumber",
 };
 const required: (keyof VendorBillLine)[] = ["supplierSku", "unit", "quantity", "unitCost"];
@@ -46,7 +51,7 @@ function headerColumns(words: InvoiceWord[]): Column[] | null {
     let consumed = 0;
     for (let end = position; end < Math.min(words.length, position + 4); end++) {
       if (end > position && words[end].left - words[end - 1].right > Math.max(4, words[end].height * 0.85)) break;
-      const phrase = words.slice(position, end + 1).map(({ text }) => text).join(" ").toLowerCase().trim().replace(/[_\s-]+/g, " ");
+      const phrase = words.slice(position, end + 1).map(({ text }) => text).join(" ").toLowerCase().trim().replace(/[_\s-]+/g, " ").replace(/\s+usd$/, "");
       const field = Object.hasOwn(headings, phrase) ? headings[phrase] : undefined;
       if (field) {
         accepted = { ...words[position], right: words[end].right, field };
@@ -62,14 +67,17 @@ function headerColumns(words: InvoiceWord[]): Column[] | null {
 }
 
 function groupCells(words: InvoiceWord[], columns: Column[]) {
-  const boundaries = columns.slice(1).map((column, index) => (columns[index].right + column.left) / 2);
+  // Header text can be far shorter than its data (a product description or an
+  // internal SKU). The next column's left edge bounds the cell, not the midpoint
+  // of two header labels. Require a visible gap before crossing that next edge.
+  const boundaries = columns.slice(1).map((column) => column.left);
   const cells = new Map<Field, InvoiceWord[]>();
   for (const word of words) {
     const center = (word.left + word.right) / 2;
     const columnIndex = boundaries.findIndex((boundary) => center < boundary);
     const field = columns[columnIndex < 0 ? columns.length - 1 : columnIndex].field;
     // A word crossing the ruled gap could be a merged or misread field.
-    if (boundaries.some((boundary) => word.left < boundary - 2 && word.right > boundary + 2)) return null;
+    if (boundaries.some((boundary) => word.left < boundary - 2 && word.right >= boundary - 1)) return null;
     const cell = cells.get(field) ?? [];
     cell.push(word);
     cells.set(field, cell);
@@ -112,6 +120,8 @@ function extractPage(page: InvoicePage): ExtractedLine[] {
   const columns = headerColumns(rows[headerIndex])!;
   const result: ExtractedLine[] = [];
   let ending = false;
+  let priorContentY: number | undefined;
+  let continuationRows = 0;
   for (const [index, words] of rows.entries()) {
     if (index <= headerIndex) continue;
     const text = words.map((word) => word.text.trim()).join(" ");
@@ -120,8 +130,25 @@ function extractPage(page: InvoicePage): ExtractedLine[] {
       continue;
     }
     const item = importedRow(words, columns, page, index + 1);
+    if (!item && !ending && result.length && priorContentY !== undefined && continuationRows < 4) {
+      const cells = groupCells(words, columns);
+      const description = cells?.get("description");
+      const gap = words[0].centerY - priorContentY;
+      // Only a nearby line wholly within an explicit description column may
+      // continue an item. Missing or uncertain financial/code cells never pass.
+      if (description?.length && cells?.size === 1 && gap > 0 && gap <= Math.max(...words.map((word) => word.height)) * 2 &&
+          description.some((word) => /\p{L}/u.test(word.text)) &&
+          !description.some((word) => /\$|\b(?:USD|EUR|GBP)\b/i.test(word.text) || (page.ocr && (word.confidence ?? 0) < 80))) {
+        result.at(-1)!.endRow = index + 1;
+        priorContentY = words[0].centerY;
+        continuationRows++;
+        continue;
+      }
+    }
     if (!item || ending) throw new Error(`Page ${page.page}, row ${index + 1} does not align with the bill table. Use CSV or manual entry.`);
     result.push(item);
+    priorContentY = words[0].centerY;
+    continuationRows = 0;
     if (result.length > billLineLimit) throw new Error(`Import at most ${billLineLimit} item lines per bill.`);
   }
   if (!result.length) throw new Error(`Page ${page.page} has no complete bill lines. Use CSV or manual entry.`);
@@ -147,7 +174,7 @@ export function previewBillDocument(pages: InvoicePage[]) {
   }
   return {
     preview,
-    sources: lines.map(({ page, row }) => ({ page, row })),
+    sources: lines.map(({ page, row, endRow }) => ({ page, row, ...(endRow === undefined ? {} : { endRow }) })),
     usedOcr: pages.some(({ ocr }) => ocr),
   };
 }

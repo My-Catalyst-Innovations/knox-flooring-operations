@@ -1,3 +1,5 @@
+import { forecastReportJobs } from "@/lib/costing";
+import { UnreconciledReportNotice } from "@/components/jobs/UnreconciledReportNotice";
 import { useMemo, useState } from "react";
 import { useStore } from "@/hooks/use-store";
 import { Card, CardContent } from "@/components/ui/card";
@@ -30,7 +32,7 @@ import {
 import { stageIndex } from "@/lib/stages";
 import { computeCosting, fmtMoney } from "@/lib/costing";
 import { invoiceBalance, OUTSTANDING_STATUSES } from "@/lib/invoices";
-import { recordedJobDate } from "@/lib/reporting";
+import { recordedJobDate, reportingDate, businessDate } from "@/lib/reporting";
 
 const COLORS = [
   "hsl(var(--chart-1))",
@@ -88,7 +90,8 @@ export function KpiSection() {
   const [view, setView] = useState<ViewKey>("overview");
 
   const data = useMemo(() => {
-    const soldJobs = jobs.filter((j) => stageIndex(j.status) >= APPROVED_IDX);
+    const allSoldJobs = jobs.filter((j) => stageIndex(j.status) >= APPROVED_IDX);
+    const soldJobs = forecastReportJobs(allSoldJobs);
     const proposalsSent = proposals.filter((proposal) => proposal.sentAt).length;
     const soldRevenue = soldJobs.reduce(
       (acc, j) => acc + j.estRevenue,
@@ -111,10 +114,10 @@ export function KpiSection() {
       });
     }
     const monthOffset = (iso: string): number => {
-      const d = new Date(iso);
-      if (Number.isNaN(d.getTime())) return -1;
-      return (now.getFullYear() - d.getFullYear()) * 12 +
-        (now.getMonth() - d.getMonth());
+      const day = reportingDate(iso), today = businessDate(now);
+      if (!day) return -1;
+      return (Number(today.slice(0, 4)) - Number(day.slice(0, 4))) * 12 +
+        (Number(today.slice(5, 7)) - Number(day.slice(5, 7)));
     };
     soldJobs.forEach((j) => {
       const soldDate = recordedJobDate(j, "sold");
@@ -180,7 +183,7 @@ export function KpiSection() {
         return {
           id: rep.id,
           name: rep.name,
-          soldCount: repSold.length,
+          soldCount: allSoldJobs.filter((job) => job.salespersonId === rep.id).length,
           revenue,
           winRate: repProposals.length > 0 ? (repProposals.filter((proposal) => proposal.status === "Accepted").length / repProposals.length) * 100 : 0,
         };
@@ -190,7 +193,7 @@ export function KpiSection() {
 
     return {
       soldRevenue,
-      soldCount: soldJobs.length,
+      soldCount: allSoldJobs.length,
       avgTicket,
       winRate,
       outstanding,
@@ -205,6 +208,7 @@ export function KpiSection() {
 
   return (
     <Card>
+      <UnreconciledReportNotice jobs={jobs} />
       <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <h2 className="text-lg font-semibold tracking-tight">
@@ -239,7 +243,7 @@ export function KpiSection() {
               <MiniKpi
                 label="Sold value (estimated)"
                 value={fmtMoney(data.soldRevenue)}
-                sub="All sold jobs"
+                sub="Available full-job forecasts"
                 icon={DollarSign}
               />
               <MiniKpi
@@ -251,7 +255,7 @@ export function KpiSection() {
               <MiniKpi
                 label="Average Ticket"
                 value={fmtMoney(data.avgTicket)}
-                sub="Per sold job"
+                sub="Per job with an available forecast"
                 icon={Ticket}
               />
               <MiniKpi

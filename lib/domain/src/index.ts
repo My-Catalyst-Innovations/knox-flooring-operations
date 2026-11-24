@@ -7,3 +7,5 @@ export * from "./customer-import";
 export * from "./legacy-history";
 export * from "./supplier-import";
 export * from "./open-po-import";
+export * from "./active-job-import";
+export * from "./integration-entry";

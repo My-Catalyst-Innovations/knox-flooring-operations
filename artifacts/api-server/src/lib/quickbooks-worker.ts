@@ -14,6 +14,9 @@ import { invoiceReviewFingerprint, isReviewedInvoiceAmount, requiresInvoiceRevie
 import { assertGenericExportCompany, genericExportAttempt, genericExportRecord, GenericExportReviewRequired, prepareGenericExport, reconcileGenericExport } from "./quickbooks-generic-export";
 import { costEntities, processQueuedJobCost } from "./job-accounting";
 import { verifiedProjectForJob } from "./quickbooks-projects";
+import { assertCutoverInvoiceSubmission } from "./job-cutover-invoices";
+import { assertCutoverProviderJobAllowed } from "./job-cutover";
+import { cutoverHash } from "./cutover-hash";
 
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type QueueJob = typeof quickbooksSyncJobsTable.$inferSelect;
@@ -27,6 +30,7 @@ export async function prepareGenericExportApproval(tx: Transaction, job: Pick<Qu
   };
   let document: Record<string, unknown>;
   if (job.entityType === "customer") {
+    await assertCutoverProviderJobAllowed(tx,job.localId);
     const [source] = await tx.select().from(jobsTable).where(eq(jobsTable.id, job.localId)).for("update");
     if (!source || !source.customerName.trim()) throw new GenericExportReviewRequired("Review the customer name before approving this export.");
     document = { DisplayName: source.customerName, PrimaryEmailAddr: source.email ? { Address: source.email } : undefined,
@@ -63,6 +67,10 @@ async function exportGenericJob(job: QueueJob) {
     request: (path: string, init?: RequestInit) => qboRequest(path, init, attempt.connectionId) };
   await reconcileGenericExport(attempt, provider, async () => {
     await db.transaction(async tx => {
+      if(job.entityType==="customer"){
+        await tx.select({id:jobsTable.id}).from(jobsTable).where(eq(jobsTable.id,job.localId)).for("update");
+        await assertCutoverProviderJobAllowed(tx,job.localId);
+      }
       const [current] = await tx.select().from(quickbooksSyncJobsTable).where(eq(quickbooksSyncJobsTable.id, job.id)).for("update");
       const saved = genericExportAttempt.safeParse(current?.payload[genericExportRecord]);
       if (!saved.success || current?.status !== "processing" || saved.data.state !== "prepared" || JSON.stringify(saved.data) !== JSON.stringify(attempt))
@@ -107,6 +115,7 @@ async function holdInvoiceCreateAttempt(
   desired: ReturnType<typeof prepareQuickBooksInvoiceCreate>,
 ) {
   return db.transaction(async (tx) => {
+    await tx.select({id:jobsTable.id}).from(jobsTable).where(eq(jobsTable.id,source.jobId)).for("update");
     const [current] = await tx.select({ updatedAt: invoicesTable.updatedAt }).from(invoicesTable)
       .where(eq(invoicesTable.id, source.id)).for("update");
     if (current?.updatedAt !== source.updatedAt) throw new Error("The invoice changed before export. Review it and retry.");
@@ -185,6 +194,7 @@ export async function prepareReviewedInvoice(
   connection: ConnectedCompany,
   choice: InvoiceReviewInput,
 ) {
+  const cutoverEvidence=await db.transaction(tx=>assertCutoverInvoiceSubmission(tx,source,false));
   if (!reviewedInvoicesAvailable(connection) || !requiresInvoiceReview(source))
     throw new Error("Reviewed invoice accounting is unavailable for this invoice and QuickBooks company.");
   if (["Credited", "Refunded", "Voided"].includes(source.status) || source.refundedAmount !== 0 ||
@@ -241,7 +251,7 @@ export async function prepareReviewedInvoice(
       ...(source.discountAmount > 0 ? { ApplyTaxAfterDiscount: true as const } : {}) } : {}),
   });
   const reconciliation = choice.existingInvoiceId ? await verifyExistingInvoice(source, choice.existingInvoiceId, attempt.document, request) : undefined;
-  const evidence = { customer: company.customer, discountAccount, tax, reconciliation };
+  const evidence = { customer: company.customer, discountAccount, tax, reconciliation, ...(cutoverEvidence?{migrationCutover:cutoverEvidence}:{}) };
   const fingerprint = invoiceReviewFingerprint(connection, source, choice, attempt.document, evidence);
   return { fingerprint, attempt, evidence, companyName: connection.companyName, realmId: connection.realmId,
     total: source.total, discount: source.discountAmount, tax: source.taxAmount, deposit: source.depositAmount, balance: source.balanceAmount };
@@ -249,6 +259,7 @@ export async function prepareReviewedInvoice(
 
 async function reconcileReviewedInvoice(source: InvoiceSource, company: ConnectedCompany, invoice: { invoiceId: string; syncToken: string }) {
   await db.transaction(async (tx) => {
+    await tx.select({id:jobsTable.id}).from(jobsTable).where(eq(jobsTable.id,source.jobId)).for("update");
     const [current] = await tx.select({ updatedAt: invoicesTable.updatedAt }).from(invoicesTable).where(eq(invoicesTable.id, source.id)).for("update");
     if (current?.updatedAt !== source.updatedAt) throw new Error("The local invoice changed before linking. Review it again.");
     const key = JSON.stringify(["invoice", company.environment, company.realmId, invoice.invoiceId]);
@@ -285,6 +296,18 @@ async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
     if (!source) throw new Error("Local invoice not found");
     const connection = await getConnection();
     if (connection?.status !== "connected") throw new Error("QuickBooks is not connected");
+    let approvedCutover:unknown=job.payload.migrationCutoverApproval;
+    const invoiceRequest=async(path:string,init?:RequestInit)=>{
+      if(init?.method?.toUpperCase()==="POST")await db.transaction(async tx=>{
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(1959031411)`);
+        const [currentCompany]=await tx.select().from(quickbooksConnectionsTable).where(eq(quickbooksConnectionsTable.id,connection.id)).for("share");
+        if(currentCompany?.status!=="connected"||currentCompany.realmId!==connection.realmId||currentCompany.environment!==connection.environment)throw new Error("The approved QuickBooks company changed before invoice submission.");
+        const proof=await assertCutoverInvoiceSubmission(tx,source,false);
+        if(proof&&(approvedCutover===undefined||cutoverHash({...proof,company:{connectionId:connection.id,realmId:connection.realmId,environment:connection.environment}})!==cutoverHash(approvedCutover)))throw new Error("The imported-job billing scope or connected company changed after invoice approval. Review the current invoice before any accounting write.");
+        await assertCutoverInvoiceSubmission(tx,source,true);
+      });
+      return qboRequest(path,init,connection.id);
+    };
     const existing = await mapping("invoice", source.id);
     const accountingReview = reviewedInvoiceApproval.safeParse(job.payload[reviewedInvoiceRecord]);
     if (requiresInvoiceReview(source) && !accountingReview.success)
@@ -306,6 +329,7 @@ async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
     const reviewed = accountingReview.success ? await prepareReviewedInvoice(source, connection, accountingReview.data.request) : undefined;
     if (accountingReview.success && reviewed?.fingerprint !== accountingReview.data.fingerprint)
       throw new Error("The invoice or QuickBooks accounting details changed after approval. Review them again.");
+    if(reviewed?.evidence&&"migrationCutover"in reviewed.evidence)approvedCutover={...reviewed.evidence.migrationCutover,company:{connectionId:connection.id,realmId:connection.realmId,environment:connection.environment}};
     if (reviewed?.evidence.reconciliation) {
       await reconcileReviewedInvoice(source, connection, reviewed.evidence.reconciliation);
       return;
@@ -316,7 +340,7 @@ async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
     }
     if (existing) {
       const payload = { ...await compileInvoice(source, connection, false), Id: existing.quickbooksId, SyncToken: existing.syncToken, sparse: false };
-      const result = await qboRequest("/invoice", { method: "POST", body: JSON.stringify(payload) }, connection.id);
+      const result = await invoiceRequest("/invoice", { method: "POST", body: JSON.stringify(payload) });
       await saveMapping("invoice", source.id, result.Invoice, connection);
     } else {
       const desired = reviewed?.attempt ?? prepareQuickBooksInvoiceCreate(connection, source.id, await compileInvoice(source, connection, connection.environment === "sandbox"));
@@ -326,7 +350,7 @@ async function exportJob(job: typeof quickbooksSyncJobsTable.$inferSelect) {
       try {
         posted = await reconcileQuickBooksInvoiceCreate(attempt, {
           query: (statement) => qboQuery(statement, connection.id),
-          request: (path, init) => qboRequest(path, init, connection.id),
+          request: invoiceRequest,
         }, matchesApproval);
       } catch (error) {
         if (error instanceof QuickBooksInvoiceValidationError) {

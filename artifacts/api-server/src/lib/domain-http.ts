@@ -33,7 +33,7 @@ export function domainRoute(
       const databaseCode =
         (error as { code?: string; cause?: { code?: string } })?.cause?.code ??
         (error as { code?: string })?.code;
-      if (databaseCode === "40P01" || databaseCode === "40001") {
+      if (databaseCode === "40P01" || databaseCode === "40001" || databaseCode === "55P03") {
         res.status(409).json({
           error:
             "Another change occurred at the same time. Refresh this record and retry; this attempt was rolled back.",

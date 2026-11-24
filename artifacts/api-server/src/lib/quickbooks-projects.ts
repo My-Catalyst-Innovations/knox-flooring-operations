@@ -185,6 +185,7 @@ async function jobContext(
     .from(jobsTable)
     .where(eq(jobsTable.id, jobId));
   if (!job) throw new DomainError(404, "Job not found.");
+  if(capabilityRequired)await assertCutoverProviderJobAllowed(db,jobId);
   const [mapping] = await db
     .select()
     .from(quickbooksEntityMappingsTable)
@@ -688,6 +689,7 @@ export async function submitProjectReview(
     );
   const submitted = await db.transaction(async (tx) => {
     await lockContext(tx, context, review.jobRevision);
+    await assertCutoverProviderJobAllowed(tx,review.jobId);
     const [current] = await tx
       .select()
       .from(reviews)
@@ -908,3 +910,4 @@ export async function verifiedProjectForJob(
     fingerprint: link.fingerprint,
   };
 }
+import { assertCutoverProviderJobAllowed } from "./job-cutover";

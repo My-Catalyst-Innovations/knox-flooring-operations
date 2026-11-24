@@ -1,3 +1,5 @@
+import { commissionEligible } from "@/lib/costing";
+import { UnreconciledReportNotice } from "@/components/jobs/UnreconciledReportNotice";
 import { useMemo, useState } from "react";
 import { useUrlState } from "@/hooks/use-url-state";
 import { recordedJobDate, inReportingPeriod } from "@/lib/reporting";
@@ -70,7 +72,7 @@ export default function Commissions() {
   const [customEnd, setCustomEnd] = useUrlState<string>("to", "");
 
   const eligibleJobs = useMemo(() => {
-    return jobs.filter((job) => job.salespersonId && stageIndex(job.status) >= APPROVED_IDX && inReportingPeriod(recordedJobDate(job, "sold"), range, customStart, customEnd));
+    return jobs.filter((job) => commissionEligible(job) && job.salespersonId && stageIndex(job.status) >= APPROVED_IDX && inReportingPeriod(recordedJobDate(job, "sold"), range, customStart, customEnd));
   }, [jobs, range, customStart, customEnd, now]);
 
   const repCommissions = useMemo<RepCommission[]>(() => {
@@ -78,7 +80,7 @@ export default function Commissions() {
       .map((rep) => {
         const repJobs = eligibleJobs.filter((j) => j.salespersonId === rep.id);
         const commission = repJobs.reduce(
-          (acc, j) => acc + computeCommission(j, rep, settings),
+          (acc, j) => acc + (computeCommission(j, rep, settings) ?? 0),
           0,
         );
         const basisTotal = repJobs.reduce((acc, j) => {
@@ -86,8 +88,8 @@ export default function Commissions() {
           return (
             acc +
             (settings.commissionBasis === "Revenue"
-              ? c.effectiveRevenue
-              : Math.max(0, c.effectiveGrossProfit))
+              ? (c.effectiveRevenue ?? 0)
+              : Math.max(0, c.effectiveGrossProfit ?? 0))
           );
         }, 0);
         return {
@@ -125,7 +127,7 @@ export default function Commissions() {
           job,
           rep,
           costing: c,
-          commission: computeCommission(job, rep, settings),
+          commission: computeCommission(job, rep, settings) ?? 0,
           rate: commissionRateFor(rep, settings),
         };
       })
@@ -163,6 +165,7 @@ export default function Commissions() {
   if (failedQuery) return <DataBoundary query={failedQuery} name="commission records"><span /></DataBoundary>;
   return (
     <div className="space-y-6">
+      <UnreconciledReportNotice jobs={jobs} kind="commission" />
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-foreground">

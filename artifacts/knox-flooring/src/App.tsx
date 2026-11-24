@@ -11,6 +11,7 @@ import Leads from "@/pages/leads";
 import LeadDetail from "@/pages/lead-detail";
 import Jobs from "@/pages/jobs";
 import JobDetail from "@/pages/job-detail";
+import ActiveJobImports from "@/pages/active-job-imports";
 import WorkOrder from "@/pages/work-order";
 import WorkGuides from "@/pages/work-guides";
 import Pipeline from "@/pages/pipeline";
@@ -38,6 +39,8 @@ import PublicStatus from "@/pages/public-status";
 import PublicQuote from "@/pages/public-quote";
 import PublicPrint from "@/pages/public-print";
 import Welcome from "@/pages/welcome";
+import { QuickBooksEntry } from "@/pages/quickbooks-entry";
+import QuickBooksHelp from "@/pages/quickbooks-help";
 import CompanySignup from "@/pages/company-signup";
 import PlatformBilling from "@/pages/platform-billing";
 import PlatformVerify from "@/pages/platform-verify";
@@ -62,6 +65,7 @@ function AdminRouter() {
         <Route path="/leads/:id" component={LeadDetail} />
         <Route path="/jobs" component={Jobs} />
         <Route path="/jobs/:id" component={JobDetail} />
+        <Route path="/active-job-imports" component={ActiveJobImports} />
         <Route path="/pipeline" component={Pipeline} />
         <Route path="/estimator" component={Estimator} />
         <Route path="/ai-operations" component={AIOperations} />
@@ -112,6 +116,11 @@ export function WorkspaceRouter() {
       <Route path="/p/:token" component={PublicStatus} />
       <Route path="/q/:token" component={PublicQuote} />
       <Route path="/welcome" component={Welcome} />
+      <Route path="/integrations/quickbooks/launch"><QuickBooksEntry intent="launch" /></Route>
+      <Route path="/integrations/quickbooks/connect"><QuickBooksEntry intent="connect" /></Route>
+      <Route path="/integrations/quickbooks/reconnect"><QuickBooksEntry intent="reconnect" /></Route>
+      <Route path="/integrations/quickbooks/disconnect"><QuickBooksEntry intent="disconnect" /></Route>
+      <Route path="/help/quickbooks" component={QuickBooksHelp} />
       <Route path="/jobs/:id/work-order">
         {() => hasAppAccess ? <WorkOrder /> : <Redirect to="/welcome" />}
       </Route>

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { db, invoicesTable, jobsTable, materialsTable, productsTable, proposalsTable, quickbooksAccountingMappingsTable, quickbooksConflictsTable, quickbooksConnectionsTable, quickbooksEntityMappingsTable, quickbooksSyncJobsTable, quickbooksWebhookEventsTable } from "@workspace/db";
 import { workspaceEnvironment } from "@workspace/db/workspace";
 import { audit, getSession, SESSION_COOKIE } from "../lib/auth";
-import { accountingScope, projectsScope, grantedQuickBooksScopes, quickBooksOAuthRequestedScopes, quickBooksOAuthConnectionLifecycle, quickBooksConnectionLifecycle, consumeQuickBooksOAuthState, createQuickBooksOAuthState, encryptSecret, getConnection, qboQuery, qboRequest, quickBooksProjectReadiness, replaceQuickBooksConnection, validQuickBooksOAuthState, assertQuickBooksRevocationResolved, disconnectQuickBooks } from "../lib/quickbooks";
+import { accountingScope, projectsScope, grantedQuickBooksScopes, quickBooksOAuthRequestedScopes, quickBooksOAuthConnectionLifecycle, quickBooksConnectionLifecycle, consumeQuickBooksOAuthState, createQuickBooksOAuthState, encryptSecret, getConnection, qboQuery, qboRequest, quickBooksProjectReadiness, replaceQuickBooksConnection, validQuickBooksOAuthState, assertQuickBooksRevocationResolved, disconnectQuickBooks, quickBooksRevocationRetryAvailable } from "../lib/quickbooks";
 import { projectsCapability } from "../lib/quickbooks-projects";
 import { customerReconciliationMatches } from "../lib/quickbooks-reconciliation";
 import { loadQuickBooksCatalogEntity, quickBooksCatalogEntities } from "../lib/quickbooks-catalog";
@@ -23,11 +23,12 @@ import { invoiceCreateRecord } from "../lib/quickbooks-invoice-create";
 import { invoiceReviewInput, requiresInvoiceReview, reviewedInvoiceApproval, reviewedInvoiceRecord, reviewedInvoicesAvailable } from "../lib/quickbooks-invoice-review";
 import { costEntities } from "../lib/job-accounting";
 import { safeDiagnostic } from "../lib/safe-logging";
+import { assertCutoverInvoiceSubmission } from "../lib/job-cutover-invoices";
 
 const router: IRouter = Router();
 const configured = () => Boolean(workspaceEnvironment().QUICKBOOKS_CLIENT_ID && workspaceEnvironment().QUICKBOOKS_CLIENT_SECRET && workspaceEnvironment().QUICKBOOKS_REDIRECT_URI && workspaceEnvironment().QUICKBOOKS_ENCRYPTION_KEY);
 const demoAvailable = () => workspaceEnvironment().DEMO_MODE === "true";
-const publicConnection = (c: Awaited<ReturnType<typeof getConnection>>) => c ? ({ connected: c.status === "connected", status: c.status, realmId: c.realmId, companyName: c.companyName, environment: c.environment, readinessStatus: c.readinessStatus, lastSyncAt: c.lastSyncAt, lastCdcAt: c.lastCdcAt, refreshTokenExpiresAt: c.refreshTokenExpiresAt }) : ({ connected: false, status: configured() ? "not_connected" : "not_configured", readinessStatus: "configuration_required" });
+const publicConnection = (c: Awaited<ReturnType<typeof getConnection>>) => c ? ({ connected: c.status === "connected", status: c.status, realmId: c.realmId, companyName: c.companyName, environment: c.environment, readinessStatus: c.readinessStatus, revocationRetryAvailable: quickBooksRevocationRetryAvailable(c), lastSyncAt: c.lastSyncAt, lastCdcAt: c.lastCdcAt, refreshTokenExpiresAt: c.refreshTokenExpiresAt }) : ({ connected: false, status: configured() ? "not_connected" : "not_configured", readinessStatus: "configuration_required", revocationRetryAvailable: false });
 
 router.get("/quickbooks/status", async (_req, res) => {
   const connection=await getConnection();const capability=await projectsCapability(connection);
@@ -320,7 +321,7 @@ async function previewAccounting(queueId: string, choice: z.infer<typeof invoice
   try {
     const prepared = await prepareReviewedInvoice(source, company, choice);
     const preview = { ...prepared, environment: company.environment, connectionId: company.id };
-    return { preview, job };
+    return { preview, job, sourceUpdatedAt:source.updatedAt };
   } catch (failure) {
     throw new DomainError(409, failure instanceof Error ? failure.message : "Could not verify the QuickBooks accounting details.");
   }
@@ -333,12 +334,18 @@ router.post(`${reviewPath}/preview`, requireOwner, domainRoute(async (req, res) 
 
 router.post(`${reviewPath}/approve`, requireOwner, domainRoute(async (req, res) => {
   const review = parse(reviewedInvoiceApproval.strict(), req.body);
-  const { preview, job } = await previewAccounting(String(req.params.id), review.request);
+  const { preview, job, sourceUpdatedAt } = await previewAccounting(String(req.params.id), review.request);
   if (preview.fingerprint !== review.fingerprint) throw new DomainError(409, "The invoice or accounting details changed. Preview them again before approving.");
   const now = new Date().toISOString();
-  const [accepted] = await db.update(accountingQueue).set({ payload: { ...job.payload, [reviewedInvoiceRecord]: review },
+  const [accepted] = await db.transaction(async tx=>{
+    const [source]=await tx.select().from(accountingSource).where(eq(accountingSource.id,job.localId));
+    if(!source)throw new DomainError(404,"Invoice not found.");
+    if(source.updatedAt!==sourceUpdatedAt)throw new DomainError(409,"The invoice changed after preview. Review the current source before approving.");
+    await assertCutoverInvoiceSubmission(tx,source,false);
+    return tx.update(accountingQueue).set({ payload: { ...job.payload, [reviewedInvoiceRecord]: review },
     status: "approved", approvedBy: req.auth!.userId, approvedAt: now, nextAttemptAt: now, updatedAt: now, lastError: null,
   }).where(and(eq(accountingQueue.id, job.id), eq(accountingQueue.updatedAt, job.updatedAt), inArray(accountingQueue.status, reviewableStates))).returning();
+  });
   if (!accepted) throw new DomainError(409, "This invoice approval is already being processed. Refresh the queue.");
   await audit("quickbooks.invoice_accounting_approved", { userId: req.auth!.userId, entityType: "invoice", entityId: job.localId,
     details: { realmId: preview.realmId, environment: preview.environment, connectionId: preview.connectionId,
@@ -364,13 +371,27 @@ router.post("/quickbooks/queue/approve", domainRoute(async (req, res) => {
   try {
     changed = await db.transaction(async tx => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(1959031411)`);
-      const rows = await tx.select().from(accountingQueue).where(and(inArray(accountingQueue.id, input.ids), eq(accountingQueue.status, "pending_approval"), genericApproval())).for("update");
-      if (!rows.length) return [];
+      // Prelock invoice job IDs before queue/invoice rows, matching ordinary
+      // invoice edits. Re-read the source under these locks below.
+      const candidates=await tx.select().from(accountingQueue).where(and(inArray(accountingQueue.id,input.ids),eq(accountingQueue.status,"pending_approval"),genericApproval())).limit(100);
+      if(!candidates.length)return [];
       const [company] = await tx.select().from(quickbooksConnectionsTable).where(eq(quickbooksConnectionsTable.status, "connected")).for("update");
       if (!company) throw new DomainError(409, "Connect the intended QuickBooks company before approving exports.");
+      const invoiceIds=candidates.filter(row=>row.entityType==="invoice").map(row=>row.localId);
+      const sources=invoiceIds.length?await tx.select({jobId:invoicesTable.jobId}).from(invoicesTable).where(inArray(invoicesTable.id,invoiceIds)).limit(100):[];
+      const lockedJobs=[...new Set(sources.map(row=>row.jobId))].sort();
+      for(const jobId of lockedJobs)await tx.select({id:jobsTable.id}).from(jobsTable).where(eq(jobsTable.id,jobId)).for("update");
+      const rows = await tx.select().from(accountingQueue).where(and(inArray(accountingQueue.id, input.ids), eq(accountingQueue.status, "pending_approval"), genericApproval())).for("update");
+      if (!rows.length) return [];
       const approved = [];
       for (const row of rows) {
         let payload = row.payload;
+        if(row.entityType==="invoice"){
+          const [invoice]=await tx.select().from(invoicesTable).where(eq(invoicesTable.id,row.localId));
+          if(!invoice||!lockedJobs.includes(invoice.jobId))throw new DomainError(409,"Invoice attribution changed. Refresh before accounting approval.");
+          const cutover=await assertCutoverInvoiceSubmission(tx,invoice,false);
+          if(cutover)payload={...payload,migrationCutoverApproval:{...cutover,company:{connectionId:company.id,realmId:company.realmId,environment:company.environment}}};
+        }
         if (row.entityType === "customer" || row.entityType === "estimate") {
           const previous = payload[genericExportRecord];
           let frozen;

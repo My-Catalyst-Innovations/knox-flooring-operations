@@ -1,4 +1,5 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
+import { assertQuickBooksRevocationResolved, quickBooksRevocationRetryAvailable } from "./quickbooks";
 const mocks=vi.hoisted(()=>({connection:null as any,nonceIds:new Set<string>(),failInsert:false,failRevocationResult:false,events:[] as string[],queue:Promise.resolve()}));
 vi.mock("@workspace/db/workspace",()=>({workspaceEnvironment:()=>process.env,workspaceScopeKey:()=>"test"}));
 vi.mock("@workspace/db",async()=>{
@@ -80,6 +81,44 @@ describe("QuickBooks connection safety",()=>{
     expect(quickBooksProjectReadiness()).toMatchObject({verified:false,readiness:"blocked",legacySubcustomersPreserved:true});expect(()=>requireQuickBooksProjects()).toThrow(/subcustomer is not/);expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each([undefined,"legacy_disconnected","reconciliation_required"])("never treats an unrecorded legacy local stop as remote revocation (%s)",async(readinessStatus)=>{
+    mocks.connection.status="disconnected";mocks.connection.readinessStatus=readinessStatus;
+    const before=structuredClone(mocks.connection),exchange=vi.fn();
+    expect(()=>assertQuickBooksRevocationResolved(mocks.connection)).toThrow(/Finish revoking/);
+    await expect(replaceQuickBooksConnection(exchange,quickBooksConnectionLifecycle(mocks.connection))).rejects.toMatchObject({status:409});
+    expect(exchange).not.toHaveBeenCalled();
+    expect(await disconnectQuickBooks()).toMatchObject({locallyDisconnected:true,revocation:"not_requested"});
+    expect(mocks.connection).toEqual(before);expect(fetch).not.toHaveBeenCalled();
+  });
+  it.each(["missing_ciphertext","invalid_ciphertext","erased_grant","changed_key","missing_client"])("requires a faithful retained grant and configuration for legacy retry: %s",async(fault)=>{
+    mocks.connection.status="disconnected";mocks.connection.readinessStatus="legacy_disconnected";
+    if(fault==="missing_ciphertext")mocks.connection.encryptedRefreshToken="";
+    if(fault==="invalid_ciphertext")mocks.connection.encryptedRefreshToken="not-encrypted";
+    if(fault==="erased_grant")mocks.connection.encryptedRefreshToken=encryptSecret("revoked");
+    if(fault==="changed_key")vi.stubEnv("QUICKBOOKS_ENCRYPTION_KEY","different-key");
+    if(fault==="missing_client")vi.stubEnv("QUICKBOOKS_CLIENT_SECRET","");
+    const before=structuredClone(mocks.connection);
+    expect(quickBooksRevocationRetryAvailable(mocks.connection)).toBe(false);
+    expect(await disconnectQuickBooks(true)).toMatchObject({revocation:"not_requested",message:expect.stringMatching(/Operator review is required/)});
+    expect(mocks.connection).toEqual(before);expect(fetch).not.toHaveBeenCalled();
+    await expect(replaceQuickBooksConnection({...before,id:"replacement"})).rejects.toMatchObject({status:409});
+  });
+  it("explicitly claims the same retained legacy grant once and only records actual mock-provider confirmation",async()=>{
+    mocks.connection.status="disconnected";mocks.connection.readinessStatus="legacy_disconnected";
+    expect(quickBooksRevocationRetryAvailable(mocks.connection)).toBe(true);
+    let release!:(value:Response)=>void,started!:()=>void;const entered=new Promise<void>(resolve=>{started=resolve;});
+    vi.mocked(fetch).mockImplementation(async(url,options)=>{
+      expect(String(url)).toBe("https://developer.api.intuit.com/v2/oauth2/tokens/revoke");
+      expect(mocks.connection).toMatchObject({status:"disconnected",readinessStatus:"revocation_pending"});
+      expect(JSON.parse(options!.body as string)).toEqual({token:"refresh"});started();return new Promise<Response>(resolve=>{release=resolve;});
+    });
+    const first=disconnectQuickBooks(true);await entered;
+    expect(await disconnectQuickBooks(true)).toMatchObject({revocation:"pending"});expect(fetch).toHaveBeenCalledTimes(1);
+    release(new Response(null,{status:200}));expect(await first).toMatchObject({revocation:"confirmed"});
+    expect(quickBooksRevocationRetryAvailable(mocks.connection)).toBe(false);expect(()=>assertQuickBooksRevocationResolved(mocks.connection)).not.toThrow();
+    expect(decryptSecret(mocks.connection.encryptedRefreshToken)).toBe("revoked");
+    expect(await disconnectQuickBooks(true)).toMatchObject({revocation:"confirmed"});expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it("commits the local stop before revoking the saved grant and clears tokens only on Intuit HTTP 200",async()=>{
     vi.mocked(fetch).mockImplementation(async(url,options)=>{
       expect(String(url)).toBe("https://developer.api.intuit.com/v2/oauth2/tokens/revoke");

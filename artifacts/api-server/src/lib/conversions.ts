@@ -10,6 +10,7 @@ import {
   measurementsTable,
   salespeopleTable,
   quickbooksSyncJobsTable,
+  jobCutoversTable,
   type JobInsert,
   type JobRow,
   type ProposalRow,
@@ -18,6 +19,7 @@ import type { EstimateSnapshot } from "@workspace/domain";
 import { ensureCustomer, type Transaction } from "./estimate-service";
 import { assertRevision, DomainError } from "./operations-rules";
 import { acceptedQuoteInvoice } from "./quote-lines";
+import { assertCutoverInvoiceCreate, consumeCutoverInvoice } from "./job-cutover-invoices";
 
 export async function nextDocumentNumber(
   tx: Transaction,
@@ -222,7 +224,12 @@ export async function convertLead(
   await queueReview(tx, "project", job.id, job);
   return job;
 }
-export async function convertProposal(tx: Transaction, proposalId: string) {
+export async function convertProposal(tx: Transaction, proposalId: string, cutoverOptions: {expectedCutoverRevision?:number;actorUserId?:string} = {}) {
+  const [seen] = await tx.select().from(proposalsTable).where(eq(proposalsTable.id,proposalId));
+  if (!seen) throw new DomainError(404,"Proposal not found");
+  // Job -> proposal -> invoice/request is also the order used by direct billing.
+  const linkedJobIds=[...new Set([seen.jobId,seen.convertedJobId].filter((value):value is string=>!!value))].sort();
+  for(const id of linkedJobIds)await tx.select({id:jobsTable.id}).from(jobsTable).where(eq(jobsTable.id,id)).for("update");
   const [proposal] = await tx
     .select()
     .from(proposalsTable)
@@ -253,6 +260,7 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
       .where(eq(jobMaterialsTable.jobId, job.id));
     return { job, invoice, materialsCreated: materials.length };
   }
+  if(proposal.jobId!==seen.jobId||proposal.convertedJobId!==seen.convertedJobId)throw new DomainError(409,"The quote's job attribution changed. Refresh before converting it.");
   if (proposal.status !== "Accepted")
     throw new DomainError(
       400,
@@ -263,6 +271,8 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
     ? await tx.select().from(jobsTable).where(eq(jobsTable.id, proposal.jobId)).for("update")
     : [];
   if (proposal.jobId && !linkedJob) throw new DomainError(409, "The quote's linked job is missing.");
+  const [cutover] = linkedJob ? await tx.select().from(jobCutoversTable).where(eq(jobCutoversTable.jobId,linkedJob.id)) : [];
+  if(cutover)await assertCutoverInvoiceCreate(tx,linkedJob!,cutoverOptions.expectedCutoverRevision);
   if (linkedJob && (
     (linkedJob.customerId && proposal.customerId && linkedJob.customerId !== proposal.customerId) ||
     (linkedJob.siteId && proposal.siteId && linkedJob.siteId !== proposal.siteId)
@@ -288,7 +298,7 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
   let materialsCreated = 0;
   if (linkedJob) {
     job = linkedJob;
-    if (["New Lead", "Estimate Scheduled", "Estimate Completed", "Proposal Sent"].includes(linkedJob.status)) {
+    if (!cutover && ["New Lead", "Estimate Scheduled", "Estimate Completed", "Proposal Sent"].includes(linkedJob.status)) {
       [job] = await tx.update(jobsTable).set({
         status: "Approved",
         soldAt: linkedJob.soldAt ?? proposal.acceptedAt,
@@ -302,7 +312,7 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
     }
     const [existingRequirement] = await tx.select({ id: jobMaterialsTable.id }).from(jobMaterialsTable)
       .where(eq(jobMaterialsTable.jobId, job.id)).limit(1);
-    if (!existingRequirement && proposal.lineItems.length) {
+    if (!cutover && !existingRequirement && proposal.lineItems.length) {
       await tx.insert(jobMaterialsTable).values(proposal.lineItems.map((line) => ({
         id: randomUUID(), jobId: job.id, productId: line.productId, name: line.name, quantity: line.quantity, unit: line.unit, createdAt: now,
       })));
@@ -353,7 +363,7 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
   }
   const [existingDelivery] = await tx.select({ id: materialsTable.id }).from(materialsTable)
     .where(eq(materialsTable.jobId, job.id)).limit(1);
-  if (!existingDelivery) await tx.insert(materialsTable).values({
+  if (!cutover && !existingDelivery) await tx.insert(materialsTable).values({
     id: randomUUID(),
     jobId: job.id,
     jobNumber: job.jobNumber,
@@ -367,6 +377,7 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
     status: "Not Ordered",
   });
   // Deposit terms request a payment; conversion is not evidence of receiving one.
+  const quoteInvoice=acceptedQuoteInvoice(proposal);
   const [invoice] = await tx
     .insert(invoicesTable)
     .values({
@@ -376,7 +387,7 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
       customerId,
       jobNumber: job.jobNumber,
       customerName: proposal.customerName,
-      ...acceptedQuoteInvoice(proposal),
+      ...quoteInvoice,
       depositAmount: 0,
       status: "Draft",
       issueDate: now.slice(0, 10),
@@ -393,6 +404,7 @@ export async function convertProposal(tx: Transaction, proposalId: string) {
       updatedAt: now,
     })
     .returning();
+  if(cutover)await consumeCutoverInvoice(tx,job,invoice,proposal.id,{source:"accepted_remaining_quote",proposalId:proposal.id,proposalRevision:proposal.revision,invoice:quoteInvoice},cutoverOptions.actorUserId??"",cutoverOptions.expectedCutoverRevision,{...quoteInvoice,taxAmount:0,depositAmount:0});
   await tx
     .update(proposalsTable)
     .set({

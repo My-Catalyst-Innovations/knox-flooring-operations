@@ -202,6 +202,7 @@ export default function Proposals() {
 
   const handleConvert = async () => {
     if (!selected) return;
+    if (selectedJob?.migrationCutover) { toast({ title: "Review remaining work on the imported job", description: "Create an explicit remaining-work draft from that job after billing cutover review. This conversion does not establish legacy balances." }); return; }
     setConverting(true);
     try {
       const job = await convertProposal(selected.id);
@@ -691,12 +692,13 @@ export default function Proposals() {
                   <Button
                     className="flex-1 min-w-[160px]"
                     onClick={() => setConfirmOpen(true)}
-                    disabled={converting}
+                    disabled={converting || !!selectedJob?.migrationCutover}
                   >
                     <ArrowRightCircle className="w-4 h-4 mr-2" />
                     {selected.jobId ? "Create invoice for linked job" : "Convert to Job + Invoice"}
                   </Button>
                 )}
+                {selectedJob?.migrationCutover && !selected.convertedJobId && <p className="text-sm">This is an imported job. Use its reviewed remaining-work invoice form; full-contract quote conversion is paused.</p>}
                 {selected.convertedJobId && (
                   <Button
                     variant="secondary"

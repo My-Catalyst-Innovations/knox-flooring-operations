@@ -27,6 +27,8 @@ import {
 import { stripNulls } from "../lib/strip-nulls";
 import { queueQuickBooksReview } from "../lib/quickbooks-queue";
 import { convertProposal } from "../lib/conversions";
+import { jobCutoverMoneyKeys, jobMigrationCutover } from "../lib/job-cutover";
+import { presentCutoverInvoice } from "../lib/job-cutover-invoices";
 import { domainRoute } from "../lib/domain-http";
 import { ensureCustomer, validateCustomerLinks } from "../lib/estimate-service";
 import { assertRevision, DomainError } from "../lib/operations-rules";
@@ -185,15 +187,14 @@ router.post(
   "/proposals/:id/convert",
   domainRoute(async (req, res) => {
     const result = await db.transaction((tx) =>
-      convertProposal(tx, String(req.params.id)),
+      convertProposal(tx, String(req.params.id),{expectedCutoverRevision:req.body?.expectedCutoverRevision,actorUserId:req.auth!.userId}),
     );
-    res.json(
-      ConvertProposalResponse.parse({
-        job: stripNulls(result.job),
+    const response=ConvertProposalResponse.parse({
+        job: {...stripNulls(result.job),...Object.fromEntries(jobCutoverMoneyKeys.map(key=>[key,result.job[key]]))},
         invoice: stripNulls(result.invoice),
         materialsCreated: result.materialsCreated,
-      }),
-    );
+      });
+    res.json({...response,job:{...response.job,migrationCutover:await jobMigrationCutover(db,result.job)},invoice:{...response.invoice,...("invoiceFinancialFingerprint"in await presentCutoverInvoice(db,result.invoice)?{invoiceFinancialFingerprint:(await presentCutoverInvoice(db,result.invoice)).invoiceFinancialFingerprint}:{})}});
   }),
 );
 

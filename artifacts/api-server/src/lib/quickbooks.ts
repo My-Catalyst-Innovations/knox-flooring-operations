@@ -118,7 +118,7 @@ export async function replaceQuickBooksConnection(valuesOrExchange:typeof quickb
 export async function getConnection() { const [row] = await db.select().from(quickbooksConnectionsTable).limit(1); return row ?? null; }
 
 type QuickBooksConnection = typeof quickbooksConnectionsTable.$inferSelect;
-type RevocationState = "pending" | "unknown" | "failed" | "confirmed" | "not_connected";
+type RevocationState = "pending" | "unknown" | "failed" | "confirmed" | "not_connected" | "not_requested";
 export type QuickBooksDisconnectResult = { locallyDisconnected: true; revocation: RevocationState; message: string };
 const revocationMessage: Record<RevocationState, string> = {
   pending: "Works has stopped using this connection. Intuit has not confirmed revocation yet. Wait briefly, then retry revocation if needed.",
@@ -126,13 +126,20 @@ const revocationMessage: Record<RevocationState, string> = {
   failed: "Works has stopped using this connection. Intuit did not confirm revocation. Review the connection configuration, then retry revocation for this same saved grant.",
   confirmed: "Works is disconnected and Intuit confirmed that access was revoked.",
   not_connected: "Works has no active connection. Intuit revocation has not been verified for a previously disconnected grant.",
+  not_requested: "Works is locally stopped, but no provider revocation outcome is recorded. An owner must explicitly retry the retained grant before reconnecting. If the original grant or configuration is unavailable, operator review is required.",
 };
 const revocationResult = (revocation: RevocationState): QuickBooksDisconnectResult => ({ locallyDisconnected: true, revocation, message: revocationMessage[revocation] });
-export function unresolvedQuickBooksRevocation(connection: Pick<QuickBooksConnection, "readinessStatus"> | null | undefined) {
-  return ["revocation_pending", "revocation_unknown", "revocation_failed"].includes(connection?.readinessStatus ?? "");
+type RevocationConnection = Pick<QuickBooksConnection, "readinessStatus"> & Partial<Pick<QuickBooksConnection, "status">>;
+export function unresolvedQuickBooksRevocation(connection: RevocationConnection | null | undefined) {
+  return (connection?.status === "disconnected" && connection.readinessStatus !== "revocation_confirmed") || ["revocation_pending", "revocation_unknown", "revocation_failed"].includes(connection?.readinessStatus ?? "");
 }
-export function assertQuickBooksRevocationResolved(connection: Pick<QuickBooksConnection, "readinessStatus"> | null | undefined) {
+export function assertQuickBooksRevocationResolved(connection: RevocationConnection | null | undefined) {
   if (unresolvedQuickBooksRevocation(connection)) throw new DomainError(409, "Finish revoking the previous QuickBooks grant before connecting again. Retry revocation in QuickBooks settings.");
+}
+/** Local retry feasibility only; this does not verify a provider grant or its outcome. */
+export function quickBooksRevocationRetryAvailable(connection: Pick<QuickBooksConnection, "encryptedRefreshToken" | "readinessStatus"> | null | undefined) {
+  if (!connection || connection.readinessStatus === "revocation_confirmed" || !workspaceEnvironment().QUICKBOOKS_CLIENT_ID || !workspaceEnvironment().QUICKBOOKS_CLIENT_SECRET) return false;
+  try { const token=decryptSecret(connection.encryptedRefreshToken); return Boolean(token.trim() && token !== "revoked"); } catch { return false; }
 }
 
 export async function disconnectQuickBooks(retryRevocation = false): Promise<QuickBooksDisconnectResult> {
@@ -143,10 +150,14 @@ export async function disconnectQuickBooks(retryRevocation = false): Promise<Qui
     const [current] = await tx.select().from(quickbooksConnectionsTable).where(sql`TRUE`).for("update");
     if (!current) return { result: revocationResult("not_connected") };
     const unresolved = unresolvedQuickBooksRevocation(current);
-    if (current.status === "disconnected" && !unresolved) return { result: revocationResult(current.readinessStatus === "revocation_confirmed" ? "confirmed" : "not_connected") };
+    if (current.status === "disconnected" && !unresolved) return { result: revocationResult("confirmed") };
     if (unresolved && (!retryRevocation || (current.readinessStatus === "revocation_pending" && Date.parse(current.updatedAt) > Date.now() - 30_000))) {
-      const state = current.readinessStatus.slice("revocation_".length) as "pending" | "unknown" | "failed";
+      const state = ["revocation_pending","revocation_unknown","revocation_failed"].includes(current.readinessStatus) ? current.readinessStatus.slice("revocation_".length) as "pending" | "unknown" | "failed" : "not_requested";
       return { result: revocationResult(state) };
+    }
+    if (unresolved && !quickBooksRevocationRetryAvailable(current)) {
+      const state = ["revocation_pending","revocation_unknown","revocation_failed"].includes(current.readinessStatus) ? current.readinessStatus.slice("revocation_".length) as "pending" | "unknown" | "failed" : "not_requested";
+      return { result: { ...revocationResult(state), message: "Works remains locally stopped. The retained grant cannot currently be retried with the available configuration. Operator review is required; no new authorization or provider revocation is confirmed." } };
     }
     const claimedAt = new Date(Math.max(Date.now(), (Date.parse(current.updatedAt) || 0) + 1)).toISOString();
     await tx.update(quickbooksConnectionsTable).set({ status: "disconnected", readinessStatus: "revocation_pending", updatedAt: claimedAt }).where(eq(quickbooksConnectionsTable.id, current.id));

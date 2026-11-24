@@ -1,0 +1,5 @@
+This PDF was authored internally in Microsoft Word for Catalyst Works regression testing on2026-11-23. It contains public product identifiers advertised by Knoxville Flooring Center and fictional supplier/customer names, quantities, prices and document references. No amount is owed and no real stock or supplier pricing is claimed. It is not a captured customer invoice or provider data.
+
+The actual PDF text layer includes a long wrapped product description, leading-zero manufacturer codes and code/product/each/currency headers. It must produce15 reviewed lines totallingUSD430.10. This fixture does not establish browser OCR, QuickBooks company mapping or provider acceptance.
+
+Public product catalog: https://www.knoxvillecarpet.com/products/

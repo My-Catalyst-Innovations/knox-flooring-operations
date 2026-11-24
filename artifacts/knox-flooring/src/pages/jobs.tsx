@@ -6,6 +6,8 @@ import { FilterSummary } from "@/components/layout/FilterSummary";
 import { useToast } from "@/hooks/use-toast";
 import { useUnsavedForm } from "@/hooks/use-unsaved-changes";
 import { useOperation, type Crew } from "@/lib/operations";
+import { fmtMoney, jobForecast } from "@/lib/costing";
+import { useAuth } from "@/contexts/auth";
 import { useStore } from "@/hooks/use-store";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
@@ -105,6 +107,7 @@ const emptyForm = {
 type FormState = typeof emptyForm;
 
 export default function Jobs() {
+  const { user } = useAuth();
   const { queryState, jobs, salespeople, updateJob, addJob, deleteJob } = useStore();
   const crewQuery = useOperation<Crew[]>("/crews", ["owner", "operations"]);
   const crews = [...new Set(["Unassigned", ...(crewQuery.data ?? []).filter((crew) => crew.active).map((crew) => crew.name), ...jobs.map((job) => job.crewAssigned)])];
@@ -162,6 +165,7 @@ export default function Jobs() {
   };
 
   const openEdit = (job: Job) => {
+    if (job.migrationCutover) { toast({ title: "Open the imported job", description: "Use its cutover review and operational tools. Legacy finance and customer links cannot be rewritten in this form." }); return; }
     setSaveError("");
     setEditingId(job.id);
     const initial = {
@@ -176,9 +180,9 @@ export default function Jobs() {
       crewAssigned: job.crewAssigned,
       salespersonId: job.salespersonId ?? "",
       squareFootage: job.squareFootage,
-      estRevenue: job.estRevenue,
-      laborEstimate: job.laborEstimate,
-      materialEstimate: job.materialEstimate,
+      estRevenue: job.estRevenue ?? 0,
+      laborEstimate: job.laborEstimate ?? 0,
+      materialEstimate: job.materialEstimate ?? 0,
       status: job.status,
       priorityLevel: job.priorityLevel,
       riskLevel: job.riskLevel,
@@ -238,9 +242,9 @@ export default function Jobs() {
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-foreground">Jobs</h1>
           <p className="text-muted-foreground mt-1">Manage active flooring jobs and pipeline.</p>
         </div>
-        <Button onClick={openAdd} data-training-id="jobs-new">
+        <div className="flex flex-wrap gap-2">{user?.role === "owner" && !user.previewRole && <Button variant="outline" asChild><Link href="/active-job-imports">Import active jobs</Link></Button>}<Button onClick={openAdd} data-training-id="jobs-new">
           <Plus className="mr-2 h-4 w-4" /> New Job
-        </Button>
+        </Button></div>
       </div>
 
       <div className="grid gap-3 bg-card p-4 rounded-lg border shadow-sm md:grid-cols-2 lg:grid-cols-5">
@@ -310,7 +314,7 @@ export default function Jobs() {
 
       <FilterSummary count={filteredJobs.length} noun="jobs" filters={[...(search ? [{ label: `Search: ${search}`, clear: () => setSearch("") }] : []), ...([["Status", statusFilter, setStatusFilter], ["City", cityFilter, setCityFilter], ["Crew", crewFilter, setCrewFilter], ["Flooring", flooringFilter, setFlooringFilter]] as const).filter(([, value]) => value !== "All").map(([label, value, setter]) => ({ label: `${label}: ${value}`, clear: () => setter("All") }))]} onClear={clearFilters} />
 
-      <div className="space-y-3 md:hidden">{filteredJobs.map((job) => <article key={job.id} className="rounded-lg border bg-white p-4"><div className="flex items-start justify-between gap-3"><Link href={`/jobs/${job.id}`} className="font-semibold text-primary">{job.customerName}<span className="mt-1 block text-xs font-normal text-muted-foreground">{job.jobNumber} · {job.city}</span></Link><span className="text-sm tabular-nums">${job.estRevenue.toLocaleString()}</span></div><p className="mt-3 text-sm text-muted-foreground">{job.flooringType} · {job.crewAssigned}</p><div className="mt-3 flex items-center justify-between gap-2"><Select value={job.status} onValueChange={(value: JobStatus) => void changeStatus(job, value)}><SelectTrigger className="max-w-[190px]" aria-label={`Status for ${job.jobNumber}`}><SelectValue /></SelectTrigger><SelectContent>{STATUSES.map((status) => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><div className="flex"><Button variant="ghost" size="icon" aria-label={`Edit ${job.jobNumber}`} onClick={() => openEdit(job)}><Pencil /></Button><Button variant="ghost" size="icon" aria-label={`Delete ${job.jobNumber}`} onClick={() => setDeleteTarget(job)}><Trash2 /></Button></div></div></article>)}{filteredJobs.length === 0 && <div className="rounded-lg border bg-white p-8 text-center"><p className="font-medium">{jobs.length ? "No matching jobs" : "No jobs yet"}</p><Button variant="outline" className="mt-4" onClick={jobs.length ? clearFilters : openAdd}>{jobs.length ? "Clear filters" : "Create a job"}</Button></div>}</div>
+      <div className="space-y-3 md:hidden">{filteredJobs.map((job) => <article key={job.id} className="rounded-lg border bg-white p-4"><div className="flex items-start justify-between gap-3"><Link href={`/jobs/${job.id}`} className="font-semibold text-primary">{job.customerName}<span className="mt-1 block text-xs font-normal text-muted-foreground">{job.jobNumber} · {job.city}</span></Link><span className="text-sm tabular-nums">{fmtMoney(jobForecast(job)?.revenue ?? null)}</span></div><p className="mt-3 text-sm text-muted-foreground">{job.flooringType} · {job.crewAssigned}</p><div className="mt-3 flex items-center justify-between gap-2"><Select value={job.status} onValueChange={(value: JobStatus) => void changeStatus(job, value)}><SelectTrigger className="max-w-[190px]" aria-label={`Status for ${job.jobNumber}`}><SelectValue /></SelectTrigger><SelectContent>{STATUSES.map((status) => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><div className="flex"><Button variant="ghost" size="icon" aria-label={`Edit ${job.jobNumber}`} onClick={() => openEdit(job)}><Pencil /></Button><Button variant="ghost" size="icon" aria-label={`Delete ${job.jobNumber}`} onClick={() => setDeleteTarget(job)}><Trash2 /></Button></div></div></article>)}{filteredJobs.length === 0 && <div className="rounded-lg border bg-white p-8 text-center"><p className="font-medium">{jobs.length ? "No matching jobs" : "No jobs yet"}</p><Button variant="outline" className="mt-4" onClick={jobs.length ? clearFilters : openAdd}>{jobs.length ? "Clear filters" : "Create a job"}</Button></div>}</div>
       <div className="hidden md:block bg-card rounded-lg border overflow-x-auto">
         <Table>
           <TableHeader>
@@ -387,7 +391,7 @@ export default function Jobs() {
                     </Select>
                   </TableCell>
                   <TableCell className="text-right font-medium whitespace-nowrap">
-                    ${job.estRevenue.toLocaleString()}
+                    {fmtMoney(jobForecast(job)?.revenue ?? null)}
                   </TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <Button variant="ghost" size="icon" aria-label={`Edit ${job.jobNumber}`} onClick={() => openEdit(job)}>

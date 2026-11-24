@@ -22,6 +22,7 @@ import {
   QuickBooksRequestError,
 } from "./quickbooks";
 import { verifiedProjectForJob } from "./quickbooks-projects";
+import { assertCutoverProviderJobAllowed } from "./job-cutover";
 import {
   costDocument,
   costRemoteMatches,
@@ -505,6 +506,8 @@ async function assertAttribution(
       409,
       "The job changed after accounting review. Review its customer and Project again.",
     );
+  const currentCutover=await assertCutoverProviderJobAllowed(tx,job.id);
+  if(currentCutover&&stableFingerprint({revision:currentCutover.revision,operational:currentCutover.operational})!==stableFingerprint(evidence.migrationCutover))throw new DomainError(409,"Imported job cutover changed after accounting approval. Review its current operational attribution again.");
   const [mapping] = await tx
     .select()
     .from(quickbooksEntityMappingsTable)
@@ -553,6 +556,7 @@ export async function prepareJobCost(
       "Connect the intended enabled QuickBooks company before reviewing job costs.",
     );
   const source = await sourceFor(kind, sourceId);
+  const migrationCutover=await assertCutoverProviderJobAllowed(db,source.jobId);
   if (source.revision !== selection.sourceRevision)
     throw new DomainError(
       409,
@@ -584,6 +588,7 @@ export async function prepareJobCost(
     );
   const provider = providerOverride ?? providerFor(connection.id);
   const evidence: Record<string, any> = {
+    ...(migrationCutover?{migrationCutover:{revision:migrationCutover.revision,operational:migrationCutover.operational}}:{}),
     source,
     job: { id: job.id, revision: job.revision, updatedAt: job.updatedAt },
     customerMapping: customer,

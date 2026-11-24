@@ -506,18 +506,18 @@ export interface Job {
   /** When the current agreed completion date was recorded. */
   committedCompletionRecordedAt?: string;
   materialStatus: MaterialStatusBadge;
-  laborEstimate: number;
+  laborEstimate: number | null;
   estLaborHours: number;
-  materialEstimate: number;
-  estRevenue: number;
-  estGrossProfit: number;
-  grossMarginPct: number;
-  actualRevenue?: number;
-  actualLaborCost?: number;
-  actualMaterialCost?: number;
+  materialEstimate: number | null;
+  estRevenue: number | null;
+  estGrossProfit: number | null;
+  grossMarginPct: number | null;
+  actualRevenue?: number | null;
+  actualLaborCost?: number | null;
+  actualMaterialCost?: number | null;
   /** Net cost of material usage and returns recorded on this job. Present when material entries exist. */
   trackedMaterialCost?: number;
-  actualAddOnCost?: number;
+  actualAddOnCost?: number | null;
   notes: string;
   priorityLevel: PriorityLevel;
   riskLevel: RiskLevel;

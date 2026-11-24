@@ -3,7 +3,11 @@ interface CsvRecord {
   fields: string[];
 }
 
-export function readCsv(csv: string, delimiter: "," | "\t" = ","): CsvRecord[] {
+export function readCsv(
+  csv: string,
+  delimiter: "," | "\t" = ",",
+  options: { trimFields?: boolean } = {},
+): CsvRecord[] {
   const source = csv.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const records: CsvRecord[] = [];
   let line = 1;
@@ -13,7 +17,7 @@ export function readCsv(csv: string, delimiter: "," | "\t" = ","): CsvRecord[] {
   let state: "unquoted" | "quoted" | "closed" = "unquoted";
 
   function finishField() {
-    fields.push(field.trim());
+    fields.push(options.trimFields === false ? field : field.trim());
     field = "";
     state = "unquoted";
   }

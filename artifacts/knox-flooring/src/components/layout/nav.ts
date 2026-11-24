@@ -37,6 +37,7 @@ export const navGroups: NavGroup[] = [
 ];
 export const utilityItems: NavItem[] = [
   { name: "Import open orders", href: "/open-po-imports", icon: ClipboardList, keywords: "purchase order migration outstanding supplier import cutover", roles: ["owner"] },
+  { name: "Import active jobs", href: "/active-job-imports", icon: Briefcase, keywords: "legacy operational job migration cutover review", roles: ["owner"] },
   { name: "History archive", href: "/legacy-history", icon: ClipboardList, keywords: "legacy historical read-only source imports original files", roles: ["owner"] },
   { name: "Supplier contacts", href: "/suppliers", icon: Contact, keywords: "vendor supplier directory contacts import", roles: ["owner"] },
   { name: "Work guides", href: "/work-guides", icon: ClipboardList, keywords: "training warehouse receiving bin installer saved evidence", roles: ["owner", "operations", "installer"] },

@@ -16,6 +16,8 @@ export async function deleteUnreferencedJob(tx: Transaction, jobId: string) {
     .where(eq(jobsTable.id, jobId))
     .for("update");
   if (!job) throw new DomainError(404, "Job not found");
+  const imported=await tx.execute(sql`SELECT 1 FROM active_job_import_records WHERE job_id=${jobId} LIMIT 1`);
+  if(imported.rows.length)throw new DomainError(409,"This job has retained migration provenance. Keep the source link and job history; imported or explicitly linked jobs cannot be deleted.");
   // Keep public project history and recorded business facts even if an old import omitted its related rows.
   if (
     !DRAFT_STAGES.has(job.status) ||

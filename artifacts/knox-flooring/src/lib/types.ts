@@ -95,6 +95,7 @@ export interface JobPhoto {
 }
 
 export interface Job {
+  migrationCutover?: import("@workspace/domain").JobMigrationCutover | null;
   customerId?: string | null;
   siteId?: string | null;
   revision?: number;
@@ -120,20 +121,20 @@ export interface Job {
   committedCompletionDate?: string;
   committedCompletionRecordedAt?: string;
   materialStatus: MaterialStatusBadge;
-  laborEstimate: number;
+  laborEstimate: number | null;
   estLaborHours: number;
-  materialEstimate: number;
-  estRevenue: number;
-  estGrossProfit: number;
-  grossMarginPct: number;
-  actualRevenue: number;
-  actualLaborCost: number;
+  materialEstimate: number | null;
+  estRevenue: number | null;
+  estGrossProfit: number | null;
+  grossMarginPct: number | null;
+  actualRevenue: number | null;
+  actualLaborCost: number | null;
   trackedLaborCost?: number | null;
   unpricedLaborCount?: number;
-  actualMaterialCost: number;
+  actualMaterialCost: number | null;
   trackedMaterialCost?: number;
   trackedExpenseCost?: number;
-  actualAddOnCost: number;
+  actualAddOnCost: number | null;
   notes: string;
   priorityLevel: PriorityLevel;
   riskLevel: RiskLevel;
@@ -225,6 +226,7 @@ export interface InvoiceLineItem {
 }
 
 export interface Invoice {
+  invoiceFinancialFingerprint?: string;
   customerId?: string | null;
   id: string;
   invoiceNumber: string;
