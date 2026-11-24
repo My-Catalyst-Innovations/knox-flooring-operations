@@ -14,7 +14,7 @@
     "migrate:check": "node scripts/migrate.mjs --check",
     "migration:generate": "drizzle-kit generate --dialect postgresql --schema ./src/schema/index.ts --out ./migrations",
     "reconcile": "node scripts/reconcile.mjs",
-    "test": "node --test scripts/migration-runner.test.mjs scripts/customer-import-postgres.test.mjs scripts/legacy-history-schema.test.mjs scripts/legacy-history-postgres.test.mjs scripts/supplier-import-schema.test.mjs scripts/supplier-import-postgres.test.mjs",
+    "test": "node --test scripts/migration-runner.test.mjs scripts/customer-import-postgres.test.mjs scripts/legacy-history-schema.test.mjs scripts/legacy-history-postgres.test.mjs scripts/supplier-import-schema.test.mjs scripts/supplier-import-postgres.test.mjs scripts/open-po-import-schema.test.mjs",
     "test:legacy-history": "node --test scripts/legacy-history-schema.test.mjs scripts/legacy-history-postgres.test.mjs",
     "test:customer-import": "node --test scripts/customer-import-postgres.test.mjs",
     "test:release": "node --test scripts/release-workflows.test.mjs && node --test scripts/sms-preferences-workflow.test.mjs",
